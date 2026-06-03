@@ -97,6 +97,61 @@ COST_CENTER="${COST_CENTER:-unallocated}"
 OWNER="${OWNER:-platform-engineering}"
 
 # ------------------------------------------------------------------------------
+# Helper — create terraform-deploy IAM role if it does not exist
+# ------------------------------------------------------------------------------
+
+create_iam_role_if_missing() {
+  echo "[ Checking terraform-deploy IAM role... ]"
+  AWS_ACCOUNT_ID_LOCAL=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+  EXISTING=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
+
+  if [ "$EXISTING" != "NOT_FOUND" ]; then
+    echo "  ✓ terraform-deploy role exists: $EXISTING"
+    PASS=$((PASS+1))
+    return 0
+  fi
+
+  echo "  terraform-deploy role not found. Creating automatically..."
+
+  cat > /tmp/trust-policy.json << EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::${AWS_ACCOUNT_ID_LOCAL}:root"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+  aws iam create-role \
+    --role-name terraform-deploy \
+    --assume-role-policy-document file:///tmp/trust-policy.json \
+    --description "Terraform deployment role for AWS Agent Platform" \
+    > /dev/null
+
+  aws iam attach-role-policy \
+    --role-name terraform-deploy \
+    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+
+  rm -f /tmp/trust-policy.json
+
+  CREATED_ARN=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text)
+  echo "  ✓ terraform-deploy role created automatically: $CREATED_ARN"
+
+  # Update DEPLOYMENT_ROLE_ARN in prod.tfvars if it still has a placeholder
+  if echo "$DEPLOYMENT_ROLE_ARN" | grep -q "terraform-deploy"; then
+    DEPLOYMENT_ROLE_ARN="$CREATED_ARN"
+  fi
+
+  PASS=$((PASS+1))
+}
+
+# ------------------------------------------------------------------------------
 # Pre-flight environment checks
 # ------------------------------------------------------------------------------
 
@@ -263,61 +318,6 @@ if [ "$CONFIRM" != "yes" ]; then
   echo "Deployment cancelled."
   exit 0
 fi
-
-# ------------------------------------------------------------------------------
-# Helper — create terraform-deploy IAM role if it does not exist
-# ------------------------------------------------------------------------------
-
-create_iam_role_if_missing() {
-  echo "[ Checking terraform-deploy IAM role... ]"
-  AWS_ACCOUNT_ID_LOCAL=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
-  EXISTING=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
-
-  if [ "$EXISTING" != "NOT_FOUND" ]; then
-    echo "  ✓ terraform-deploy role exists: $EXISTING"
-    PASS=$((PASS+1))
-    return 0
-  fi
-
-  echo "  terraform-deploy role not found. Creating automatically..."
-
-  cat > /tmp/trust-policy.json << EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::${AWS_ACCOUNT_ID_LOCAL}:root"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-EOF
-
-  aws iam create-role \
-    --role-name terraform-deploy \
-    --assume-role-policy-document file:///tmp/trust-policy.json \
-    --description "Terraform deployment role for AWS Agent Platform" \
-    > /dev/null
-
-  aws iam attach-role-policy \
-    --role-name terraform-deploy \
-    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
-
-  rm -f /tmp/trust-policy.json
-
-  CREATED_ARN=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text)
-  echo "  ✓ terraform-deploy role created automatically: $CREATED_ARN"
-
-  # Update DEPLOYMENT_ROLE_ARN in prod.tfvars if it still has a placeholder
-  if echo "$DEPLOYMENT_ROLE_ARN" | grep -q "terraform-deploy"; then
-    DEPLOYMENT_ROLE_ARN="$CREATED_ARN"
-  fi
-
-  PASS=$((PASS+1))
-}
 
 # ------------------------------------------------------------------------------
 # Helper — print progress banner

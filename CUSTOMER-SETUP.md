@@ -1,3 +1,11 @@
+> **Enterprise deployments:** If your organization has restrictions on automated
+> software installation or requires security review before execution, skip
+> install.sh and follow the manual setup steps in this guide instead. All
+> prerequisites can be installed via your organization's approved software
+> management process before running master-setup.sh directly. Contact
+> Michael@revenue-growth.ai for an enterprise deployment package including
+> a scoped IAM policy document in place of AdministratorAccess.
+
 # Customer Setup Guide
 
 This guide covers the one-time setup required before running master-setup.sh.
@@ -156,6 +164,41 @@ Before running master-setup.sh confirm all of the following:
 
 If all six boxes are checked run bash master-setup.sh and the platform
 will deploy automatically.
+
+---
+
+## Enterprise deployment notes
+
+### Replacing AdministratorAccess with a scoped IAM policy
+
+The default terraform-deploy role uses AdministratorAccess for simplicity.
+If your organization requires least-privilege IAM policies contact
+Michael@revenue-growth.ai for a scoped policy document that grants only
+the permissions required by each Terraform step.
+
+### Bypassing the curl installer
+
+If your organization blocks the curl pipe install pattern run the following
+instead:
+
+    git clone https://github.com/revenue-growth-ai-org/aws-agent-platform-docs.git
+    cd aws-agent-platform-docs
+    bash install.sh
+
+Or skip install.sh entirely and run master-setup.sh directly after completing
+the manual prerequisite steps in this guide.
+
+### Software installation via MDM
+
+If your organization manages software via MDM (Jamf, Intune, or similar)
+have your IT team pre-install the following before running master-setup.sh:
+
+- AWS CLI >= 2.0
+- Terraform >= 1.5.0
+- Docker Desktop (latest)
+- Git >= 2.0
+
+All four are available as standard enterprise packages in most MDM catalogs.
 
 ---
 
