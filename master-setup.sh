@@ -473,6 +473,12 @@ if [ -f prod.tfvars ]; then
   cp prod.tfvars prod.tfvars.backup
 fi
 
+if [ "$ENVIRONMENT" = "dev" ]; then
+  RDS_INSTANCE_CLASS="db.t3.micro"
+else
+  RDS_INSTANCE_CLASS="db.t4g.medium"
+fi
+
 cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
@@ -494,6 +500,7 @@ deployment_role_arn       = "$DEPLOYMENT_ROLE_ARN"
 
 rds_database_name   = "agentdb"
 rds_master_username = "agentadmin"
+rds_instance_class  = "${RDS_INSTANCE_CLASS}"
 EOF
 
 write_backend "$BASE_DIR" "1-aws-agent-platform-base/terraform.tfstate"
