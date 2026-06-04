@@ -488,8 +488,8 @@ private_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
 database_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
 public_subnet_cidrs   = ["10.0.101.0/24", "10.0.102.0/24"]
 
-alb_ingress_allowed_cidrs = ["$ALLOWED_CIDR"]
-alb_certificate_arn       = "$ACM_CERT_ARN"
+alb_certificate_arn                  = "$ACM_CERT_ARN"
+salesforce_webhook_allowed_cidrs     = ["$ALLOWED_CIDR"]
 deployment_role_arn       = "$DEPLOYMENT_ROLE_ARN"
 
 rds_database_name   = "agentdb"
