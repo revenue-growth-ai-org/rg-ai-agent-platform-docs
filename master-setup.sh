@@ -469,17 +469,17 @@ BASE_DIR=$(find_repo "base")
 echo "Found: $BASE_DIR"
 cd "$BASE_DIR"
 
-if [ -f prod.tfvars ]; then
-  cp prod.tfvars prod.tfvars.backup
-fi
-
-if [ "$ENVIRONMENT" = "dev" ]; then
-  RDS_INSTANCE_CLASS="db.t3.micro"
+if [ -f "$BASE_DIR/prod.tfvars" ]; then
+  echo "  ✓ prod.tfvars already exists — skipping regeneration"
 else
-  RDS_INSTANCE_CLASS="db.t4g.medium"
-fi
+  echo "  Writing prod.tfvars..."
+  if [ "$ENVIRONMENT" = "dev" ]; then
+    RDS_INSTANCE_CLASS="db.t3.micro"
+  else
+    RDS_INSTANCE_CLASS="db.t4g.medium"
+  fi
 
-cat > prod.tfvars << EOF
+  cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
 environment  = "$ENVIRONMENT"
@@ -502,6 +502,7 @@ rds_database_name   = "agentdb"
 rds_master_username = "agentadmin"
 rds_instance_class  = "${RDS_INSTANCE_CLASS}"
 EOF
+fi
 
 write_backend "$BASE_DIR" "1-aws-agent-platform-base/terraform.tfstate"
 
@@ -534,11 +535,11 @@ fi
 
 ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
 
-if [ -f prod.tfvars ]; then
-  cp prod.tfvars prod.tfvars.backup
-fi
-
-cat > prod.tfvars << EOF
+if [ -f "$ORCH_DIR/prod.tfvars" ]; then
+  echo "  ✓ prod.tfvars already exists — skipping regeneration"
+else
+  echo "  Writing prod.tfvars..."
+  cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
 environment  = "$ENVIRONMENT"
@@ -553,6 +554,7 @@ orchestrator_image           = "$ECR_IMAGE"
 anthropic_api_key_secret_arn = "$ANTHROPIC_SECRET_ARN"
 deployment_role_arn          = "$DEPLOYMENT_ROLE_ARN"
 EOF
+fi
 
 write_backend "$ORCH_DIR" "2-aws-agent-platform-orchestrator/terraform.tfstate"
 
@@ -598,11 +600,11 @@ for i in $(seq 0 $((AGENT_COUNT-1))); do
     EXTERNAL_SECRETS_VALUE="[]"
   fi
 
-  if [ -f prod.tfvars ]; then
-    cp prod.tfvars prod.tfvars.backup
-  fi
-
-  cat > prod.tfvars << EOF
+  if [ -f "$AGENT_DIR/prod.tfvars" ]; then
+    echo "  ✓ prod.tfvars already exists — skipping regeneration"
+  else
+    echo "  Writing prod.tfvars..."
+    cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
 environment  = "$ENVIRONMENT"
@@ -624,6 +626,7 @@ deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets_arns  = $EXTERNAL_SECRETS_VALUE
 EOF
+  fi
 
   write_backend "$AGENT_DIR" "3-aws-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
 
