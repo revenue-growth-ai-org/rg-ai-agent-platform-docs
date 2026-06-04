@@ -535,6 +535,19 @@ fi
 
 ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
 
+echo "Reading RDS security group from AWS..."
+RDS_SG_ID=$(aws ec2 describe-security-groups \
+  --filters "Name=tag:Name,Values=*${PROJECT_NAME}*rds*" \
+  --query 'SecurityGroups[0].GroupId' \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -z "$RDS_SG_ID" ] || [ "$RDS_SG_ID" = "None" ]; then
+  echo "  Could not auto-detect RDS security group. You will be prompted during terraform apply."
+else
+  echo "  ✓ RDS security group found: $RDS_SG_ID"
+fi
+
 if [ -f "$ORCH_DIR/prod.tfvars" ]; then
   echo "  ✓ prod.tfvars already exists — skipping regeneration"
 else
@@ -553,6 +566,7 @@ step1_ssm_prefix             = ""
 orchestrator_image           = "$ECR_IMAGE"
 anthropic_api_key_secret_arn = "$ANTHROPIC_SECRET_ARN"
 deployment_role_arn          = "$DEPLOYMENT_ROLE_ARN"
+rds_security_group_id        = "$RDS_SG_ID"
 EOF
 fi
 
@@ -577,10 +591,18 @@ echo "Step 2 complete."
 AGENT_DIR=$(find_repo "agent")
 echo "Found: $AGENT_DIR"
 
-# Read RDS security group from SSM
-RDS_SG_ID=$(aws ssm get-parameter \
-  --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
-  --query Parameter.Value --output text 2>/dev/null || echo "sg-xxxxxxxxxxxxxxxxx")
+echo "Reading RDS security group from AWS..."
+RDS_SG_ID=$(aws ec2 describe-security-groups \
+  --filters "Name=tag:Name,Values=*${PROJECT_NAME}*rds*" \
+  --query 'SecurityGroups[0].GroupId' \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -z "$RDS_SG_ID" ] || [ "$RDS_SG_ID" = "None" ]; then
+  echo "  Could not auto-detect RDS security group. You will be prompted during terraform apply."
+else
+  echo "  ✓ RDS security group found: $RDS_SG_ID"
+fi
 
 for i in $(seq 0 $((AGENT_COUNT-1))); do
   AGENT_NAME="${AGENT_NAMES[$i]}"
