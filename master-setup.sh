@@ -622,11 +622,8 @@ for i in $(seq 0 $((AGENT_COUNT-1))); do
     EXTERNAL_SECRETS_VALUE="[]"
   fi
 
-  if [ -f "$AGENT_DIR/prod.tfvars" ]; then
-    echo "  ✓ prod.tfvars already exists — skipping regeneration"
-  else
-    echo "  Writing prod.tfvars..."
-    cat > prod.tfvars << EOF
+  echo "  Writing prod.tfvars..."
+  cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
 environment  = "$ENVIRONMENT"
@@ -648,7 +645,6 @@ deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets_arns  = $EXTERNAL_SECRETS_VALUE
 EOF
-  fi
 
   write_backend "$AGENT_DIR" "3-aws-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
 
