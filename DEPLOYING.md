@@ -162,3 +162,62 @@ to type the agent name to confirm, then destroys all associated resources cleanl
     bash add-agent.sh
 
 Presents a menu — add, remove, list, or exit.
+
+---
+
+## Configuring and implementing agents
+
+After the platform is deployed the orchestrator and agents run with default
+stub behavior. Use these scripts to configure real business logic.
+
+### Step 1 — Generate configuration using the Solutions Architect prompt
+
+Use the AWS Agent Platform Solutions Architect Claude Project to generate
+a system prompt and routing config for your customer's business use case.
+Save the outputs as text files:
+
+- system_prompt.txt — the orchestrator's instructions and business context
+- routing_config.json — which agents handle which event types
+
+### Step 2 — Push configuration to the orchestrator
+
+    bash configure-orchestrator.sh \
+      --prompt system_prompt.txt \
+      --routing routing_config.json
+
+This pushes both files to SSM and restarts the orchestrator automatically.
+No container rebuild required.
+
+### Step 3 — Generate agent implementation using the Agent Implementation Engineer prompt
+
+Use the AWS Agent Platform Agent Implementation Engineer Claude Project to
+generate a complete agent.py for each agent type. Save the output as a file.
+
+### Step 4 — Deploy the agent implementation
+
+    bash deploy-agent.sh \
+      --agent researcher \
+      --file ~/Downloads/agent.py
+
+Optionally include a new requirements.txt if the implementation needs
+additional Python packages:
+
+    bash deploy-agent.sh \
+      --agent researcher \
+      --file ~/Downloads/agent.py \
+      --requirements ~/Downloads/requirements.txt
+
+### Updating configuration after go-live
+
+To update the system prompt or routing config at any time:
+
+    bash configure-orchestrator.sh \
+      --prompt updated_system_prompt.txt \
+      --routing updated_routing_config.json
+
+To update an agent implementation at any time:
+
+    bash deploy-agent.sh --agent researcher --file new_agent.py
+
+Both scripts back up existing files before making changes so you can
+always roll back if needed.
