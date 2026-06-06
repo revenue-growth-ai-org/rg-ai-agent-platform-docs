@@ -504,6 +504,13 @@ rds_instance_class  = "${RDS_INSTANCE_CLASS}"
 EOF
 fi
 
+# Always update the ACM certificate ARN from the latest bootstrap output
+if [ -f "$BASE_DIR/prod.tfvars" ]; then
+  echo "  Updating alb_certificate_arn with latest bootstrap value..."
+  sed -i.bak "s|alb_certificate_arn.*=.*\".*\"|alb_certificate_arn = \"$ACM_CERT_ARN\"|" "$BASE_DIR/prod.tfvars"
+  echo "  ✓ alb_certificate_arn updated: $ACM_CERT_ARN"
+fi
+
 write_backend "$BASE_DIR" "1-aws-agent-platform-base/terraform.tfstate"
 
 make doctor
