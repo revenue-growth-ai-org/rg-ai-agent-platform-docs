@@ -1,0 +1,121 @@
+#!/bin/bash
+set -e
+
+# =============================================================================
+# Customer Platform Setup Script
+# =============================================================================
+# This script configures the AWS Agent Platform for this specific customer.
+# Run this after completing bash master-setup.sh in aws-agent-platform-docs.
+#
+# Usage:
+#   bash customer-setup.sh
+#
+# Prerequisites:
+#   - Platform deployed via bash master-setup.sh
+#   - This repo cloned to your local machine
+#   - aws-agent-platform-docs repo in the same parent directory
+# =============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOCS_DIR=""
+
+# Find the aws-agent-platform-docs repo
+for DIR in "$SCRIPT_DIR/../aws-agent-platform-docs" "$HOME/aws-agent-platform/aws-agent-platform-docs"; do
+  if [ -d "$DIR" ]; then
+    DOCS_DIR="$DIR"
+    break
+  fi
+done
+
+if [ -z "$DOCS_DIR" ]; then
+  echo "ERROR: Cannot find aws-agent-platform-docs repo."
+  echo "Make sure it is cloned in the same parent directory as this repo."
+  exit 1
+fi
+
+echo ""
+echo "=================================================="
+echo " Customer Platform Configuration"
+echo "=================================================="
+echo ""
+echo "Docs repo: $DOCS_DIR"
+echo ""
+
+# ------------------------------------------------------------------------------
+# Step 1 — Configure orchestrator
+# ------------------------------------------------------------------------------
+
+echo "Step 1 — Configuring Master Orchestrator..."
+echo ""
+
+if [ ! -f "$SCRIPT_DIR/system_prompt.txt" ]; then
+  echo "ERROR: system_prompt.txt not found in $SCRIPT_DIR"
+  echo "Add the system prompt file to this repo before running setup."
+  exit 1
+fi
+
+if [ ! -f "$SCRIPT_DIR/routing_config.json" ]; then
+  echo "ERROR: routing_config.json not found in $SCRIPT_DIR"
+  echo "Add the routing config file to this repo before running setup."
+  exit 1
+fi
+
+bash "$DOCS_DIR/configure-orchestrator.sh" \
+  --prompt "$SCRIPT_DIR/system_prompt.txt" \
+  --routing "$SCRIPT_DIR/routing_config.json"
+
+# ------------------------------------------------------------------------------
+# Step 2 — Deploy agent implementations
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "Step 2 — Deploying agent implementations..."
+echo ""
+
+if [ ! -d "$SCRIPT_DIR/agents" ]; then
+  echo "No agents directory found — skipping agent deployment."
+  echo "Add agent implementations to agents/{agent_name}/agent.py to deploy them."
+else
+  for AGENT_DIR in "$SCRIPT_DIR/agents"/*/; do
+    AGENT_NAME=$(basename "$AGENT_DIR")
+    AGENT_FILE="$AGENT_DIR/agent.py"
+    REQUIREMENTS_FILE="$AGENT_DIR/requirements.txt"
+
+    if [ ! -f "$AGENT_FILE" ]; then
+      echo "  Skipping $AGENT_NAME — no agent.py found"
+      continue
+    fi
+
+    echo "  Deploying agent: $AGENT_NAME"
+
+    if [ -f "$REQUIREMENTS_FILE" ]; then
+      bash "$DOCS_DIR/deploy-agent.sh" \
+        --agent "$AGENT_NAME" \
+        --file "$AGENT_FILE" \
+        --requirements "$REQUIREMENTS_FILE"
+    else
+      bash "$DOCS_DIR/deploy-agent.sh" \
+        --agent "$AGENT_NAME" \
+        --file "$AGENT_FILE"
+    fi
+  done
+fi
+
+# ------------------------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "=================================================="
+echo " Customer setup complete"
+echo "=================================================="
+echo ""
+echo "  Orchestrator configured with customer system prompt"
+echo "  All agent implementations deployed"
+echo ""
+echo "  To update orchestrator configuration:"
+echo "  bash $DOCS_DIR/configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json"
+echo ""
+echo "  To update a specific agent:"
+echo "  bash $DOCS_DIR/deploy-agent.sh --agent <name> --file agents/<name>/agent.py"
+echo ""
