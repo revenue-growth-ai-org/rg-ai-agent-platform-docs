@@ -577,6 +577,13 @@ rds_security_group_id        = "$RDS_SG_ID"
 EOF
 fi
 
+# Always update RDS security group ID — it changes on every redeploy
+if [ -f "$ORCH_DIR/prod.tfvars" ] && [ -n "$RDS_SG_ID" ]; then
+  sed -i.bak "s|rds_security_group_id.*=.*\".*\"|rds_security_group_id = \"$RDS_SG_ID\"|" "$ORCH_DIR/prod.tfvars"
+  rm -f "$ORCH_DIR/prod.tfvars.bak"
+  echo "  ✓ rds_security_group_id updated: $RDS_SG_ID"
+fi
+
 write_backend "$ORCH_DIR" "2-aws-agent-platform-orchestrator/terraform.tfstate"
 
 make doctor
@@ -652,6 +659,13 @@ deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets_arns  = $EXTERNAL_SECRETS_VALUE
 EOF
+
+  # Always update RDS security group ID — it changes on every redeploy
+  if [ -f "$AGENT_DIR/prod.tfvars" ] && [ -n "$RDS_SG_ID" ]; then
+    sed -i.bak "s|rds_security_group_id.*=.*\".*\"|rds_security_group_id = \"$RDS_SG_ID\"|" "$AGENT_DIR/prod.tfvars"
+    rm -f "$AGENT_DIR/prod.tfvars.bak"
+    echo "  ✓ rds_security_group_id updated: $RDS_SG_ID"
+  fi
 
   write_backend "$AGENT_DIR" "3-aws-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
 
