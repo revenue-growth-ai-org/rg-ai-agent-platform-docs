@@ -6,186 +6,118 @@ This guide walks through deploying the AWS Agent Platform from scratch into a ne
 
 ## Automated deployment (recommended)
 
-For a fully automated deployment run the master setup script. It handles
-all four steps in sequence with a single command.
+The fastest way to deploy the entire platform is with a single command.
+This installs all prerequisites, clones all repos, asks a few questions,
+and deploys everything automatically.
 
-### 1. Fill in defaults.env
+### Prerequisites
+- AWS account with valid credentials configured (aws sts get-caller-identity should return your account ID)
+- Mac or Linux machine (Windows requires WSL2)
 
-Edit defaults.env in this docs repo with your customer values:
+### One-line install
 
-    PROJECT_NAME="customer-name"
-    ENVIRONMENT="prod"
-    ORGANIZATION_NAME="Customer Org Name"
-    ALLOWED_CIDR="203.0.113.0/24"
-    DEPLOYMENT_ROLE_ARN="arn:aws:iam::123456789012:role/terraform-deploy"
+    curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/aws-agent-platform-docs/main/install.sh | bash
 
-### 2. Run master-setup.sh
+This single command will:
+1. Install any missing tools (Terraform, AWS CLI, Docker, Git)
+2. Create the terraform-deploy IAM role automatically
+3. Clone all five platform repositories
+4. Ask for your project name, environment, organization name, and allowed CIDR
+5. Ask how many agents you want and their names
+6. Deploy all four steps in sequence (60-90 minutes unattended)
+7. Pause once to let you paste your Anthropic API key
+8. Verify all services are running and print a summary
 
+Total human input required: approximately 10 minutes
+Total wall clock time: approximately 60-90 minutes
+
+### If the curl command returns a 404
+
+The docs repo may be private. Clone it first then run the installer:
+
+    git clone https://github.com/revenue-growth-ai-org/aws-agent-platform-docs.git
+    cd aws-agent-platform-docs
+    bash install.sh
+
+### Resuming an interrupted install
+
+If the install is interrupted at any step, re-run the same command.
+The script will skip steps that are already deployed and continue
+from where it left off:
+
+    cd aws-agent-platform-docs
     bash master-setup.sh
 
-The script will:
-- Validate defaults.env
-- Ask how many agents and their names
-- Show a deployment plan for your confirmation
-- Deploy all four steps in order
-- Pause once to let you paste your Anthropic API key
-- Print a summary with all endpoints when complete
+### Adding agents after deployment
 
-### Manual deployment
+    cd aws-agent-platform-docs
+    bash add-agent.sh add
 
-If you prefer to deploy step by step see the manual instructions below.
+### Removing an agent
+
+    cd aws-agent-platform-docs
+    bash add-agent.sh remove
 
 ---
 
-## Prerequisites
+## Manual deployment (enterprise path)
 
-Before starting confirm the following are installed and configured on your machine:
+If your organization requires reviewing and approving each step before
+deployment, or has restrictions on automated installers, follow this
+manual path instead.
 
-- [ ] AWS CLI installed and configured (run: aws sts get-caller-identity)
-- [ ] Terraform >= 1.5 installed
-- [ ] Docker Desktop installed and running
-- [ ] Git installed
-- [ ] Python 3.12+ installed (for local testing only)
+### Prerequisites
 
----
+Complete all steps in CUSTOMER-SETUP.md before proceeding.
 
-## Overview
+### Step 0 — Bootstrap (run once per AWS account)
 
-The platform deploys in four steps. Each step depends on the previous one completing successfully. Do not skip steps or deploy out of order.
-
-| Step | Repo | Time | What it creates |
-|---|---|---|---|
-| 0 | 0-aws-agent-platform-bootstrap | 10–15 min | S3 state bucket, DynamoDB lock table, Private CA, ACM certificate, Anthropic API key secret placeholder |
-| 1 | 1-aws-agent-platform-base | 20–30 min | VPC, subnets, NAT gateway, ALB, ECS cluster, RDS PostgreSQL, KMS, security groups, service discovery, CloudWatch |
-| 2 | 2-aws-agent-platform-orchestrator | 15–20 min | Master Orchestrator ECS Fargate service, LangGraph application, auto-scaling, ALB listener rule |
-| 3 | 3-aws-agent-platform-agent | 10–15 min | Single isolated agent ECS Fargate service — repeat once per agent type |
-
-Total time for a four-agent deployment: approximately 90–120 minutes on first run.
-
----
-
-## Step 0 — Bootstrap
-
+    git clone https://github.com/revenue-growth-ai-org/0-aws-agent-platform-bootstrap.git
     cd 0-aws-agent-platform-bootstrap
-    make doctor
     bash setup.sh
     make doctor
     make deploy
 
-After deploy completes, paste your Anthropic API key into Secrets Manager:
+After deploy completes paste your Anthropic API key:
 
     aws secretsmanager put-secret-value \
-      --secret-id <anthropic_api_key_secret_arn from terraform output> \
+      --secret-id <anthropic_api_key_secret_arn from output> \
       --secret-string "sk-ant-your-key-here"
 
-Outputs written to SSM — consumed automatically by Steps 1, 2, and 3:
-- Terraform state bucket name
-- DynamoDB lock table name
-- ACM certificate ARN
-- Anthropic API key secret ARN
+### Step 1 — Base infrastructure
 
----
-
-## Step 1 — Base infrastructure
-
+    git clone https://github.com/revenue-growth-ai-org/1-aws-agent-platform-base.git
     cd 1-aws-agent-platform-base
-    make doctor
     bash setup.sh
     make doctor
     make deploy
 
-setup.sh reads Step 0 SSM outputs automatically. You will be prompted for:
-- Project name (must match Step 0)
-- Environment (must match Step 0)
-- VPC CIDR (default: 10.0.0.0/16)
-- Allowed inbound CIDR for ALB (your office or VPN IP range)
-- Deployment role ARN
+### Step 2 — Master Orchestrator
 
----
-
-## Step 2 — Master Orchestrator
-
+    git clone https://github.com/revenue-growth-ai-org/2-aws-agent-platform-orchestrator.git
     cd 2-aws-agent-platform-orchestrator
-    make doctor
     bash setup.sh
     make doctor
     make setup
     make deploy
 
-make setup creates the ECR repository, builds the Docker image, and pushes it.
-This requires Docker Desktop to be running.
+### Step 3 — Agent nodes (repeat per agent type)
 
-setup.sh reads Step 0 SSM outputs automatically. You will be prompted for:
-- Project name (must match Steps 0 and 1)
-- Environment (must match Steps 0 and 1)
-- Deployment role ARN
-
----
-
-## Step 3 — Agent nodes
-
-Run the following sequence once per agent type. Common agent names: researcher, scorer, crm, outbound.
-
+    git clone https://github.com/revenue-growth-ai-org/3-aws-agent-platform-agent.git
     cd 3-aws-agent-platform-agent
-    make doctor
     bash setup.sh
     make doctor
     make setup
     make deploy
 
-setup.sh will prompt for:
-- Project name (must match Steps 0, 1, and 2)
-- Environment (must match Steps 0, 1, and 2)
-- Agent name (e.g. researcher)
-- Agent description
-- Whether this agent calls external APIs
-- External API secret ARN (if applicable)
-- Deployment role ARN
+### Destroying the platform
 
-For a four-agent deployment run this sequence four times with different agent names.
+Always destroy in reverse order:
 
----
-
-## Verifying the deployment
-
-After all steps complete, verify the platform is running:
-
-    # Check the orchestrator ECS service is running
-    aws ecs describe-services \
-      --cluster {project_name}-{environment}-ecs \
-      --services {project_name}-{environment}-orchestrator \
-      --query "services[0].{status:status,running:runningCount,desired:desiredCount}"
-
-    # Check agent service is running (repeat per agent)
-    aws ecs describe-services \
-      --cluster {project_name}-{environment}-ecs \
-      --services {project_name}-{environment}-{agent_name} \
-      --query "services[0].{status:status,running:runningCount,desired:desiredCount}"
-
-    # Check CloudWatch logs for orchestrator startup
-    aws logs tail /ecs/{project_name}-{environment}/orchestrator --follow
-
----
-
-## Destroying the platform
-
-Destroy in reverse order. Never destroy a lower step before the steps above it.
-
-    # Step 3 first — repeat per agent
-    cd 3-aws-agent-platform-agent
-    make destroy
-
-    # Step 2
-    cd 2-aws-agent-platform-orchestrator
-    make destroy
-
-    # Step 1
-    cd 1-aws-agent-platform-base
-    make destroy
-
-    # Step 0 last
-    cd 0-aws-agent-platform-bootstrap
-    make destroy
+    cd 3-aws-agent-platform-agent && make destroy
+    cd 2-aws-agent-platform-orchestrator && make destroy
+    cd 1-aws-agent-platform-base && make destroy
+    cd 0-aws-agent-platform-bootstrap && make destroy
 
 ---
 

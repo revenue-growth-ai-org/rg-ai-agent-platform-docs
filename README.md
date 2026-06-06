@@ -20,13 +20,10 @@ The platform is split across four infrastructure repositories deployed in sequen
 
 ## Where to start
 
-**One-line install (recommended):**
-
-    curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/aws-agent-platform-docs/main/install.sh | bash
-
-- **First time setup:** Read [CUSTOMER-SETUP.md](CUSTOMER-SETUP.md)
-- **New deployment:** Read [DEPLOYING.md](DEPLOYING.md)
+- **Automated install (recommended):** `curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/aws-agent-platform-docs/main/install.sh | bash`
+- **First time setup (manual path):** Read [CUSTOMER-SETUP.md](CUSTOMER-SETUP.md)
+- **Full deployment guide:** Read [DEPLOYING.md](DEPLOYING.md)
 - **Architecture overview:** Read [ARCHITECTURE.md](ARCHITECTURE.md)
+- **Adding or removing agents:** Read [DEPLOYING.md](DEPLOYING.md) — Managing agents section
 - **Security review:** Read [SECURITY.md](SECURITY.md)
 - **Troubleshooting:** Read [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
-- **Adding or removing agents:** Read [DEPLOYING.md](DEPLOYING.md) — Managing agents section
