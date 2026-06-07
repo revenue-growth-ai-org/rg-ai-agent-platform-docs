@@ -711,6 +711,13 @@ EOF
     "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
   echo "Building agent image..."
+  echo "  Agent dir: $AGENT_DIR"
+  echo "  App dir: $AGENT_DIR/app"
+  if [ ! -d "$AGENT_DIR/app" ]; then
+    echo "ERROR: Agent app directory not found at $AGENT_DIR/app"
+    echo "Contents of parent: $(ls $PARENT_DIR)"
+    exit 1
+  fi
   cd "$AGENT_DIR/app"
   docker build --platform linux/amd64 \
     -t "${PROJECT_NAME}-${AGENT_NAME}" .
