@@ -129,6 +129,12 @@ continue. Verify RDS is fully deleted before re-running master-setup.sh.
 
 ### Destroying the platform
 
+For a single-command full destroy run:
+
+    bash destroy.sh
+
+This destroys all four steps in the correct order automatically.
+
 Always destroy in reverse order:
 
     cd 3-rg-ai-agent-platform-agent && make destroy
