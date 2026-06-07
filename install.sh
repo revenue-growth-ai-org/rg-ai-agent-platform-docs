@@ -5,7 +5,7 @@ set -e
 # AWS Agent Platform — One-Line Installer
 # =============================================================================
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/aws-agent-platform-docs/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/main/install.sh | bash
 #
 # This script:
 #   1. Detects your operating system
@@ -17,7 +17,7 @@ set -e
 
 GITHUB_ORG="revenue-growth-ai-org"
 INSTALL_DIR="$HOME/aws-agent-platform"
-DOCS_REPO="aws-agent-platform-docs"
+DOCS_REPO="rg-ai-agent-platform-docs"
 
 echo ""
 echo "=================================================="
@@ -300,11 +300,11 @@ clone_repos() {
   cd "$INSTALL_DIR"
 
   REPOS=(
-    "0-aws-agent-platform-bootstrap"
-    "1-aws-agent-platform-base"
-    "2-aws-agent-platform-orchestrator"
-    "3-aws-agent-platform-agent"
-    "aws-agent-platform-docs"
+    "0-rg-ai-agent-platform-bootstrap"
+    "1-rg-ai-agent-platform-base"
+    "2-rg-ai-agent-platform-orchestrator"
+    "3-rg-ai-agent-platform-agent"
+    "rg-ai-agent-platform-docs"
   )
 
   for REPO in "${REPOS[@]}"; do
@@ -348,7 +348,7 @@ echo ""
 echo "Step 3 of 6 — Configuring deployment..."
 echo ""
 
-DOCS_DIR="$INSTALL_DIR/aws-agent-platform-docs"
+DOCS_DIR="$INSTALL_DIR/rg-ai-agent-platform-docs"
 DEFAULTS_FILE="$DOCS_DIR/defaults.env"
 
 # Auto-populate what we already know

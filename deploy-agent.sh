@@ -114,7 +114,7 @@ AGENT_REPO=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "*agent*" | grep -v "o
 
 if [ -z "$AGENT_REPO" ]; then
   echo "ERROR: Cannot find agent repo in $PARENT_DIR"
-  echo "Make sure 3-aws-agent-platform-agent is cloned in the same parent directory."
+  echo "Make sure 3-rg-ai-agent-platform-agent is cloned in the same parent directory."
   exit 1
 fi
 

@@ -27,7 +27,7 @@ and deploy agent implementations.
 
 Before running this script the platform infrastructure must be deployed:
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash master-setup.sh
 
 ---
@@ -52,7 +52,7 @@ This configures the orchestrator and deploys all agent implementations automatic
 
 Edit system_prompt.txt or routing_config.json then run:
 
-    bash ~/aws-agent-platform/aws-agent-platform-docs/configure-orchestrator.sh \
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/configure-orchestrator.sh \
       --prompt system_prompt.txt \
       --routing routing_config.json
 
@@ -60,7 +60,7 @@ Edit system_prompt.txt or routing_config.json then run:
 
 Edit agents/{agent_name}/agent.py then run:
 
-    bash ~/aws-agent-platform/aws-agent-platform-docs/deploy-agent.sh \
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/deploy-agent.sh \
       --agent {agent_name} \
       --file agents/{agent_name}/agent.py
 
@@ -71,6 +71,6 @@ Edit agents/{agent_name}/agent.py then run:
 Every deploy-agent.sh run creates a timestamped backup of the previous agent.py.
 To roll back:
 
-    bash ~/aws-agent-platform/aws-agent-platform-docs/deploy-agent.sh \
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/deploy-agent.sh \
       --agent {agent_name} \
       --file agents/{agent_name}/agent.py.backup.{timestamp}

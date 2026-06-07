@@ -98,11 +98,11 @@ Create a folder for the platform repos and clone all five:
     mkdir aws-agent-platform
     cd aws-agent-platform
 
-    git clone https://github.com/revenue-growth-ai-org/0-aws-agent-platform-bootstrap.git
-    git clone https://github.com/revenue-growth-ai-org/1-aws-agent-platform-base.git
-    git clone https://github.com/revenue-growth-ai-org/2-aws-agent-platform-orchestrator.git
-    git clone https://github.com/revenue-growth-ai-org/3-aws-agent-platform-agent.git
-    git clone https://github.com/revenue-growth-ai-org/aws-agent-platform-docs.git
+    git clone https://github.com/revenue-growth-ai-org/0-rg-ai-agent-platform-bootstrap.git
+    git clone https://github.com/revenue-growth-ai-org/1-rg-ai-agent-platform-base.git
+    git clone https://github.com/revenue-growth-ai-org/2-rg-ai-agent-platform-orchestrator.git
+    git clone https://github.com/revenue-growth-ai-org/3-rg-ai-agent-platform-agent.git
+    git clone https://github.com/revenue-growth-ai-org/rg-ai-agent-platform-docs.git
 
 ---
 
@@ -110,7 +110,7 @@ Create a folder for the platform repos and clone all five:
 
 Navigate to the docs repo:
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
 
 Edit defaults.env:
 
@@ -181,8 +181,8 @@ the permissions required by each Terraform step.
 If your organization blocks the curl pipe install pattern run the following
 instead:
 
-    git clone https://github.com/revenue-growth-ai-org/aws-agent-platform-docs.git
-    cd aws-agent-platform-docs
+    git clone https://github.com/revenue-growth-ai-org/rg-ai-agent-platform-docs.git
+    cd rg-ai-agent-platform-docs
     bash install.sh
 
 Or skip install.sh entirely and run master-setup.sh directly after completing

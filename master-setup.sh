@@ -374,10 +374,10 @@ find_repo() {
     echo "ERROR: Cannot find repo matching *${REPO_PATTERN}* in $PARENT_DIR"
     echo "Make sure all four platform repos are cloned into the same parent directory as this docs repo."
     echo "Expected directory names:"
-    echo "  0-aws-agent-platform-bootstrap"
-    echo "  1-aws-agent-platform-base"
-    echo "  2-aws-agent-platform-orchestrator"
-    echo "  3-aws-agent-platform-agent"
+    echo "  0-rg-ai-agent-platform-bootstrap"
+    echo "  1-rg-ai-agent-platform-base"
+    echo "  2-rg-ai-agent-platform-orchestrator"
+    echo "  3-rg-ai-agent-platform-agent"
     exit 1
   fi
   echo "$REPO_DIR"
@@ -514,7 +514,7 @@ if [ -f "$BASE_DIR/prod.tfvars" ]; then
   echo "  ✓ alb_certificate_arn updated: $ACM_CERT_ARN"
 fi
 
-write_backend "$BASE_DIR" "1-aws-agent-platform-base/terraform.tfstate"
+write_backend "$BASE_DIR" "1-rg-ai-agent-platform-base/terraform.tfstate"
 
 make doctor
 echo ""
@@ -594,7 +594,7 @@ if [ -f "$ORCH_DIR/prod.tfvars" ] && [ -n "$RDS_SG_ID" ]; then
   echo "  ✓ rds_security_group_id updated: $RDS_SG_ID"
 fi
 
-write_backend "$ORCH_DIR" "2-aws-agent-platform-orchestrator/terraform.tfstate"
+write_backend "$ORCH_DIR" "2-rg-ai-agent-platform-orchestrator/terraform.tfstate"
 
 make doctor
 echo ""
@@ -697,7 +697,7 @@ EOF
     echo "  ✓ rds_security_group_id updated: $RDS_SG_ID"
   fi
 
-  write_backend "$AGENT_DIR" "3-aws-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+  write_backend "$AGENT_DIR" "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
 
   echo "Building and pushing agent image for $AGENT_NAME..."
   echo "Creating ECR repository for $AGENT_NAME..."

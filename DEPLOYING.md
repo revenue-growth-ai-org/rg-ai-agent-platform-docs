@@ -16,7 +16,7 @@ and deploys everything automatically.
 
 ### One-line install
 
-    curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/aws-agent-platform-docs/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/main/install.sh | bash
 
 This single command will:
 1. Install any missing tools (Terraform, AWS CLI, Docker, Git)
@@ -35,8 +35,8 @@ Total wall clock time: approximately 60-90 minutes
 
 The docs repo may be private. Clone it first then run the installer:
 
-    git clone https://github.com/revenue-growth-ai-org/aws-agent-platform-docs.git
-    cd aws-agent-platform-docs
+    git clone https://github.com/revenue-growth-ai-org/rg-ai-agent-platform-docs.git
+    cd rg-ai-agent-platform-docs
     bash install.sh
 
 ### Resuming an interrupted install
@@ -45,17 +45,17 @@ If the install is interrupted at any step, re-run the same command.
 The script will skip steps that are already deployed and continue
 from where it left off:
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash master-setup.sh
 
 ### Adding agents after deployment
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash add-agent.sh add
 
 ### Removing an agent
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash add-agent.sh remove
 
 ---
@@ -72,8 +72,8 @@ Complete all steps in CUSTOMER-SETUP.md before proceeding.
 
 ### Step 0 — Bootstrap (run once per AWS account)
 
-    git clone https://github.com/revenue-growth-ai-org/0-aws-agent-platform-bootstrap.git
-    cd 0-aws-agent-platform-bootstrap
+    git clone https://github.com/revenue-growth-ai-org/0-rg-ai-agent-platform-bootstrap.git
+    cd 0-rg-ai-agent-platform-bootstrap
     bash setup.sh
     make doctor
     make deploy
@@ -86,16 +86,16 @@ After deploy completes paste your Anthropic API key:
 
 ### Step 1 — Base infrastructure
 
-    git clone https://github.com/revenue-growth-ai-org/1-aws-agent-platform-base.git
-    cd 1-aws-agent-platform-base
+    git clone https://github.com/revenue-growth-ai-org/1-rg-ai-agent-platform-base.git
+    cd 1-rg-ai-agent-platform-base
     bash setup.sh
     make doctor
     make deploy
 
 ### Step 2 — Master Orchestrator
 
-    git clone https://github.com/revenue-growth-ai-org/2-aws-agent-platform-orchestrator.git
-    cd 2-aws-agent-platform-orchestrator
+    git clone https://github.com/revenue-growth-ai-org/2-rg-ai-agent-platform-orchestrator.git
+    cd 2-rg-ai-agent-platform-orchestrator
     bash setup.sh
     make doctor
     make setup
@@ -103,8 +103,8 @@ After deploy completes paste your Anthropic API key:
 
 ### Step 3 — Agent nodes (repeat per agent type)
 
-    git clone https://github.com/revenue-growth-ai-org/3-aws-agent-platform-agent.git
-    cd 3-aws-agent-platform-agent
+    git clone https://github.com/revenue-growth-ai-org/3-rg-ai-agent-platform-agent.git
+    cd 3-rg-ai-agent-platform-agent
     bash setup.sh
     make doctor
     make setup
@@ -116,7 +116,7 @@ If a previous install failed partway through and left orphaned AWS resources
 run the cleanup script before trying again. This removes all platform resources
 for the configured project and environment so you can start completely fresh.
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash cleanup.sh
 
 Then re-run the install:
@@ -131,10 +131,10 @@ continue. Verify RDS is fully deleted before re-running master-setup.sh.
 
 Always destroy in reverse order:
 
-    cd 3-aws-agent-platform-agent && make destroy
-    cd 2-aws-agent-platform-orchestrator && make destroy
-    cd 1-aws-agent-platform-base && make destroy
-    cd 0-aws-agent-platform-bootstrap && make destroy
+    cd 3-rg-ai-agent-platform-agent && make destroy
+    cd 2-rg-ai-agent-platform-orchestrator && make destroy
+    cd 1-rg-ai-agent-platform-base && make destroy
+    cd 0-rg-ai-agent-platform-bootstrap && make destroy
 
 ---
 
@@ -154,7 +154,7 @@ configuration required.
 
 ### Add a new agent
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash add-agent.sh add
 
 The script will ask for the agent name, description, and whether it needs
@@ -162,7 +162,7 @@ external API access, then build, push, and deploy automatically.
 
 ### Remove an existing agent
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash add-agent.sh remove
 
 The script lists all deployed agents, asks which one to remove, requires you
@@ -170,12 +170,12 @@ to type the agent name to confirm, then destroys all associated resources cleanl
 
 ### List deployed agents
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash add-agent.sh list
 
 ### Interactive mode
 
-    cd aws-agent-platform-docs
+    cd rg-ai-agent-platform-docs
     bash add-agent.sh
 
 Presents a menu — add, remove, list, or exit.

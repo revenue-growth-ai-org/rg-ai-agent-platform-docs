@@ -29,7 +29,7 @@ echo ""
 
 if [ ! -f "$DEFAULTS_FILE" ]; then
   echo "ERROR: defaults.env not found."
-  echo "This script must be run from the aws-agent-platform-docs directory."
+  echo "This script must be run from the rg-ai-agent-platform-docs directory."
   echo "If you have not deployed the platform yet run: bash master-setup.sh"
   exit 1
 fi
@@ -80,7 +80,7 @@ find_agent_repo() {
   local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "*agent*" | grep -v "orchestrator" | grep -v "docs" | head -1)
   if [ -z "$REPO_DIR" ]; then
     echo ""
-    echo "ERROR: Cannot find 3-aws-agent-platform-agent repo in $PARENT_DIR"
+    echo "ERROR: Cannot find 3-rg-ai-agent-platform-agent repo in $PARENT_DIR"
     echo "Make sure all platform repos are cloned in the same parent directory."
     exit 1
   fi
@@ -256,7 +256,7 @@ EOF
 terraform {
   backend "s3" {
     bucket         = "$STATE_BUCKET"
-    key            = "3-aws-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+    key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
     region         = "$AWS_REGION"
     dynamodb_table = "$LOCK_TABLE"
     encrypt        = true
@@ -420,7 +420,7 @@ EOF
 terraform {
   backend "s3" {
     bucket         = "$STATE_BUCKET"
-    key            = "3-aws-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+    key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
     region         = "$AWS_REGION"
     dynamodb_table = "$LOCK_TABLE"
     encrypt        = true

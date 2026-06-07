@@ -11,10 +11,10 @@ For urgent issues contact Michael@revenue-growth.ai marked URGENT.
 ## Scope
 
 This policy covers all four platform repositories:
-- 0-aws-agent-platform-bootstrap
-- 1-aws-agent-platform-base
-- 2-aws-agent-platform-orchestrator
-- 3-aws-agent-platform-agent
+- 0-rg-ai-agent-platform-bootstrap
+- 1-rg-ai-agent-platform-base
+- 2-rg-ai-agent-platform-orchestrator
+- 3-rg-ai-agent-platform-agent
 
 ## Security best practices
 
