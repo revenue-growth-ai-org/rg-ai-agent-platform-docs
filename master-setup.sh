@@ -670,7 +670,27 @@ EOF
   write_backend "$AGENT_DIR" "3-aws-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
 
   echo "Building and pushing agent image for $AGENT_NAME..."
-  AGENT_NAME="$AGENT_NAME" make setup
+  echo "Creating ECR repository for $AGENT_NAME..."
+  aws ecr create-repository \
+    --repository-name "${PROJECT_NAME}-${AGENT_NAME}" \
+    --region "$AWS_REGION" 2>/dev/null || echo "ECR repo already exists"
+
+  echo "Logging into ECR..."
+  aws ecr get-login-password --region "$AWS_REGION" | \
+    docker login --username AWS --password-stdin \
+    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+  echo "Building agent image..."
+  cd "$AGENT_DIR/app"
+  docker build --platform linux/amd64 \
+    -t "${PROJECT_NAME}-${AGENT_NAME}" .
+  docker tag "${PROJECT_NAME}-${AGENT_NAME}:latest" \
+    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
+  docker push \
+    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
+  cd "$AGENT_DIR"
+
+  echo "  ✓ Image pushed to ECR"
   echo ""
   echo "Running terraform apply for agent $AGENT_NAME..."
   terraform init -reconfigure
