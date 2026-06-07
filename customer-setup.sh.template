@@ -5,7 +5,7 @@ set -e
 # Customer Platform Setup Script
 # =============================================================================
 # This script configures the AWS Agent Platform for this specific customer.
-# Run this after completing bash master-setup.sh in aws-agent-platform-docs.
+# Run this after completing bash master-setup.sh in rg-ai-agent-platform-docs.
 #
 # Usage:
 #   bash customer-setup.sh
@@ -13,14 +13,14 @@ set -e
 # Prerequisites:
 #   - Platform deployed via bash master-setup.sh
 #   - This repo cloned to your local machine
-#   - aws-agent-platform-docs repo in the same parent directory
+#   - rg-ai-agent-platform-docs repo in the same parent directory
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCS_DIR=""
 
-# Find the aws-agent-platform-docs repo
-for DIR in "$SCRIPT_DIR/../aws-agent-platform-docs" "$HOME/aws-agent-platform/aws-agent-platform-docs"; do
+# Find the rg-ai-agent-platform-docs repo
+for DIR in "$SCRIPT_DIR/../rg-ai-agent-platform-docs" "$HOME/aws-agent-platform/rg-ai-agent-platform-docs"; do
   if [ -d "$DIR" ]; then
     DOCS_DIR="$DIR"
     break
@@ -28,7 +28,7 @@ for DIR in "$SCRIPT_DIR/../aws-agent-platform-docs" "$HOME/aws-agent-platform/aw
 done
 
 if [ -z "$DOCS_DIR" ]; then
-  echo "ERROR: Cannot find aws-agent-platform-docs repo."
+  echo "ERROR: Cannot find rg-ai-agent-platform-docs repo."
   echo "Make sure it is cloned in the same parent directory as this repo."
   exit 1
 fi
