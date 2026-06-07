@@ -110,6 +110,23 @@ After deploy completes paste your Anthropic API key:
     make setup
     make deploy
 
+## Cleaning up a failed install
+
+If a previous install failed partway through and left orphaned AWS resources
+run the cleanup script before trying again. This removes all platform resources
+for the configured project and environment so you can start completely fresh.
+
+    cd aws-agent-platform-docs
+    bash cleanup.sh
+
+Then re-run the install:
+
+    bash master-setup.sh
+
+Note: cleanup.sh will prompt for confirmation before deleting anything.
+RDS deletion takes 5-10 minutes — the script will initiate deletion and
+continue. Verify RDS is fully deleted before re-running master-setup.sh.
+
 ### Destroying the platform
 
 Always destroy in reverse order:
