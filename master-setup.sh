@@ -442,7 +442,10 @@ terraform apply -var-file="prod.tfvars" -auto-approve
 STATE_BUCKET=$(terraform output -raw terraform_state_bucket)
 LOCK_TABLE=$(terraform output -raw terraform_state_lock_table)
 ACM_CERT_ARN=$(terraform output -raw acm_certificate_arn)
-ANTHROPIC_SECRET_ARN=$(terraform output -raw anthropic_api_key_secret_arn)
+ANTHROPIC_SECRET_ARN=$(terraform output -raw anthropic_api_key_secret_arn 2>/dev/null || \
+  aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/anthropic_api_key_secret_arn" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
 
 echo ""
 echo "Step 0 complete."
@@ -575,6 +578,13 @@ anthropic_api_key_secret_arn = "$ANTHROPIC_SECRET_ARN"
 deployment_role_arn          = "$DEPLOYMENT_ROLE_ARN"
 rds_security_group_id        = "$RDS_SG_ID"
 EOF
+fi
+
+# Always update anthropic_api_key_secret_arn from latest bootstrap output
+if [ -f "$ORCH_DIR/prod.tfvars" ]; then
+  sed -i.bak "s|anthropic_api_key_secret_arn.*=.*\".*\"|anthropic_api_key_secret_arn = \"$ANTHROPIC_SECRET_ARN\"|" "$ORCH_DIR/prod.tfvars"
+  rm -f "$ORCH_DIR/prod.tfvars.bak"
+  echo "  ✓ anthropic_api_key_secret_arn updated: $ANTHROPIC_SECRET_ARN"
 fi
 
 # Always update RDS security group ID — it changes on every redeploy
