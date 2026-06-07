@@ -292,8 +292,62 @@ VPC_ID=$(aws ec2 describe-vpcs \
 
 if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   echo "  Found VPC: $VPC_ID"
-  echo "  Note: VPC will be cleaned up by terraform destroy."
-  echo "  If terraform destroy fails run: aws ec2 delete-vpc --vpc-id $VPC_ID --region $AWS_REGION"
+
+  # Delete subnets
+  SUBNETS=$(aws ec2 describe-subnets \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'Subnets[].SubnetId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for SUBNET in $SUBNETS; do
+    aws ec2 delete-subnet --subnet-id "$SUBNET" --region "$AWS_REGION" 2>/dev/null || true
+    echo "  ✓ Subnet $SUBNET deleted"
+  done
+
+  # Detach and delete internet gateways
+  IGWS=$(aws ec2 describe-internet-gateways \
+    --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
+    --query 'InternetGateways[].InternetGatewayId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for IGW in $IGWS; do
+    aws ec2 detach-internet-gateway \
+      --internet-gateway-id "$IGW" \
+      --vpc-id "$VPC_ID" \
+      --region "$AWS_REGION" 2>/dev/null || true
+    aws ec2 delete-internet-gateway \
+      --internet-gateway-id "$IGW" \
+      --region "$AWS_REGION" 2>/dev/null || true
+    echo "  ✓ Internet gateway $IGW deleted"
+  done
+
+  # Delete non-default security groups
+  SGS=$(aws ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for SG in $SGS; do
+    aws ec2 delete-security-group \
+      --group-id "$SG" \
+      --region "$AWS_REGION" 2>/dev/null || true
+    echo "  ✓ Security group $SG deleted"
+  done
+
+  # Delete route tables (non-main)
+  RTS=$(aws ec2 describe-route-tables \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'RouteTables[?Associations[0].Main!=`true`].RouteTableId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for RT in $RTS; do
+    aws ec2 delete-route-table \
+      --route-table-id "$RT" \
+      --region "$AWS_REGION" 2>/dev/null || true
+    echo "  ✓ Route table $RT deleted"
+  done
+
+  # Delete VPC
+  aws ec2 delete-vpc \
+    --vpc-id "$VPC_ID" \
+    --region "$AWS_REGION" 2>/dev/null || true
+  echo "  ✓ VPC $VPC_ID deleted"
 else
   echo "  No VPC found"
 fi
