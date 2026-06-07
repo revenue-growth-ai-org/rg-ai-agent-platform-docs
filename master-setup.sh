@@ -599,7 +599,27 @@ write_backend "$ORCH_DIR" "2-aws-agent-platform-orchestrator/terraform.tfstate"
 make doctor
 echo ""
 echo "Building and pushing orchestrator image..."
-make setup
+echo "Creating ECR repository for orchestrator..."
+aws ecr create-repository \
+  --repository-name "${PROJECT_NAME}-orchestrator" \
+  --region "$AWS_REGION" 2>/dev/null || echo "ECR repo already exists"
+
+echo "Logging into ECR..."
+aws ecr get-login-password --region "$AWS_REGION" | \
+  docker login --username AWS --password-stdin \
+  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+echo "Building orchestrator image..."
+cd "$ORCH_DIR/app"
+docker build --platform linux/amd64 \
+  -t "${PROJECT_NAME}-orchestrator" .
+docker tag "${PROJECT_NAME}-orchestrator:latest" \
+  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
+docker push \
+  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
+cd "$ORCH_DIR"
+
+echo "  ✓ Orchestrator image pushed to ECR"
 echo ""
 echo "Running Step 2 terraform apply..."
 terraform init
