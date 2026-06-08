@@ -156,7 +156,7 @@ if [ -n "$REQUIREMENTS_FILE" ]; then
 fi
 echo ""
 
-read -p "Deploy this implementation for agent '$AGENT_NAME'? (yes/no): " CONFIRM
+read -p "Deploy this implementation for agent '$AGENT_NAME'? (yes/no): " CONFIRM < /dev/tty
 if [ "$CONFIRM" != "yes" ]; then
   echo "Cancelled."
   exit 0
@@ -190,7 +190,7 @@ if ! docker info > /dev/null 2>&1; then
   echo ""
   echo "ERROR: Docker Desktop is not running."
   echo "Please start Docker Desktop and press enter to continue..."
-  read -p ""
+  read -p "" < /dev/tty
 fi
 
 # ------------------------------------------------------------------------------

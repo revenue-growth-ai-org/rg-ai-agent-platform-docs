@@ -25,7 +25,7 @@ echo ""
 echo "  WARNING: This will destroy ALL platform infrastructure."
 echo "  All AWS resources will be permanently deleted."
 echo ""
-read -p "Type 'yes' to confirm full destroy: " CONFIRM
+read -p "Type 'yes' to confirm full destroy: " CONFIRM < /dev/tty
 if [ "$CONFIRM" != "yes" ]; then
   echo "Cancelled."
   exit 0

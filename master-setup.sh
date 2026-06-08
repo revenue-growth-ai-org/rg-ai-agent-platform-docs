@@ -268,7 +268,7 @@ echo ""
 echo "How many agent types do you want to deploy?"
 echo "Common agents: researcher, scorer, crm, outbound"
 echo ""
-read -p "Number of agents (1-10): " AGENT_COUNT
+read -p "Number of agents (1-10): " AGENT_COUNT < /dev/tty
 
 if ! [[ "$AGENT_COUNT" =~ ^[1-9][0-9]?$ ]] || [ "$AGENT_COUNT" -gt 10 ]; then
   echo "ERROR: Please enter a number between 1 and 10."
@@ -283,12 +283,12 @@ AGENT_SECRETS=()
 for i in $(seq 1 "$AGENT_COUNT"); do
   echo ""
   echo "--- Agent $i of $AGENT_COUNT ---"
-  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME
-  read -p "Agent description (e.g. 'Researches contacts using external APIs'): " AGENT_DESC
-  read -p "Does this agent call external APIs? (y/n): " EXTERNAL
+  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
+  read -p "Agent description (e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
+  read -p "Does this agent call external APIs? (y/n): " EXTERNAL < /dev/tty
 
   if [ "$EXTERNAL" = "y" ]; then
-    read -p "External API secret ARN (or press enter to add later): " SECRET_ARN
+    read -p "External API secret ARN (or press enter to add later): " SECRET_ARN < /dev/tty
     AGENT_EXTERNAL+=("true")
     AGENT_SECRETS+=("${SECRET_ARN:-}")
   else
@@ -313,7 +313,7 @@ echo "  VPC CIDR:     $VPC_CIDR"
 echo "  Allowed CIDR: $ALLOWED_CIDR"
 echo "  Agents:       ${AGENT_NAMES[*]}"
 echo ""
-read -p "Proceed with deployment? (yes/no): " CONFIRM
+read -p "Proceed with deployment? (yes/no): " CONFIRM < /dev/tty
 if [ "$CONFIRM" != "yes" ]; then
   echo "Deployment cancelled."
   exit 0
@@ -460,7 +460,7 @@ echo "  aws secretsmanager put-secret-value \\"
 echo "    --secret-id $ANTHROPIC_SECRET_ARN \\"
 echo "    --secret-string \"sk-ant-your-key-here\""
 echo ""
-read -p "Press enter once you have pasted your Anthropic API key to continue..."
+read -p "Press enter once you have pasted your Anthropic API key to continue..." < /dev/tty
 
 # ------------------------------------------------------------------------------
 # Step 1 — Base infrastructure
@@ -540,7 +540,7 @@ if ! docker info > /dev/null 2>&1; then
   echo ""
   echo "ERROR: Docker Desktop is not running."
   echo "Please start Docker Desktop and press enter to continue..."
-  read -p ""
+  read -p "" < /dev/tty
 fi
 
 ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"

@@ -41,7 +41,7 @@ echo ""
 echo "  WARNING: This will delete ALL platform resources for this"
 echo "  project and environment. This cannot be undone."
 echo ""
-read -p "Type 'yes' to confirm cleanup: " CONFIRM
+read -p "Type 'yes' to confirm cleanup: " CONFIRM < /dev/tty
 if [ "$CONFIRM" != "yes" ]; then
   echo "Cancelled."
   exit 0

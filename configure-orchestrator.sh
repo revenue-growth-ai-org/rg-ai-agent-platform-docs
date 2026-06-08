@@ -149,7 +149,7 @@ echo "  Routing config: $ROUTING_FILE"
 echo "  Agents in routing rules: $ROUTING_AGENTS"
 echo ""
 
-read -p "Apply these changes to the orchestrator? (yes/no): " CONFIRM
+read -p "Apply these changes to the orchestrator? (yes/no): " CONFIRM < /dev/tty
 if [ "$CONFIRM" != "yes" ]; then
   echo "Cancelled."
   exit 0

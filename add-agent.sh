@@ -146,14 +146,14 @@ add_agent() {
 
   list_deployed_agents
 
-  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME
-  read -p "Agent description (e.g. 'Researches contacts using external APIs'): " AGENT_DESC
+  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
+  read -p "Agent description (e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
 
   echo ""
-  read -p "Does this agent call external APIs? (y/n): " EXTERNAL
+  read -p "Does this agent call external APIs? (y/n): " EXTERNAL < /dev/tty
   if [ "$EXTERNAL" = "y" ]; then
     ENABLE_EXTERNAL="true"
-    read -p "External API secret ARN (or press enter to add later): " SECRET_ARN
+    read -p "External API secret ARN (or press enter to add later): " SECRET_ARN < /dev/tty
     if [ -n "$SECRET_ARN" ]; then
       EXTERNAL_SECRETS="[\"$SECRET_ARN\"]"
     else
@@ -200,7 +200,7 @@ add_agent() {
 
   if [ "$EXISTING_SERVICE" = "ACTIVE" ]; then
     echo "WARNING: Agent '$AGENT_NAME' is already deployed."
-    read -p "Do you want to redeploy it? (yes/no): " REDEPLOY
+    read -p "Do you want to redeploy it? (yes/no): " REDEPLOY < /dev/tty
     if [ "$REDEPLOY" != "yes" ]; then
       echo "Cancelled."
       exit 0
@@ -215,7 +215,7 @@ add_agent() {
   echo "  External egress: $ENABLE_EXTERNAL"
   echo "  Image:           $ECR_IMAGE"
   echo ""
-  read -p "Proceed? (yes/no): " CONFIRM
+  read -p "Proceed? (yes/no): " CONFIRM < /dev/tty
   if [ "$CONFIRM" != "yes" ]; then
     echo "Cancelled."
     exit 0
@@ -280,7 +280,7 @@ EOF
         sleep 3
       done
     else
-      read -p "Please start Docker and press enter to continue..."
+      read -p "Please start Docker and press enter to continue..." < /dev/tty
     fi
   fi
 
@@ -347,7 +347,7 @@ remove_agent() {
 
   list_deployed_agents
 
-  read -p "Agent name to remove: " AGENT_NAME
+  read -p "Agent name to remove: " AGENT_NAME < /dev/tty
 
   # Verify agent exists
   EXISTING_SERVICE=$(aws ecs describe-services \
@@ -380,7 +380,7 @@ remove_agent() {
   echo "The agent's ECS service, security group, IAM role, and SSM"
   echo "parameters will all be deleted."
   echo ""
-  read -p "Type the agent name to confirm removal: " CONFIRM_NAME
+  read -p "Type the agent name to confirm removal: " CONFIRM_NAME < /dev/tty
 
   if [ "$CONFIRM_NAME" != "$AGENT_NAME" ]; then
     echo "Agent name does not match. Cancelled."
@@ -471,7 +471,7 @@ if [ -z "$ACTION" ]; then
   echo "  3) List deployed agents"
   echo "  4) Exit"
   echo ""
-  read -p "Choose (1-4): " CHOICE
+  read -p "Choose (1-4): " CHOICE < /dev/tty
 
   case $CHOICE in
     1) ACTION="add" ;;
