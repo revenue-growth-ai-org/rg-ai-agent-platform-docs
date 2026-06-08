@@ -258,7 +258,7 @@ terraform {
     bucket         = "$STATE_BUCKET"
     key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
     region         = "$AWS_REGION"
-    dynamodb_table = "$LOCK_TABLE"
+    use_lockfile   = true
     encrypt        = true
   }
 }
@@ -422,7 +422,7 @@ terraform {
     bucket         = "$STATE_BUCKET"
     key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
     region         = "$AWS_REGION"
-    dynamodb_table = "$LOCK_TABLE"
+    use_lockfile   = true
     encrypt        = true
   }
 }
