@@ -16,7 +16,7 @@ set -e
 # =============================================================================
 
 GITHUB_ORG="revenue-growth-ai-org"
-INSTALL_DIR="$HOME/aws-agent-platform"
+INSTALL_DIR="$HOME/rg-ai-agent-platform"
 DOCS_REPO="rg-ai-agent-platform-docs"
 
 echo ""
