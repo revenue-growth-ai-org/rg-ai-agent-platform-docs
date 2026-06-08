@@ -134,7 +134,7 @@ install_aws_cli() {
     echo ""
     echo "  aws configure"
     echo ""
-    read -p "Press enter after you have run aws configure to continue..."
+    read -p "Press enter after you have run aws configure to continue..." < /dev/tty
   else
     echo "  ✓ AWS CLI already installed: $(aws --version 2>&1 | head -1)"
   fi
@@ -153,7 +153,7 @@ verify_aws_credentials() {
     echo "Run the following command and enter your credentials:"
     echo "  aws configure"
     echo ""
-    read -p "Press enter after you have configured your credentials..."
+    read -p "Press enter after you have configured your credentials..." < /dev/tty
     if ! aws sts get-caller-identity > /dev/null 2>&1; then
       echo "ERROR: AWS credentials still invalid. Exiting."
       exit 1
@@ -205,7 +205,7 @@ install_docker() {
         echo "Opening the Docker Desktop download page..."
         open "https://www.docker.com/products/docker-desktop/"
         echo ""
-        read -p "Press enter after Docker Desktop is installed and running..."
+        read -p "Press enter after Docker Desktop is installed and running..." < /dev/tty
         ;;
       linux|wsl)
         curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
@@ -233,7 +233,7 @@ install_docker() {
         done
       else
         echo "    Please start Docker and press enter to continue..."
-        read -p ""
+        read -p "" < /dev/tty
       fi
     fi
   fi
@@ -360,16 +360,16 @@ MY_IP=$(curl -s https://checkip.amazonaws.com 2>/dev/null || echo "")
 # Prompt for the remaining values
 echo "Please answer a few questions to configure your deployment:"
 echo ""
-read -p "Project name (lowercase, hyphens only, e.g. acme-corp): " PROJECT_NAME
-read -p "Environment (prod / staging / dev): " ENVIRONMENT
-read -p "Organization name (for SSL certificate, e.g. Acme Corporation): " ORG_NAME
+read -p "Project name (lowercase, hyphens only, e.g. acme-corp): " PROJECT_NAME < /dev/tty
+read -p "Environment (prod / staging / dev): " ENVIRONMENT < /dev/tty
+read -p "Organization name (for SSL certificate, e.g. Acme Corporation): " ORG_NAME < /dev/tty
 
 if [ -n "$MY_IP" ]; then
   echo "Your current IP address is: $MY_IP"
-  read -p "Allowed CIDR for ALB access (press enter to use ${MY_IP}/32): " ALLOWED_CIDR
+  read -p "Allowed CIDR for ALB access (press enter to use ${MY_IP}/32): " ALLOWED_CIDR < /dev/tty
   ALLOWED_CIDR="${ALLOWED_CIDR:-${MY_IP}/32}"
 else
-  read -p "Allowed CIDR for ALB access (e.g. 203.0.113.0/24): " ALLOWED_CIDR
+  read -p "Allowed CIDR for ALB access (e.g. 203.0.113.0/24): " ALLOWED_CIDR < /dev/tty
 fi
 
 # Write defaults.env
@@ -405,7 +405,7 @@ echo "  Account:     $AWS_ACCOUNT_ID"
 echo "  Region:      $AWS_REGION"
 echo "  Allowed IP:  $ALLOWED_CIDR"
 echo ""
-read -p "Start deployment now? (yes/no): " START_NOW
+read -p "Start deployment now? (yes/no): " START_NOW < /dev/tty
 
 if [ "$START_NOW" = "yes" ]; then
   cd "$DOCS_DIR"
