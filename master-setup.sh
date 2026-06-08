@@ -368,7 +368,7 @@ verify_service() {
 
 find_repo() {
   local REPO_PATTERN=$1
-  local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "*${REPO_PATTERN}*" | head -1)
+  local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${REPO_PATTERN}*" | grep -v "docs" | head -1)
   if [ -z "$REPO_DIR" ]; then
     echo ""
     echo "ERROR: Cannot find repo matching *${REPO_PATTERN}* in $PARENT_DIR"
