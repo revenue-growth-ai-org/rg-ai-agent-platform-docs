@@ -806,9 +806,25 @@ for NAME in "${AGENT_NAMES[@]}"; do
   echo "    aws logs tail /ecs/${PROJECT_NAME}-${ENVIRONMENT}/${NAME} --follow"
 done
 echo ""
+read -p "Enter email for CloudWatch alarm notifications (or press enter to skip): " ALARM_EMAIL < /dev/tty
+if [ -n "$ALARM_EMAIL" ]; then
+  SNS_ARN=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/sns_alarm_topic_arn" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -n "$SNS_ARN" ]; then
+    aws sns subscribe \
+      --topic-arn "$SNS_ARN" \
+      --protocol email \
+      --notification-endpoint "$ALARM_EMAIL" \
+      --region "$AWS_REGION" > /dev/null
+    echo "  ✓ Subscribed $ALARM_EMAIL to CloudWatch alarms"
+    echo "  Check your email to confirm the subscription"
+  fi
+fi
+
+echo ""
 echo "  Next steps:"
-echo "    1. Subscribe to CloudWatch alarms SNS topic in Step 1 outputs"
-echo "    2. Update SSM system prompt for your use case:"
+echo "    1. Update SSM system prompt for your use case:"
 echo "       /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/system_prompt"
-echo "    3. Test the platform by sending a webhook to the ALB"
+echo "    2. Test the platform by sending a webhook to the ALB"
 echo ""
