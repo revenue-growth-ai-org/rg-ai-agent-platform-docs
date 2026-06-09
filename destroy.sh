@@ -57,6 +57,7 @@ echo "=================================================="
 AGENT_DIR=$(find_repo "agent" 2>/dev/null || echo "")
 if [ -n "$AGENT_DIR" ] && [ -f "$AGENT_DIR/prod.tfvars" ]; then
   cd "$AGENT_DIR"
+  terraform init -reconfigure
   make destroy_auto 2>/dev/null || terraform destroy -var-file="prod.tfvars" -auto-approve
 else
   echo "  No agent deployment found — skipping"
@@ -74,6 +75,7 @@ echo "=================================================="
 ORCH_DIR=$(find_repo "orchestrator" 2>/dev/null || echo "")
 if [ -n "$ORCH_DIR" ] && [ -f "$ORCH_DIR/prod.tfvars" ]; then
   cd "$ORCH_DIR"
+  terraform init -reconfigure
   terraform destroy -var-file="prod.tfvars" -auto-approve
 else
   echo "  No orchestrator deployment found — skipping"
@@ -91,6 +93,7 @@ echo "=================================================="
 BASE_DIR=$(find_repo "base" 2>/dev/null || echo "")
 if [ -n "$BASE_DIR" ] && [ -f "$BASE_DIR/prod.tfvars" ]; then
   cd "$BASE_DIR"
+  terraform init -reconfigure
   make destroy_auto 2>/dev/null || terraform destroy -var-file="prod.tfvars" -auto-approve
 else
   echo "  No base infrastructure found — skipping"
@@ -127,6 +130,7 @@ if [ -n "$BOOTSTRAP_DIR" ] && [ -f "$BOOTSTRAP_DIR/prod.tfvars" ]; then
       --delete file:///dev/stdin 2>/dev/null || true
   fi
 
+  terraform init -reconfigure
   terraform destroy -var-file="prod.tfvars" -auto-approve
 else
   echo "  No bootstrap deployment found — skipping"
