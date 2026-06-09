@@ -93,6 +93,45 @@ echo "=================================================="
 BASE_DIR=$(find_repo "base" 2>/dev/null || echo "")
 if [ -n "$BASE_DIR" ] && [ -f "$BASE_DIR/prod.tfvars" ]; then
   cd "$BASE_DIR"
+
+  # Stop and delete all ECS services before destroying base infrastructure
+  echo "  Stopping ECS services..."
+  CLUSTER="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
+  SERVICES=$(aws ecs list-services \
+    --cluster "$CLUSTER" \
+    --query 'serviceArns[]' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -n "$SERVICES" ]; then
+    for SERVICE_ARN in $SERVICES; do
+      SERVICE_NAME=$(echo "$SERVICE_ARN" | awk -F'/' '{print $NF}')
+      aws ecs update-service \
+        --cluster "$CLUSTER" \
+        --service "$SERVICE_NAME" \
+        --desired-count 0 \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      aws ecs delete-service \
+        --cluster "$CLUSTER" \
+        --service "$SERVICE_NAME" \
+        --force \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      echo "  ✓ Stopped $SERVICE_NAME"
+    done
+    echo "  Waiting for services to stop..."
+    sleep 30
+  fi
+
+  # Delete service discovery services
+  echo "  Cleaning up service discovery..."
+  for SVC_ID in $(aws servicediscovery list-services \
+    --query "Services[?contains(Name, '${PROJECT_NAME}')].Id" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo ""); do
+    aws servicediscovery delete-service \
+      --id "$SVC_ID" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+  done
+
   terraform init -reconfigure
   make destroy_auto 2>/dev/null || terraform destroy -var-file="prod.tfvars" -auto-approve
 else
