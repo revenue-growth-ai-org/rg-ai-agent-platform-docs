@@ -132,6 +132,41 @@ if [ -n "$BASE_DIR" ] && [ -f "$BASE_DIR/prod.tfvars" ]; then
       --region "$AWS_REGION" > /dev/null 2>&1 || true
   done
 
+  # Revoke cross-SG references to prevent DependencyViolation on destroy
+  echo "  Revoking cross-SG references..."
+  VPC_ID=$(aws ec2 describe-vpcs \
+    --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
+    --query 'Vpcs[0].VpcId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+    SGS=$(aws ec2 describe-security-groups \
+      --filters "Name=vpc-id,Values=$VPC_ID" \
+      --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for SG_ID in $SGS; do
+      EGRESS_REFS=$(aws ec2 describe-security-groups \
+        --group-ids "$SG_ID" \
+        --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId' \
+        --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      for REF_SG in $EGRESS_REFS; do
+        aws ec2 revoke-security-group-egress \
+          --group-id "$SG_ID" \
+          --ip-permissions "[{\"IpProtocol\":\"-1\",\"UserIdGroupPairs\":[{\"GroupId\":\"$REF_SG\"}]}]" \
+          --region "$AWS_REGION" > /dev/null 2>&1 || true
+      done
+      INGRESS_REFS=$(aws ec2 describe-security-groups \
+        --group-ids "$SG_ID" \
+        --query 'SecurityGroups[0].IpPermissions[].UserIdGroupPairs[].GroupId' \
+        --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      for REF_SG in $INGRESS_REFS; do
+        aws ec2 revoke-security-group-ingress \
+          --group-id "$SG_ID" \
+          --ip-permissions "[{\"IpProtocol\":\"-1\",\"UserIdGroupPairs\":[{\"GroupId\":\"$REF_SG\"}]}]" \
+          --region "$AWS_REGION" > /dev/null 2>&1 || true
+      done
+    done
+  fi
+
   terraform init -reconfigure
   make destroy_auto 2>/dev/null || terraform destroy -var-file="prod.tfvars" -auto-approve
 else
