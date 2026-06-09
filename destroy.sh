@@ -112,22 +112,28 @@ BOOTSTRAP_DIR=$(find_repo "bootstrap" 2>/dev/null || echo "")
 if [ -n "$BOOTSTRAP_DIR" ] && [ -f "$BOOTSTRAP_DIR/prod.tfvars" ]; then
   cd "$BOOTSTRAP_DIR"
 
-  # Empty state bucket before destroying
+  # Empty state bucket before destroying bootstrap
   STATE_BUCKET=$(terraform output -raw terraform_state_bucket 2>/dev/null || \
     aws ssm get-parameter \
       --name "/$(grep project_name prod.tfvars | cut -d'"' -f2)/$(grep environment prod.tfvars | cut -d'"' -f2)/bootstrap/terraform_state_bucket" \
       --query Parameter.Value --output text 2>/dev/null || echo "")
 
-  if [ -n "$STATE_BUCKET" ]; then
+  if [ -n "$STATE_BUCKET" ] && [ "$STATE_BUCKET" != "None" ]; then
     echo "  Emptying state bucket: $STATE_BUCKET"
     aws s3 rm "s3://$STATE_BUCKET" --recursive 2>/dev/null || true
     aws s3api list-object-versions \
       --bucket "$STATE_BUCKET" \
       --output json \
       --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
-      aws s3api delete-objects \
+      python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if data.get('Objects'):
+    print(json.dumps(data))
+" | aws s3api delete-objects \
       --bucket "$STATE_BUCKET" \
-      --delete file:///dev/stdin 2>/dev/null || true
+      --delete file:///dev/stdin \
+      --region "$AWS_REGION" 2>/dev/null || true
   fi
 
   terraform init -reconfigure
