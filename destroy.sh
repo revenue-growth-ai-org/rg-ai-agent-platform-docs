@@ -94,6 +94,33 @@ BASE_DIR=$(find_repo "base" 2>/dev/null || echo "")
 if [ -n "$BASE_DIR" ] && [ -f "$BASE_DIR/prod.tfvars" ]; then
   cd "$BASE_DIR"
 
+  # Disable RDS deletion protection
+  echo "  Disabling RDS deletion protection..."
+  RDS_INSTANCES=$(aws rds describe-db-instances \
+    --query "DBInstances[?contains(DBInstanceIdentifier, '${PROJECT_NAME}-${ENVIRONMENT}')].DBInstanceIdentifier" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for RDS_ID in $RDS_INSTANCES; do
+    aws rds modify-db-instance \
+      --db-instance-identifier "$RDS_ID" \
+      --no-deletion-protection \
+      --apply-immediately \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ Deletion protection disabled on $RDS_ID"
+  done
+
+  # Disable ALB deletion protection
+  echo "  Disabling ALB deletion protection..."
+  ALB_ARNS=$(aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[?contains(LoadBalancerName, '${PROJECT_NAME}-${ENVIRONMENT}')].LoadBalancerArn" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for ALB_ARN in $ALB_ARNS; do
+    aws elbv2 modify-load-balancer-attributes \
+      --load-balancer-arn "$ALB_ARN" \
+      --attributes Key=deletion_protection.enabled,Value=false \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ Deletion protection disabled on $(echo "$ALB_ARN" | awk -F'/' '{print $3}')"
+  done
+
   # Stop and delete all ECS services before destroying base infrastructure
   echo "  Stopping ECS services..."
   CLUSTER="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
