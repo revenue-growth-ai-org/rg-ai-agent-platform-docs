@@ -328,28 +328,28 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   # Revoke cross-references between security groups before deleting
   echo "  Revoking cross-SG references..."
   for SG_ID in $SGS; do
-    # Revoke egress rules that reference other SGs
-    EGRESS_REFS=$(aws ec2 describe-security-groups \
+    # Get full ingress rules referencing other SGs and revoke them
+    INGRESS_PERMS=$(aws ec2 describe-security-groups \
       --group-ids "$SG_ID" \
-      --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    for REF_SG in $EGRESS_REFS; do
-      aws ec2 revoke-security-group-egress \
-        --group-id "$SG_ID" \
-        --ip-permissions "[{\"IpProtocol\":\"-1\",\"UserIdGroupPairs\":[{\"GroupId\":\"$REF_SG\"}]}]" \
-        --region "$AWS_REGION" > /dev/null 2>&1 || true
-    done
-    # Revoke ingress rules that reference other SGs
-    INGRESS_REFS=$(aws ec2 describe-security-groups \
-      --group-ids "$SG_ID" \
-      --query 'SecurityGroups[0].IpPermissions[].UserIdGroupPairs[].GroupId' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    for REF_SG in $INGRESS_REFS; do
+      --query 'SecurityGroups[0].IpPermissions[?UserIdGroupPairs[0].GroupId!=null]' \
+      --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
+    if [ "$INGRESS_PERMS" != "[]" ] && [ -n "$INGRESS_PERMS" ]; then
       aws ec2 revoke-security-group-ingress \
         --group-id "$SG_ID" \
-        --ip-permissions "[{\"IpProtocol\":\"-1\",\"UserIdGroupPairs\":[{\"GroupId\":\"$REF_SG\"}]}]" \
+        --ip-permissions "$INGRESS_PERMS" \
         --region "$AWS_REGION" > /dev/null 2>&1 || true
-    done
+    fi
+    # Get full egress rules referencing other SGs and revoke them
+    EGRESS_PERMS=$(aws ec2 describe-security-groups \
+      --group-ids "$SG_ID" \
+      --query 'SecurityGroups[0].IpPermissionsEgress[?UserIdGroupPairs[0].GroupId!=null]' \
+      --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
+    if [ "$EGRESS_PERMS" != "[]" ] && [ -n "$EGRESS_PERMS" ]; then
+      aws ec2 revoke-security-group-egress \
+        --group-id "$SG_ID" \
+        --ip-permissions "$EGRESS_PERMS" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+    fi
   done
 
   for SG in $SGS; do
