@@ -324,6 +324,34 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
     --filters "Name=vpc-id,Values=$VPC_ID" \
     --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
     --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  # Revoke cross-references between security groups before deleting
+  echo "  Revoking cross-SG references..."
+  for SG_ID in $SGS; do
+    # Revoke egress rules that reference other SGs
+    EGRESS_REFS=$(aws ec2 describe-security-groups \
+      --group-ids "$SG_ID" \
+      --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for REF_SG in $EGRESS_REFS; do
+      aws ec2 revoke-security-group-egress \
+        --group-id "$SG_ID" \
+        --ip-permissions "[{\"IpProtocol\":\"-1\",\"UserIdGroupPairs\":[{\"GroupId\":\"$REF_SG\"}]}]" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+    # Revoke ingress rules that reference other SGs
+    INGRESS_REFS=$(aws ec2 describe-security-groups \
+      --group-ids "$SG_ID" \
+      --query 'SecurityGroups[0].IpPermissions[].UserIdGroupPairs[].GroupId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for REF_SG in $INGRESS_REFS; do
+      aws ec2 revoke-security-group-ingress \
+        --group-id "$SG_ID" \
+        --ip-permissions "[{\"IpProtocol\":\"-1\",\"UserIdGroupPairs\":[{\"GroupId\":\"$REF_SG\"}]}]" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+  done
+
   for SG in $SGS; do
     aws ec2 delete-security-group \
       --group-id "$SG" \
