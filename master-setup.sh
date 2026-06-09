@@ -633,7 +633,16 @@ echo "Step 2 complete."
 # ------------------------------------------------------------------------------
 
 AGENT_DIR=$(find_repo "agent")
-echo "Found: $AGENT_DIR"
+
+if [ -z "$AGENT_DIR" ] || [ ! -d "$AGENT_DIR/app" ]; then
+  echo "ERROR: Agent directory not found or invalid: $AGENT_DIR"
+  echo "Expected to find: $PARENT_DIR/3-*agent*/app"
+  echo "Contents of $PARENT_DIR:"
+  ls "$PARENT_DIR"
+  exit 1
+fi
+
+echo "  ✓ Agent directory: $AGENT_DIR"
 
 echo "Reading RDS security group from AWS..."
 RDS_SG_ID=$(aws ec2 describe-security-groups \
