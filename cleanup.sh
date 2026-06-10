@@ -243,7 +243,17 @@ fi
 # ------------------------------------------------------------------------------
 
 echo "[ S3 buckets ]"
+STATE_BUCKET=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_bucket" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -z "$STATE_BUCKET" ] || [ "$STATE_BUCKET" = "None" ]; then
+  STATE_BUCKET=$(aws s3 ls | grep "${PROJECT_NAME}" | grep "terraform-state" | awk '{print $3}' | head -1)
+fi
+
 BUCKETS=$(aws s3 ls | grep "${NAME_PREFIX}" | awk '{print $3}' || echo "")
+if [ -n "$STATE_BUCKET" ] && ! echo "$BUCKETS" | grep -qF "$STATE_BUCKET"; then
+  BUCKETS="$STATE_BUCKET${BUCKETS:+$'\n'$BUCKETS}"
+fi
 
 if [ -n "$BUCKETS" ]; then
   for BUCKET in $BUCKETS; do
