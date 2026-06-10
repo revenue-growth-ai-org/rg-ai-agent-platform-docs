@@ -401,3 +401,34 @@ echo "  aws rds describe-db-instances --query 'DBInstances[].DBInstanceIdentifie
 echo ""
 echo "  You can now run: bash master-setup.sh"
 echo ""
+
+# ------------------------------------------------------------------------------
+# Optional — wipe local Terraform state files
+# ------------------------------------------------------------------------------
+
+echo ""
+read -p "Also wipe local Terraform state files for a completely clean slate? (yes/no): " WIPE_STATE < /dev/tty
+if [ "$WIPE_STATE" = "yes" ]; then
+  echo ""
+  echo "Wiping local Terraform state files..."
+  PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+
+  for REPO in "$PARENT_DIR"/[0-9]*; do
+    if [ -d "$REPO" ]; then
+      REPO_NAME=$(basename "$REPO")
+      rm -f "$REPO/prod.tfvars" && echo "  ✓ $REPO_NAME/prod.tfvars deleted"
+      rm -f "$REPO/backend.tf" && echo "  ✓ $REPO_NAME/backend.tf deleted"
+      rm -rf "$REPO/.terraform" && echo "  ✓ $REPO_NAME/.terraform deleted"
+      rm -f "$REPO/.terraform.lock.hcl" && echo "  ✓ $REPO_NAME/.terraform.lock.hcl deleted"
+      rm -f "$REPO/terraform.tfstate" && echo "  ✓ $REPO_NAME/terraform.tfstate deleted"
+      rm -f "$REPO/terraform.tfstate.backup" && echo "  ✓ $REPO_NAME/terraform.tfstate.backup deleted"
+    fi
+  done
+
+  rm -f "$SCRIPT_DIR/defaults.env" && echo "  ✓ rg-ai-agent-platform-docs/defaults.env deleted"
+
+  echo ""
+  echo "  ✓ All local state files wiped"
+  echo "  Ready for a completely fresh install:"
+  echo "  curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/main/install.sh | bash"
+fi
