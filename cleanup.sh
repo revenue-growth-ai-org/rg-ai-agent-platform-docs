@@ -194,6 +194,27 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# RDS subnet groups
+# ------------------------------------------------------------------------------
+
+echo "[ RDS subnet groups ]"
+RDS_SUBNET_GROUPS=$(aws rds describe-db-subnet-groups \
+  --query "DBSubnetGroups[?contains(DBSubnetGroupName, '${NAME_PREFIX}')].DBSubnetGroupName" \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -n "$RDS_SUBNET_GROUPS" ]; then
+  for SG_NAME in $RDS_SUBNET_GROUPS; do
+    aws rds delete-db-subnet-group \
+      --db-subnet-group-name "$SG_NAME" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ RDS subnet group deleted: $SG_NAME"
+  done
+else
+  echo "  No RDS subnet groups found"
+fi
+
+# ------------------------------------------------------------------------------
 # SSM parameters
 # ------------------------------------------------------------------------------
 
@@ -325,6 +346,129 @@ if [ -n "$CERT_ARNS" ]; then
   done
 else
   echo "  No ACM certificates found"
+fi
+
+# ------------------------------------------------------------------------------
+# CloudTrail trails
+# ------------------------------------------------------------------------------
+
+echo "[ CloudTrail trails ]"
+TRAILS=$(aws cloudtrail describe-trails \
+  --include-shadow-trails false \
+  --query "trailList[?contains(Name, '${PROJECT_NAME}')].TrailARN" \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -n "$TRAILS" ]; then
+  for TRAIL_ARN in $TRAILS; do
+    aws cloudtrail delete-trail \
+      --name "$TRAIL_ARN" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ CloudTrail trail deleted"
+  done
+else
+  echo "  No CloudTrail trails found"
+fi
+
+# ------------------------------------------------------------------------------
+# KMS aliases and keys
+# ------------------------------------------------------------------------------
+
+echo "[ KMS keys ]"
+KMS_ALIASES=$(aws kms list-aliases \
+  --query "Aliases[?contains(AliasName, '${PROJECT_NAME}')].AliasName" \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+KMS_KEY_IDS=$(aws kms list-aliases \
+  --query "Aliases[?contains(AliasName, '${PROJECT_NAME}') && TargetKeyId!=null].TargetKeyId" \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -n "$KMS_ALIASES" ]; then
+  for ALIAS_NAME in $KMS_ALIASES; do
+    aws kms delete-alias \
+      --alias-name "$ALIAS_NAME" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ KMS alias deleted: $ALIAS_NAME"
+  done
+else
+  echo "  No KMS aliases found"
+fi
+
+for KEY_ID in $KMS_KEY_IDS; do
+  aws kms schedule-key-deletion \
+    --key-id "$KEY_ID" \
+    --pending-window-in-days 7 \
+    --region "$AWS_REGION" > /dev/null 2>&1 || true
+  echo "  ✓ KMS key scheduled for deletion: $KEY_ID"
+done
+
+# ------------------------------------------------------------------------------
+# IAM roles
+# ------------------------------------------------------------------------------
+
+echo "[ IAM roles ]"
+IAM_ROLES=$(aws iam list-roles \
+  --query "Roles[?contains(RoleName, '${PROJECT_NAME}')].RoleName" \
+  --output text 2>/dev/null || echo "")
+
+if [ -n "$IAM_ROLES" ]; then
+  for ROLE_NAME in $IAM_ROLES; do
+    ATTACHED=$(aws iam list-attached-role-policies \
+      --role-name "$ROLE_NAME" \
+      --query 'AttachedPolicies[].PolicyArn' \
+      --output text 2>/dev/null || echo "")
+    for POLICY_ARN in $ATTACHED; do
+      aws iam detach-role-policy \
+        --role-name "$ROLE_NAME" \
+        --policy-arn "$POLICY_ARN" > /dev/null 2>&1 || true
+    done
+    INLINE=$(aws iam list-role-policies \
+      --role-name "$ROLE_NAME" \
+      --query 'PolicyNames[]' \
+      --output text 2>/dev/null || echo "")
+    for POLICY_NAME in $INLINE; do
+      aws iam delete-role-policy \
+        --role-name "$ROLE_NAME" \
+        --policy-name "$POLICY_NAME" > /dev/null 2>&1 || true
+    done
+    PROFILES=$(aws iam list-instance-profiles-for-role \
+      --role-name "$ROLE_NAME" \
+      --query 'InstanceProfiles[].InstanceProfileName' \
+      --output text 2>/dev/null || echo "")
+    for PROFILE_NAME in $PROFILES; do
+      aws iam remove-role-from-instance-profile \
+        --instance-profile-name "$PROFILE_NAME" \
+        --role-name "$ROLE_NAME" > /dev/null 2>&1 || true
+    done
+    aws iam delete-role \
+      --role-name "$ROLE_NAME" > /dev/null 2>&1 || true
+    echo "  ✓ IAM role deleted: $ROLE_NAME"
+  done
+else
+  echo "  No IAM roles found"
+fi
+
+# ------------------------------------------------------------------------------
+# CloudWatch log groups
+# ------------------------------------------------------------------------------
+
+echo "[ CloudWatch log groups ]"
+LOG_GROUPS=$(aws logs describe-log-groups \
+  --query "logGroups[?contains(logGroupName, '${PROJECT_NAME}')].logGroupName" \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -n "$LOG_GROUPS" ]; then
+  for LG in $LOG_GROUPS; do
+    aws logs delete-log-group \
+      --log-group-name "$LG" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ Log group deleted: $LG"
+  done
+else
+  echo "  No CloudWatch log groups found"
 fi
 
 # ------------------------------------------------------------------------------
@@ -468,6 +612,28 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   echo "  ✓ VPC $VPC_ID deleted"
 else
   echo "  No VPC found"
+fi
+
+# ------------------------------------------------------------------------------
+# Elastic IP addresses
+# ------------------------------------------------------------------------------
+
+echo "[ Elastic IP addresses ]"
+EIP_ALLOC_IDS=$(aws ec2 describe-addresses \
+  --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
+  --query 'Addresses[].AllocationId' \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -n "$EIP_ALLOC_IDS" ]; then
+  for ALLOC_ID in $EIP_ALLOC_IDS; do
+    aws ec2 release-address \
+      --allocation-id "$ALLOC_ID" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ Elastic IP released: $ALLOC_ID"
+  done
+else
+  echo "  No Elastic IP addresses found"
 fi
 
 # ------------------------------------------------------------------------------
