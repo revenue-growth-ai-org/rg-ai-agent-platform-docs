@@ -316,6 +316,7 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
     echo "  ✓ VPC endpoints deleted"
     sleep 15
   fi
+  sleep 10
 
   # Delete NAT gateways
   echo "  Deleting NAT gateways..."
@@ -331,7 +332,7 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
       echo "  ✓ NAT gateway $NAT_ID deleted"
     done
     echo "  Waiting for NAT gateways to delete..."
-    sleep 30
+    sleep 45
   fi
 
   # Delete subnets
