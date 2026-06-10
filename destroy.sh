@@ -75,6 +75,44 @@ echo "=================================================="
 ORCH_DIR=$(find_repo "orchestrator" 2>/dev/null || echo "")
 if [ -n "$ORCH_DIR" ] && [ -f "$ORCH_DIR/prod.tfvars" ]; then
   cd "$ORCH_DIR"
+
+  # Clean up any remaining agent security groups before destroying orchestrator
+  echo "  Cleaning up remaining agent security groups..."
+  AGENT_SGS=$(aws ec2 describe-security-groups \
+    --filters "Name=tag:Name,Values=*${PROJECT_NAME}-${ENVIRONMENT}*agent*" \
+    --query 'SecurityGroups[].GroupId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -n "$AGENT_SGS" ]; then
+    for SG_ID in $AGENT_SGS; do
+      # Revoke all SG-referencing rules first
+      INGRESS=$(aws ec2 describe-security-groups \
+        --group-ids "$SG_ID" \
+        --query 'SecurityGroups[0].IpPermissions[?UserIdGroupPairs[0].GroupId!=null]' \
+        --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
+      if [ "$INGRESS" != "[]" ] && [ -n "$INGRESS" ]; then
+        aws ec2 revoke-security-group-ingress \
+          --group-id "$SG_ID" \
+          --ip-permissions "$INGRESS" \
+          --region "$AWS_REGION" > /dev/null 2>&1 || true
+      fi
+      EGRESS=$(aws ec2 describe-security-groups \
+        --group-ids "$SG_ID" \
+        --query 'SecurityGroups[0].IpPermissionsEgress[?UserIdGroupPairs[0].GroupId!=null]' \
+        --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
+      if [ "$EGRESS" != "[]" ] && [ -n "$EGRESS" ]; then
+        aws ec2 revoke-security-group-egress \
+          --group-id "$SG_ID" \
+          --ip-permissions "$EGRESS" \
+          --region "$AWS_REGION" > /dev/null 2>&1 || true
+      fi
+      aws ec2 delete-security-group \
+        --group-id "$SG_ID" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      echo "  ✓ Cleaned up agent SG: $SG_ID"
+    done
+  fi
+
   terraform init -reconfigure
   terraform destroy -var-file="prod.tfvars" -auto-approve
 else
