@@ -406,9 +406,19 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
     --query 'RouteTables[?Associations[0].Main!=`true`].RouteTableId' \
     --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   for RT in $RTS; do
+    # Disassociate from subnets first
+    ASSOC_IDS=$(aws ec2 describe-route-tables \
+      --route-table-ids "$RT" \
+      --query 'RouteTables[0].Associations[?Main!=`true`].RouteTableAssociationId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for ASSOC_ID in $ASSOC_IDS; do
+      aws ec2 disassociate-route-table \
+        --association-id "$ASSOC_ID" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
     aws ec2 delete-route-table \
       --route-table-id "$RT" \
-      --region "$AWS_REGION" 2>/dev/null || true
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
     echo "  ✓ Route table $RT deleted"
   done
 
