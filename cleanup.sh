@@ -303,6 +303,37 @@ VPC_ID=$(aws ec2 describe-vpcs \
 if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   echo "  Found VPC: $VPC_ID"
 
+  # Delete VPC endpoints
+  echo "  Deleting VPC endpoints..."
+  VPCE_IDS=$(aws ec2 describe-vpc-endpoints \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'VpcEndpoints[?State!=`deleted`].VpcEndpointId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -n "$VPCE_IDS" ]; then
+    aws ec2 delete-vpc-endpoints \
+      --vpc-endpoint-ids $VPCE_IDS \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ VPC endpoints deleted"
+    sleep 15
+  fi
+
+  # Delete NAT gateways
+  echo "  Deleting NAT gateways..."
+  NAT_IDS=$(aws ec2 describe-nat-gateways \
+    --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending" \
+    --query 'NatGateways[].NatGatewayId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -n "$NAT_IDS" ]; then
+    for NAT_ID in $NAT_IDS; do
+      aws ec2 delete-nat-gateway \
+        --nat-gateway-id "$NAT_ID" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      echo "  ✓ NAT gateway $NAT_ID deleted"
+    done
+    echo "  Waiting for NAT gateways to delete..."
+    sleep 30
+  fi
+
   # Delete subnets
   SUBNETS=$(aws ec2 describe-subnets \
     --filters "Name=vpc-id,Values=$VPC_ID" \
