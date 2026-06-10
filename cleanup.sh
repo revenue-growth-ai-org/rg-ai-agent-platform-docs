@@ -238,6 +238,19 @@ else
   echo "  No secrets found"
 fi
 
+# Force delete any secrets scheduled for deletion
+PENDING_SECRETS=$(aws secretsmanager list-secrets \
+  --filters Key=name,Values="${PROJECT_NAME}" \
+  --query 'SecretList[?DeletedDate!=null].ARN' \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+for SECRET_ARN in $PENDING_SECRETS; do
+  aws secretsmanager delete-secret \
+    --secret-id "$SECRET_ARN" \
+    --force-delete-without-recovery \
+    --region "$AWS_REGION" > /dev/null 2>&1 || true
+  echo "  ✓ Force deleted pending secret"
+done
+
 # ------------------------------------------------------------------------------
 # S3 buckets
 # ------------------------------------------------------------------------------
@@ -266,6 +279,31 @@ if [ -n "$BUCKETS" ]; then
   done
 else
   echo "  No S3 buckets found matching $NAME_PREFIX"
+fi
+
+# ------------------------------------------------------------------------------
+# DynamoDB tables
+# ------------------------------------------------------------------------------
+
+echo "[ DynamoDB tables ]"
+LOCK_TABLE=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -z "$LOCK_TABLE" ] || [ "$LOCK_TABLE" = "None" ]; then
+  LOCK_TABLE=$(aws dynamodb list-tables \
+    --query "TableNames[?contains(@, '${PROJECT_NAME}') && contains(@, 'state-lock')]" \
+    --output text --region "$AWS_REGION" 2>/dev/null | head -1)
+fi
+
+if [ -n "$LOCK_TABLE" ] && [ "$LOCK_TABLE" != "None" ]; then
+  aws dynamodb delete-table \
+    --table-name "$LOCK_TABLE" \
+    --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ DynamoDB lock table deleted: $LOCK_TABLE" || \
+    echo "  DynamoDB table not found or already deleted"
+else
+  echo "  No DynamoDB lock table found"
 fi
 
 # ------------------------------------------------------------------------------
