@@ -113,6 +113,26 @@ if [ -n "$ORCH_DIR" ] && [ -f "$ORCH_DIR/prod.tfvars" ]; then
     done
   fi
 
+  # Revoke orchestrator SG egress rules referencing agent SGs
+  echo "  Revoking orchestrator SG cross-references..."
+  ORCH_SG=$(aws ec2 describe-security-groups \
+    --filters "Name=tag:Name,Values=*${PROJECT_NAME}-${ENVIRONMENT}*orchestrator*" \
+    --query 'SecurityGroups[0].GroupId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -n "$ORCH_SG" ] && [ "$ORCH_SG" != "None" ]; then
+    EGRESS=$(aws ec2 describe-security-groups \
+      --group-ids "$ORCH_SG" \
+      --query 'SecurityGroups[0].IpPermissionsEgress[?UserIdGroupPairs[0].GroupId!=null]' \
+      --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
+    if [ "$EGRESS" != "[]" ] && [ -n "$EGRESS" ]; then
+      aws ec2 revoke-security-group-egress \
+        --group-id "$ORCH_SG" \
+        --ip-permissions "$EGRESS" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      echo "  ✓ Orchestrator SG egress rules revoked"
+    fi
+  fi
+
   terraform init -reconfigure
   terraform destroy -var-file="prod.tfvars" -auto-approve
 else
