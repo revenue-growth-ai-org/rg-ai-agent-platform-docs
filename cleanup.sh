@@ -307,24 +307,20 @@ fi
 # ------------------------------------------------------------------------------
 
 echo "[ DynamoDB tables ]"
-LOCK_TABLE=$(aws ssm get-parameter \
-  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
-  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+DYNAMO_TABLES=$(aws dynamodb list-tables \
+  --query "TableNames[?contains(@, '${PROJECT_NAME}')]" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
-if [ -z "$LOCK_TABLE" ] || [ "$LOCK_TABLE" = "None" ]; then
-  LOCK_TABLE=$(aws dynamodb list-tables \
-    --query "TableNames[?contains(@, '${PROJECT_NAME}') && contains(@, 'state-lock')]" \
-    --output text --region "$AWS_REGION" 2>/dev/null | head -1)
-fi
-
-if [ -n "$LOCK_TABLE" ] && [ "$LOCK_TABLE" != "None" ]; then
-  aws dynamodb delete-table \
-    --table-name "$LOCK_TABLE" \
-    --region "$AWS_REGION" > /dev/null 2>&1 && \
-    echo "  ✓ DynamoDB lock table deleted: $LOCK_TABLE" || \
-    echo "  DynamoDB table not found or already deleted"
+if [ -n "$DYNAMO_TABLES" ]; then
+  for TABLE in $DYNAMO_TABLES; do
+    aws dynamodb delete-table \
+      --table-name "$TABLE" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ DynamoDB table deleted: $TABLE" || \
+      echo "  DynamoDB table not found or already deleted: $TABLE"
+  done
 else
-  echo "  No DynamoDB lock table found"
+  echo "  No DynamoDB tables found"
 fi
 
 # ------------------------------------------------------------------------------
