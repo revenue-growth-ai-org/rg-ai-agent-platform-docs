@@ -199,16 +199,14 @@ fi
 
 echo "[ RDS subnet groups ]"
 RDS_SUBNET_GROUPS=$(aws rds describe-db-subnet-groups \
-  --query "DBSubnetGroups[?contains(DBSubnetGroupName, '${NAME_PREFIX}')].DBSubnetGroupName" \
-  --output text \
-  --region "$AWS_REGION" 2>/dev/null || echo "")
-
+  --query "DBSubnetGroups[?contains(DBSubnetGroupName, '${PROJECT_NAME}')].DBSubnetGroupName" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 if [ -n "$RDS_SUBNET_GROUPS" ]; then
-  for SG_NAME in $RDS_SUBNET_GROUPS; do
+  for SG in $RDS_SUBNET_GROUPS; do
     aws rds delete-db-subnet-group \
-      --db-subnet-group-name "$SG_NAME" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ RDS subnet group deleted: $SG_NAME"
+      --db-subnet-group-name "$SG" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ RDS subnet group deleted: $SG" || true
   done
 else
   echo "  No RDS subnet groups found"
@@ -614,22 +612,19 @@ fi
 # Elastic IP addresses
 # ------------------------------------------------------------------------------
 
-echo "[ Elastic IP addresses ]"
-EIP_ALLOC_IDS=$(aws ec2 describe-addresses \
-  --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
-  --query 'Addresses[].AllocationId' \
-  --output text \
-  --region "$AWS_REGION" 2>/dev/null || echo "")
-
-if [ -n "$EIP_ALLOC_IDS" ]; then
-  for ALLOC_ID in $EIP_ALLOC_IDS; do
+echo "[ Elastic IPs ]"
+EIPS=$(aws ec2 describe-addresses \
+  --query "Addresses[?Tags[?Key=='Project' && Value=='${PROJECT_NAME}']].AllocationId" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$EIPS" ]; then
+  for EIP in $EIPS; do
     aws ec2 release-address \
-      --allocation-id "$ALLOC_ID" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ Elastic IP released: $ALLOC_ID"
+      --allocation-id "$EIP" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ EIP released: $EIP" || true
   done
 else
-  echo "  No Elastic IP addresses found"
+  echo "  No Elastic IPs found"
 fi
 
 # ------------------------------------------------------------------------------
