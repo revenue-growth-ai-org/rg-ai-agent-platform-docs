@@ -297,24 +297,14 @@ clone_repos() {
   echo ""
 
   mkdir -p "$INSTALL_DIR"
-  cd "$INSTALL_DIR"
 
-  REPOS=(
-    "0-rg-ai-agent-platform-bootstrap"
-    "1-rg-ai-agent-platform-base"
-    "2-rg-ai-agent-platform-orchestrator"
-    "3-rg-ai-agent-platform-agent"
-    "rg-ai-agent-platform-docs"
-  )
-
-  for REPO in "${REPOS[@]}"; do
-    if [ -d "$REPO" ]; then
-      echo "  ✓ $REPO already exists — pulling latest..."
-      cd "$REPO" && git pull --quiet && cd ..
+  for REPO in 0-rg-ai-agent-platform-bootstrap 1-rg-ai-agent-platform-base 2-rg-ai-agent-platform-orchestrator 3-rg-ai-agent-platform-agent rg-ai-agent-platform-docs; do
+    if [ -d "$INSTALL_DIR/$REPO" ]; then
+      echo "  Updating $REPO..."
+      cd "$INSTALL_DIR/$REPO" && git pull origin main 2>/dev/null || true
     else
       echo "  Cloning $REPO..."
-      git clone --quiet "https://github.com/${GITHUB_ORG}/${REPO}.git"
-      echo "  ✓ $REPO cloned"
+      git clone "https://github.com/$GITHUB_ORG/$REPO.git" "$INSTALL_DIR/$REPO"
     fi
   done
 
