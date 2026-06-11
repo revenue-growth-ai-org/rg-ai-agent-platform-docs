@@ -273,6 +273,21 @@ for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
   echo "  Destroying $(basename $DIR)..."
   cd "$DIR"
   terraform init -reconfigure > /dev/null 2>&1
+
+  if [ "$DIR" = "$BASE_DIR" ]; then
+    # Delete CloudTrail trails
+    echo "  Deleting CloudTrail trails..."
+    TRAILS=$(aws cloudtrail describe-trails \
+      --query "trailList[?contains(Name,'${PROJECT_NAME}')].Name" \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for TRAIL in $TRAILS; do
+      aws cloudtrail delete-trail \
+        --name "$TRAIL" \
+        --region "$AWS_REGION" > /dev/null 2>&1 && \
+        echo "  ✓ CloudTrail deleted: $TRAIL" || true
+    done
+  fi
+
   terraform destroy -var-file="prod.tfvars" -auto-approve
 
   if [ "$DIR" = "$BASE_DIR" ]; then
