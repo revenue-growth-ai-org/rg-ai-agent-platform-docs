@@ -284,17 +284,9 @@ for i in $(seq 1 "$AGENT_COUNT"); do
   echo ""
   echo "--- Agent $i of $AGENT_COUNT ---"
   read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
-  read -p "Agent description (e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
-  read -p "Does this agent call external APIs? (y/n): " EXTERNAL < /dev/tty
-
-  if [ "$EXTERNAL" = "y" ]; then
-    read -p "External API secret ARN (or press enter to add later): " SECRET_ARN < /dev/tty
-    AGENT_EXTERNAL+=("true")
-    AGENT_SECRETS+=("${SECRET_ARN:-}")
-  else
-    AGENT_EXTERNAL+=("false")
-    AGENT_SECRETS+=("")
-  fi
+  AGENT_DESC="Isolated agent node"
+  AGENT_EXTERNAL+=("true")
+  AGENT_SECRETS+=("")
 
   AGENT_NAMES+=("$AGENT_NAME")
   AGENT_DESCRIPTIONS+=("$AGENT_DESC")

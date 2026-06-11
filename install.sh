@@ -361,7 +361,7 @@ MY_IP=$(curl -s https://checkip.amazonaws.com 2>/dev/null || echo "")
 echo "Please answer a few questions to configure your deployment:"
 echo ""
 read -p "Project name (lowercase, hyphens only, e.g. acme-corp): " PROJECT_NAME < /dev/tty
-read -p "Environment (prod / staging / dev): " ENVIRONMENT < /dev/tty
+ENVIRONMENT="prod"
 read -p "Organization name (for SSL certificate, e.g. Acme Corporation): " ORG_NAME < /dev/tty
 
 if [ -n "$MY_IP" ]; then
