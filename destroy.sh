@@ -222,6 +222,26 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   else
     echo "  No NAT gateways found"
   fi
+
+  # Release Elastic IPs from deleted NAT gateways
+  echo "  Releasing Elastic IPs..."
+  EIPS=$(aws ec2 describe-addresses \
+    --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
+    --query 'Addresses[].AllocationId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -z "$EIPS" ]; then
+    EIPS=$(aws ec2 describe-addresses \
+      --query "Addresses[?AssociationId==null].AllocationId" \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  fi
+
+  for EIP in $EIPS; do
+    aws ec2 release-address \
+      --allocation-id "$EIP" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ EIP released: $EIP" || true
+  done
 fi
 
 # ------------------------------------------------------------------------------
