@@ -321,21 +321,24 @@ if data.get('Objects'):
 fi
 
 # ------------------------------------------------------------------------------
-# Step 6 — Wipe local state files
+# Step 6 — Delete local repos for a completely fresh start
 # ------------------------------------------------------------------------------
 
 echo ""
-echo "[ Step 6 ] Wiping local Terraform state files..."
+echo "[ Step 6 ] Removing local repos..."
 
 for REPO in "$PARENT_DIR"/[0-9]*; do
   if [ -d "$REPO" ]; then
-    rm -f "$REPO/prod.tfvars" "$REPO/backend.tf" "$REPO/.terraform.lock.hcl" \
-          "$REPO/terraform.tfstate" "$REPO/terraform.tfstate.backup"
-    rm -rf "$REPO/.terraform"
-    echo "  ✓ $(basename $REPO) wiped"
+    rm -rf "$REPO"
+    echo "  ✓ Deleted $(basename $REPO)"
   fi
 done
+
 rm -f "$DEFAULTS_FILE"
+echo "  ✓ defaults.env deleted"
+echo ""
+echo "  Local repos deleted. To redeploy run:"
+echo "  curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/main/install.sh | bash"
 
 # ------------------------------------------------------------------------------
 # Step 7 — Verify
