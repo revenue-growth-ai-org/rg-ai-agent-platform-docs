@@ -159,6 +159,72 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
 fi
 
 # ------------------------------------------------------------------------------
+# Step 4b — Delete VPC endpoints and NAT gateways
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 4b ] Deleting VPC endpoints and NAT gateways..."
+
+if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+  # Delete VPC endpoints
+  VPCE_IDS=$(aws ec2 describe-vpc-endpoints \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'VpcEndpoints[?State!=`deleted`].VpcEndpointId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -n "$VPCE_IDS" ]; then
+    aws ec2 delete-vpc-endpoints \
+      --vpc-endpoint-ids $VPCE_IDS \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ VPC endpoints deletion initiated"
+    echo "  Waiting for VPC endpoints to terminate..."
+    for i in $(seq 1 12); do
+      sleep 10
+      REMAINING=$(aws ec2 describe-vpc-endpoints \
+        --filters "Name=vpc-id,Values=$VPC_ID" \
+        --query 'VpcEndpoints[?State==`deleting` || State==`pending`].VpcEndpointId' \
+        --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      if [ -z "$REMAINING" ]; then
+        echo "  ✓ VPC endpoints terminated"
+        break
+      fi
+      echo "  Still waiting... ($((i * 10))s)"
+    done
+  else
+    echo "  No VPC endpoints found"
+  fi
+
+  # Delete NAT gateways
+  NAT_IDS=$(aws ec2 describe-nat-gateways \
+    --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending" \
+    --query 'NatGateways[].NatGatewayId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -n "$NAT_IDS" ]; then
+    for NAT_ID in $NAT_IDS; do
+      aws ec2 delete-nat-gateway \
+        --nat-gateway-id "$NAT_ID" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      echo "  ✓ NAT gateway deletion initiated: $NAT_ID"
+    done
+    echo "  Waiting for NAT gateways to fully terminate..."
+    for i in $(seq 1 24); do
+      sleep 10
+      REMAINING=$(aws ec2 describe-nat-gateways \
+        --filter "Name=vpc-id,Values=$VPC_ID" \
+        "Name=state,Values=pending,deleting,available" \
+        --query 'NatGateways[].NatGatewayId' \
+        --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      if [ -z "$REMAINING" ]; then
+        echo "  ✓ NAT gateways terminated"
+        break
+      fi
+      echo "  Still waiting... ($((i * 10))s)"
+    done
+  else
+    echo "  No NAT gateways found"
+  fi
+fi
+
+# ------------------------------------------------------------------------------
 # Step 5 — Terraform destroy in reverse order
 # ------------------------------------------------------------------------------
 
