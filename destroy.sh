@@ -355,6 +355,18 @@ echo ""
 echo "  Local repos deleted. To redeploy run:"
 echo "  curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/main/install.sh | bash"
 
+# Delete CloudWatch log groups
+echo "  Cleaning up CloudWatch log groups..."
+LOG_GROUPS=$(aws logs describe-log-groups \
+  --query "logGroups[?contains(logGroupName,'${PROJECT_NAME}')].logGroupName" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+for LG in $LOG_GROUPS; do
+  aws logs delete-log-group \
+    --log-group-name "$LG" \
+    --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Log group deleted: $LG" || true
+done
+
 # ------------------------------------------------------------------------------
 # Step 7 — Verify
 # ------------------------------------------------------------------------------
