@@ -330,6 +330,19 @@ if data.get('Objects'):
       --delete file:///dev/stdin \
       --region "$AWS_REGION" > /dev/null 2>&1 || true
   fi
+  # Force delete secrets before bootstrap destroy
+  echo "  Force deleting Secrets Manager secrets..."
+  SECRETS=$(aws secretsmanager list-secrets \
+    --query "SecretList[?contains(Name,'${PROJECT_NAME}')].ARN" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for SECRET in $SECRETS; do
+    aws secretsmanager delete-secret \
+      --secret-id "$SECRET" \
+      --force-delete-without-recovery \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Secret deleted: $SECRET" || true
+  done
+
   echo "  Destroying bootstrap..."
   terraform init -reconfigure > /dev/null 2>&1
   terraform destroy -var-file="prod.tfvars" -auto-approve
