@@ -454,13 +454,33 @@ if [ "$CERT_STATUS" != "ISSUED" ]; then
   terraform output -json acm_certificate_validation_records 2>/dev/null | python3 -c "
 import sys, json
 records = json.load(sys.stdin)
+seen = set()
+unique = []
 for r in records:
-    print(f'  Name:  {r[\"resource_record_name\"]}')
-    print(f'  Type:  {r[\"resource_record_type\"]}')
-    print(f'  Value: {r[\"resource_record_value\"]}')
+    key = r['resource_record_name']
+    if key not in seen:
+        seen.add(key)
+        unique.append(r)
+for r in unique:
+    name = r['resource_record_name'].rstrip('.')
+    print(f'  Type:   CNAME')
+    print(f'  Name:   {name}')
+    print(f'  Value:  {r[\"resource_record_value\"].rstrip(\".\")}')
     print()
 " 2>/dev/null || echo "  Check AWS Console → Certificate Manager for validation records"
 
+  echo "  IMPORTANT: Add only ONE record even if shown twice."
+  echo ""
+  echo "  Cloudflare users:"
+  echo "    - Set proxy status to DNS Only (grey cloud, NOT orange)"
+  echo "    - Do not include the domain suffix in the Name field"
+  echo "      Cloudflare adds it automatically"
+  echo ""
+  echo "  Route53 users:"
+  echo "    - Use the full Name value shown above"
+  echo ""
+  echo "  This CNAME stays in DNS permanently."
+  echo "  Future installs will validate automatically."
   echo ""
   echo "  Once added, DNS validation takes 2-5 minutes."
   echo ""
