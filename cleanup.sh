@@ -325,18 +325,37 @@ fi
 # ACM certificates
 # ------------------------------------------------------------------------------
 
+echo "[ ACM Private CA ]"
+PCA_ARNS=$(aws acm-pca list-certificate-authorities \
+  --query "CertificateAuthorities[?Status!='DELETED' && contains(CertificateAuthorityConfiguration.Subject.Organization, '${PROJECT_NAME}')].Arn" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$PCA_ARNS" ]; then
+  for PCA_ARN in $PCA_ARNS; do
+    aws acm-pca update-certificate-authority \
+      --certificate-authority-arn "$PCA_ARN" \
+      --status DISABLED \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    aws acm-pca delete-certificate-authority \
+      --certificate-authority-arn "$PCA_ARN" \
+      --permanent-deletion-time-in-days 7 \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ ACM Private CA deleted: $PCA_ARN" || true
+  done
+else
+  echo "  No ACM Private CAs found"
+fi
+
 echo "[ ACM certificates ]"
 CERT_ARNS=$(aws acm list-certificates \
-  --query "CertificateSummaryList[?contains(DomainName, '${NAME_PREFIX}')].CertificateArn" \
-  --output text \
-  --region "$AWS_REGION" 2>/dev/null || echo "")
-
+  --query "CertificateSummaryList[?contains(DomainName, '${PROJECT_NAME}')].CertificateArn" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 if [ -n "$CERT_ARNS" ]; then
   for CERT_ARN in $CERT_ARNS; do
     aws acm delete-certificate \
       --certificate-arn "$CERT_ARN" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ Certificate deleted"
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ ACM certificate deleted: $CERT_ARN" || \
+      echo "  Certificate still in use — will be deleted after ALB is removed"
   done
 else
   echo "  No ACM certificates found"
