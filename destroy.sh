@@ -2,326 +2,253 @@
 set -e
 
 # =============================================================================
-# AWS Agent Platform — Full Destroy Script
+# AWS Agent Platform — Destroy Script
 # =============================================================================
-# Destroys all platform resources in reverse order.
-# Run this to completely tear down the platform and stop all AWS costs.
+# Completely removes all platform AWS resources.
+# Run this after bash master-setup.sh to tear everything down.
 #
 # Usage:
 #   bash destroy.sh
-#
-# WARNING: This permanently destroys all platform infrastructure.
-# Make sure you have destroyed all customer data before running this.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
+
+if [ ! -f "$DEFAULTS_FILE" ]; then
+  echo "ERROR: defaults.env not found. Nothing to destroy."
+  exit 1
+fi
+
+source "$DEFAULTS_FILE"
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION="${AWS_REGION:-us-east-2}"
+NAME_PREFIX="${PROJECT_NAME}-${ENVIRONMENT}"
+CLUSTER="${NAME_PREFIX}-ecs"
 
 echo ""
 echo "=================================================="
-echo " AWS Agent Platform — Full Destroy"
+echo " AWS Agent Platform — Destroy"
 echo "=================================================="
 echo ""
-echo "  WARNING: This will destroy ALL platform infrastructure."
-echo "  All AWS resources will be permanently deleted."
+echo "  Project:  $PROJECT_NAME"
+echo "  Env:      $ENVIRONMENT"
+echo "  Account:  $AWS_ACCOUNT_ID"
+echo "  Region:   $AWS_REGION"
 echo ""
-read -p "Type 'yes' to confirm full destroy: " CONFIRM < /dev/tty
+read -p "Type 'yes' to destroy ALL platform resources: " CONFIRM < /dev/tty
 if [ "$CONFIRM" != "yes" ]; then
   echo "Cancelled."
   exit 0
 fi
 
 # ------------------------------------------------------------------------------
-# Helper — find repo directory
-# ------------------------------------------------------------------------------
-
-find_repo() {
-  local REPO_PATTERN=$1
-  local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "*${REPO_PATTERN}*" | grep -v "docs" | head -1)
-  if [ -z "$REPO_DIR" ]; then
-    echo "WARNING: Cannot find repo matching *${REPO_PATTERN}* — skipping"
-    return 1
-  fi
-  echo "$REPO_DIR"
-}
-
-# ------------------------------------------------------------------------------
-# Step 3 — Destroy agents first
+# Step 1 — Disable deletion protection
 # ------------------------------------------------------------------------------
 
 echo ""
-echo "=================================================="
-echo " [1/4] Destroying agents..."
-echo "=================================================="
+echo "[ Step 1 ] Disabling deletion protection..."
 
-AGENT_DIR=$(find_repo "agent" 2>/dev/null || echo "")
-if [ -n "$AGENT_DIR" ] && [ -f "$AGENT_DIR/prod.tfvars" ]; then
-  cd "$AGENT_DIR"
-  terraform init -reconfigure
-  make destroy_auto 2>/dev/null || terraform destroy -var-file="prod.tfvars" -auto-approve
+aws rds modify-db-instance \
+  --db-instance-identifier "${NAME_PREFIX}-postgres" \
+  --no-deletion-protection \
+  --apply-immediately \
+  --region "$AWS_REGION" > /dev/null 2>&1 && echo "  ✓ RDS deletion protection disabled" || echo "  RDS not found or already unprotected"
+
+ALB_ARN=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?contains(LoadBalancerName,'${NAME_PREFIX}')].LoadBalancerArn" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$ALB_ARN" ]; then
+  aws elbv2 modify-load-balancer-attributes \
+    --load-balancer-arn "$ALB_ARN" \
+    --attributes Key=deletion_protection.enabled,Value=false \
+    --region "$AWS_REGION" > /dev/null 2>&1 && echo "  ✓ ALB deletion protection disabled"
 else
-  echo "  No agent deployment found — skipping"
+  echo "  ALB not found or already deleted"
 fi
 
 # ------------------------------------------------------------------------------
-# Step 2 — Destroy orchestrator
+# Step 2 — Stop ECS services
 # ------------------------------------------------------------------------------
 
 echo ""
-echo "=================================================="
-echo " [2/4] Destroying orchestrator..."
-echo "=================================================="
+echo "[ Step 2 ] Stopping ECS services..."
 
-ORCH_DIR=$(find_repo "orchestrator" 2>/dev/null || echo "")
-if [ -n "$ORCH_DIR" ] && [ -f "$ORCH_DIR/prod.tfvars" ]; then
-  cd "$ORCH_DIR"
+SERVICES=$(aws ecs list-services \
+  --cluster "$CLUSTER" \
+  --query 'serviceArns[]' \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
-  # Clean up any remaining agent security groups before destroying orchestrator
-  echo "  Cleaning up remaining agent security groups..."
-  AGENT_SGS=$(aws ec2 describe-security-groups \
-    --filters "Name=tag:Name,Values=*${PROJECT_NAME}-${ENVIRONMENT}*agent*" \
-    --query 'SecurityGroups[].GroupId' \
+if [ -n "$SERVICES" ]; then
+  for SERVICE_ARN in $SERVICES; do
+    SERVICE_NAME=$(echo "$SERVICE_ARN" | awk -F'/' '{print $NF}')
+    aws ecs update-service \
+      --cluster "$CLUSTER" \
+      --service "$SERVICE_NAME" \
+      --desired-count 0 \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    aws ecs delete-service \
+      --cluster "$CLUSTER" \
+      --service "$SERVICE_NAME" \
+      --force \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    echo "  ✓ Stopped $SERVICE_NAME"
+  done
+  echo "  Waiting 30 seconds for services to stop..."
+  sleep 30
+else
+  echo "  No ECS services found"
+fi
+
+# ------------------------------------------------------------------------------
+# Step 3 — Delete service discovery
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 3 ] Cleaning up service discovery..."
+
+for SVC_ID in $(aws servicediscovery list-services \
+  --query "Services[?contains(Name,'${PROJECT_NAME}')].Id" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo ""); do
+  aws servicediscovery delete-service \
+    --id "$SVC_ID" \
+    --region "$AWS_REGION" > /dev/null 2>&1 || true
+  echo "  ✓ Service discovery deleted: $SVC_ID"
+done
+
+# ------------------------------------------------------------------------------
+# Step 4 — Revoke cross-SG references
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 4 ] Revoking security group cross-references..."
+
+VPC_ID=$(aws ec2 describe-vpcs \
+  --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
+  --query 'Vpcs[0].VpcId' \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+  SGS=$(aws ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
     --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-
-  if [ -n "$AGENT_SGS" ]; then
-    for SG_ID in $AGENT_SGS; do
-      # Revoke all SG-referencing rules first
-      INGRESS=$(aws ec2 describe-security-groups \
-        --group-ids "$SG_ID" \
-        --query 'SecurityGroups[0].IpPermissions[?UserIdGroupPairs[0].GroupId!=null]' \
-        --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
-      if [ "$INGRESS" != "[]" ] && [ -n "$INGRESS" ]; then
-        aws ec2 revoke-security-group-ingress \
-          --group-id "$SG_ID" \
-          --ip-permissions "$INGRESS" \
-          --region "$AWS_REGION" > /dev/null 2>&1 || true
-      fi
-      EGRESS=$(aws ec2 describe-security-groups \
-        --group-ids "$SG_ID" \
-        --query 'SecurityGroups[0].IpPermissionsEgress[?UserIdGroupPairs[0].GroupId!=null]' \
-        --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
-      if [ "$EGRESS" != "[]" ] && [ -n "$EGRESS" ]; then
-        aws ec2 revoke-security-group-egress \
-          --group-id "$SG_ID" \
-          --ip-permissions "$EGRESS" \
-          --region "$AWS_REGION" > /dev/null 2>&1 || true
-      fi
-      aws ec2 delete-security-group \
+  for SG_ID in $SGS; do
+    INGRESS=$(aws ec2 describe-security-groups \
+      --group-ids "$SG_ID" \
+      --query 'SecurityGroups[0].IpPermissions[?UserIdGroupPairs[0].GroupId!=null]' \
+      --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
+    if [ "$INGRESS" != "[]" ] && [ -n "$INGRESS" ]; then
+      aws ec2 revoke-security-group-ingress \
         --group-id "$SG_ID" \
+        --ip-permissions "$INGRESS" \
         --region "$AWS_REGION" > /dev/null 2>&1 || true
-      echo "  ✓ Cleaned up agent SG: $SG_ID"
-    done
-  fi
-
-  # Revoke orchestrator SG egress rules referencing agent SGs
-  echo "  Revoking orchestrator SG cross-references..."
-  ORCH_SG=$(aws ec2 describe-security-groups \
-    --filters "Name=tag:Name,Values=*${PROJECT_NAME}-${ENVIRONMENT}*orchestrator*" \
-    --query 'SecurityGroups[0].GroupId' \
-    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  if [ -n "$ORCH_SG" ] && [ "$ORCH_SG" != "None" ]; then
+    fi
     EGRESS=$(aws ec2 describe-security-groups \
-      --group-ids "$ORCH_SG" \
+      --group-ids "$SG_ID" \
       --query 'SecurityGroups[0].IpPermissionsEgress[?UserIdGroupPairs[0].GroupId!=null]' \
       --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
     if [ "$EGRESS" != "[]" ] && [ -n "$EGRESS" ]; then
       aws ec2 revoke-security-group-egress \
-        --group-id "$ORCH_SG" \
+        --group-id "$SG_ID" \
         --ip-permissions "$EGRESS" \
         --region "$AWS_REGION" > /dev/null 2>&1 || true
-      echo "  ✓ Orchestrator SG egress rules revoked"
     fi
-  fi
-
-  terraform init -reconfigure
-  terraform destroy -var-file="prod.tfvars" -auto-approve
-else
-  echo "  No orchestrator deployment found — skipping"
+  done
+  echo "  ✓ Security group cross-references revoked"
 fi
 
 # ------------------------------------------------------------------------------
-# Step 1 — Destroy base infrastructure
+# Step 5 — Terraform destroy in reverse order
 # ------------------------------------------------------------------------------
 
 echo ""
-echo "=================================================="
-echo " [3/4] Destroying base infrastructure..."
-echo "=================================================="
+echo "[ Step 5 ] Destroying infrastructure (this takes 20-30 minutes)..."
 
-BASE_DIR=$(find_repo "base" 2>/dev/null || echo "")
-if [ -n "$BASE_DIR" ] && [ -f "$BASE_DIR/prod.tfvars" ]; then
-  cd "$BASE_DIR"
+find_repo() {
+  local PATTERN=$1
+  find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${PATTERN}*" | grep -v "docs" | head -1
+}
 
-  # Disable RDS deletion protection
-  echo "  Disabling RDS deletion protection..."
-  RDS_INSTANCES=$(aws rds describe-db-instances \
-    --query "DBInstances[?contains(DBInstanceIdentifier, '${PROJECT_NAME}-${ENVIRONMENT}')].DBInstanceIdentifier" \
-    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  for RDS_ID in $RDS_INSTANCES; do
-    aws rds modify-db-instance \
-      --db-instance-identifier "$RDS_ID" \
-      --no-deletion-protection \
-      --apply-immediately \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ Deletion protection disabled on $RDS_ID"
-  done
+AGENT_DIR=$(find_repo "agent")
+ORCH_DIR=$(find_repo "orchestrator")
+BASE_DIR=$(find_repo "base")
+BOOTSTRAP_DIR=$(find_repo "bootstrap")
 
-  # Disable ALB deletion protection
-  echo "  Disabling ALB deletion protection..."
-  ALB_ARNS=$(aws elbv2 describe-load-balancers \
-    --query "LoadBalancers[?contains(LoadBalancerName, '${PROJECT_NAME}-${ENVIRONMENT}')].LoadBalancerArn" \
-    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  for ALB_ARN in $ALB_ARNS; do
-    aws elbv2 modify-load-balancer-attributes \
-      --load-balancer-arn "$ALB_ARN" \
-      --attributes Key=deletion_protection.enabled,Value=false \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ Deletion protection disabled on $(echo "$ALB_ARN" | awk -F'/' '{print $3}')"
-  done
-
-  # Stop and delete all ECS services before destroying base infrastructure
-  echo "  Stopping ECS services..."
-  CLUSTER="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
-  SERVICES=$(aws ecs list-services \
-    --cluster "$CLUSTER" \
-    --query 'serviceArns[]' \
-    --output text \
-    --region "$AWS_REGION" 2>/dev/null || echo "")
-
-  if [ -n "$SERVICES" ]; then
-    for SERVICE_ARN in $SERVICES; do
-      SERVICE_NAME=$(echo "$SERVICE_ARN" | awk -F'/' '{print $NF}')
-      aws ecs update-service \
-        --cluster "$CLUSTER" \
-        --service "$SERVICE_NAME" \
-        --desired-count 0 \
-        --region "$AWS_REGION" > /dev/null 2>&1 || true
-      aws ecs delete-service \
-        --cluster "$CLUSTER" \
-        --service "$SERVICE_NAME" \
-        --force \
-        --region "$AWS_REGION" > /dev/null 2>&1 || true
-      echo "  ✓ Stopped $SERVICE_NAME"
-    done
-    echo "  Waiting for services to stop..."
-    sleep 30
+for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
+  if [ -n "$DIR" ] && [ -f "$DIR/prod.tfvars" ]; then
+    echo ""
+    echo "  Destroying $(basename $DIR)..."
+    cd "$DIR"
+    terraform init -reconfigure > /dev/null 2>&1
+    terraform destroy -var-file="prod.tfvars" -auto-approve
   fi
+done
 
-  # Delete service discovery services
-  echo "  Cleaning up service discovery..."
-  for SVC_ID in $(aws servicediscovery list-services \
-    --query "Services[?contains(Name, '${PROJECT_NAME}')].Id" \
-    --output text --region "$AWS_REGION" 2>/dev/null || echo ""); do
-    aws servicediscovery delete-service \
-      --id "$SVC_ID" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-  done
-
-  # Revoke cross-SG references to prevent DependencyViolation on destroy
-  echo "  Revoking cross-SG references..."
-  VPC_ID=$(aws ec2 describe-vpcs \
-    --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
-    --query 'Vpcs[0].VpcId' \
-    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-    SGS=$(aws ec2 describe-security-groups \
-      --filters "Name=vpc-id,Values=$VPC_ID" \
-      --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    for SG_ID in $SGS; do
-      # Get full ingress rules referencing other SGs and revoke them
-      INGRESS_PERMS=$(aws ec2 describe-security-groups \
-        --group-ids "$SG_ID" \
-        --query 'SecurityGroups[0].IpPermissions[?UserIdGroupPairs[0].GroupId!=null]' \
-        --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
-      if [ "$INGRESS_PERMS" != "[]" ] && [ -n "$INGRESS_PERMS" ]; then
-        aws ec2 revoke-security-group-ingress \
-          --group-id "$SG_ID" \
-          --ip-permissions "$INGRESS_PERMS" \
-          --region "$AWS_REGION" > /dev/null 2>&1 || true
-      fi
-      # Get full egress rules referencing other SGs and revoke them
-      EGRESS_PERMS=$(aws ec2 describe-security-groups \
-        --group-ids "$SG_ID" \
-        --query 'SecurityGroups[0].IpPermissionsEgress[?UserIdGroupPairs[0].GroupId!=null]' \
-        --output json --region "$AWS_REGION" 2>/dev/null || echo "[]")
-      if [ "$EGRESS_PERMS" != "[]" ] && [ -n "$EGRESS_PERMS" ]; then
-        aws ec2 revoke-security-group-egress \
-          --group-id "$SG_ID" \
-          --ip-permissions "$EGRESS_PERMS" \
-          --region "$AWS_REGION" > /dev/null 2>&1 || true
-      fi
-    done
-  fi
-
-  terraform init -reconfigure
-  make destroy_auto 2>/dev/null || terraform destroy -var-file="prod.tfvars" -auto-approve
-else
-  echo "  No base infrastructure found — skipping"
-fi
-
-# ------------------------------------------------------------------------------
-# Step 0 — Empty buckets and destroy bootstrap
-# ------------------------------------------------------------------------------
-
-echo ""
-echo "=================================================="
-echo " [4/4] Destroying bootstrap..."
-echo "=================================================="
-
-BOOTSTRAP_DIR=$(find_repo "bootstrap" 2>/dev/null || echo "")
+# Empty state bucket before destroying bootstrap
 if [ -n "$BOOTSTRAP_DIR" ] && [ -f "$BOOTSTRAP_DIR/prod.tfvars" ]; then
+  echo ""
+  echo "  Emptying state bucket..."
   cd "$BOOTSTRAP_DIR"
-
-  # Empty state bucket before destroying bootstrap
-  STATE_BUCKET=$(terraform output -raw terraform_state_bucket 2>/dev/null || \
-    aws ssm get-parameter \
-      --name "/$(grep project_name prod.tfvars | cut -d'"' -f2)/$(grep environment prod.tfvars | cut -d'"' -f2)/bootstrap/terraform_state_bucket" \
-      --query Parameter.Value --output text 2>/dev/null || echo "")
-
+  STATE_BUCKET=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_bucket" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
+    aws s3 ls | grep "${PROJECT_NAME}" | grep "terraform-state" | awk '{print $3}' | head -1)
   if [ -n "$STATE_BUCKET" ] && [ "$STATE_BUCKET" != "None" ]; then
-    echo "  Emptying state bucket: $STATE_BUCKET"
-    aws s3 rm "s3://$STATE_BUCKET" --recursive 2>/dev/null || true
+    aws s3 rm "s3://$STATE_BUCKET" --recursive --region "$AWS_REGION" > /dev/null 2>&1 || true
     aws s3api list-object-versions \
       --bucket "$STATE_BUCKET" \
       --output json \
       --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
       python3 -c "
-import sys, json
-data = json.load(sys.stdin)
+import sys,json
+data=json.load(sys.stdin)
 if data.get('Objects'):
     print(json.dumps(data))
 " | aws s3api delete-objects \
       --bucket "$STATE_BUCKET" \
       --delete file:///dev/stdin \
-      --region "$AWS_REGION" 2>/dev/null || true
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
   fi
-
-  terraform init -reconfigure
+  echo "  Destroying bootstrap..."
+  terraform init -reconfigure > /dev/null 2>&1
   terraform destroy -var-file="prod.tfvars" -auto-approve
-else
-  echo "  No bootstrap deployment found — skipping"
 fi
 
 # ------------------------------------------------------------------------------
-# Final verification
+# Step 6 — Wipe local state files
 # ------------------------------------------------------------------------------
 
 echo ""
-echo "=================================================="
-echo " Verifying cleanup..."
-echo "=================================================="
+echo "[ Step 6 ] Wiping local Terraform state files..."
+
+for REPO in "$PARENT_DIR"/[0-9]*; do
+  if [ -d "$REPO" ]; then
+    rm -f "$REPO/prod.tfvars" "$REPO/backend.tf" "$REPO/.terraform.lock.hcl" \
+          "$REPO/terraform.tfstate" "$REPO/terraform.tfstate.backup"
+    rm -rf "$REPO/.terraform"
+    echo "  ✓ $(basename $REPO) wiped"
+  fi
+done
+rm -f "$DEFAULTS_FILE"
+
+# ------------------------------------------------------------------------------
+# Step 7 — Verify
+# ------------------------------------------------------------------------------
+
 echo ""
-
-AWS_REGION=$(aws configure get region)
-
-echo "Remaining resources (should all be empty):"
+echo "[ Step 7 ] Verifying cleanup..."
+echo ""
 echo "  VPCs: $(aws ec2 describe-vpcs --query 'Vpcs[?IsDefault==`false`].VpcId' --output text --region $AWS_REGION 2>/dev/null || echo 'none')"
 echo "  RDS: $(aws rds describe-db-instances --query 'DBInstances[].DBInstanceIdentifier' --output text --region $AWS_REGION 2>/dev/null || echo 'none')"
 echo "  ECS: $(aws ecs list-clusters --query 'clusterArns[]' --output text --region $AWS_REGION 2>/dev/null || echo 'none')"
 echo "  S3: $(aws s3 ls 2>/dev/null || echo 'none')"
+echo "  NAT: $(aws ec2 describe-nat-gateways --filter 'Name=state,Values=available,pending' --query 'NatGateways[].NatGatewayId' --output text --region $AWS_REGION 2>/dev/null || echo 'none')"
 echo ""
 echo "=================================================="
 echo " Destroy complete"
 echo "=================================================="
+echo ""
+echo "  If anything remains above go to AWS Console and"
+echo "  manually delete remaining resources."
 echo ""
