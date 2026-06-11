@@ -262,12 +262,31 @@ BASE_DIR=$(find_repo "base")
 BOOTSTRAP_DIR=$(find_repo "bootstrap")
 
 for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
-  if [ -n "$DIR" ] && [ -f "$DIR/prod.tfvars" ]; then
-    echo ""
-    echo "  Destroying $(basename $DIR)..."
-    cd "$DIR"
-    terraform init -reconfigure > /dev/null 2>&1
-    terraform destroy -var-file="prod.tfvars" -auto-approve
+  if [ -z "$DIR" ]; then
+    continue
+  fi
+  if [ ! -f "$DIR/prod.tfvars" ]; then
+    echo "  Skipping $(basename $DIR) — no prod.tfvars found"
+    continue
+  fi
+  echo ""
+  echo "  Destroying $(basename $DIR)..."
+  cd "$DIR"
+  terraform init -reconfigure > /dev/null 2>&1
+  terraform destroy -var-file="prod.tfvars" -auto-approve
+
+  if [ "$DIR" = "$BASE_DIR" ]; then
+    # Clean up any remaining RDS subnet groups
+    echo "  Cleaning up RDS subnet groups..."
+    RDS_SUBNET_GROUPS=$(aws rds describe-db-subnet-groups \
+      --query "DBSubnetGroups[?contains(DBSubnetGroupName,'${PROJECT_NAME}')].DBSubnetGroupName" \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for SG in $RDS_SUBNET_GROUPS; do
+      aws rds delete-db-subnet-group \
+        --db-subnet-group-name "$SG" \
+        --region "$AWS_REGION" > /dev/null 2>&1 && \
+        echo "  ✓ RDS subnet group deleted: $SG" || true
+    done
   fi
 done
 
