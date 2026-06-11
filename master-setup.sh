@@ -420,9 +420,7 @@ default_tags = {
   CostCenter = "$COST_CENTER"
 }
 
-organization_name        = "$ORGANIZATION_NAME"
-certificate_country_code = "US"
-domain_name              = "$DOMAIN_NAME"
+domain_name = "$DOMAIN_NAME"
 EOF
 
 make doctor
