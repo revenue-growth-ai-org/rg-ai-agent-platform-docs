@@ -422,6 +422,7 @@ default_tags = {
 
 organization_name        = "$ORGANIZATION_NAME"
 certificate_country_code = "US"
+domain_name              = "$DOMAIN_NAME"
 EOF
 
 make doctor
@@ -429,6 +430,49 @@ echo ""
 echo "Running Step 0 terraform apply..."
 terraform init
 terraform apply -var-file="prod.tfvars" -auto-approve
+
+echo ""
+echo "=================================================="
+echo " DNS Validation Required"
+echo "=================================================="
+echo ""
+echo "  Add this CNAME record to your DNS provider:"
+echo ""
+
+cd "$BOOTSTRAP_DIR"
+terraform output -json acm_certificate_validation_records 2>/dev/null | python3 -c "
+import sys, json
+records = json.load(sys.stdin)
+for r in records:
+    print(f'  Name:  {r[\"resource_record_name\"]}')
+    print(f'  Type:  {r[\"resource_record_type\"]}')
+    print(f'  Value: {r[\"resource_record_value\"]}')
+    print()
+" 2>/dev/null || echo "  Check AWS Console → Certificate Manager for validation records"
+
+echo ""
+echo "  Once added, DNS validation takes 2-5 minutes."
+echo ""
+read -p "Press Enter once you have added the CNAME record..." < /dev/tty
+
+echo "  Waiting for certificate validation..."
+CERT_ARN=$(terraform output -raw acm_certificate_arn 2>/dev/null || \
+  aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/acm_certificate_arn" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+
+for i in $(seq 1 24); do
+  STATUS=$(aws acm describe-certificate \
+    --certificate-arn "$CERT_ARN" \
+    --query 'Certificate.Status' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
+  if [ "$STATUS" = "ISSUED" ]; then
+    echo "  ✓ Certificate validated and issued"
+    break
+  fi
+  echo "  Waiting... ($((i * 10))s) Status: $STATUS"
+  sleep 10
+done
 
 # Read outputs
 STATE_BUCKET=$(terraform output -raw terraform_state_bucket)
