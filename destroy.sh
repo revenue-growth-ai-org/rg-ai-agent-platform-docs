@@ -107,14 +107,51 @@ fi
 echo ""
 echo "[ Step 3 ] Cleaning up service discovery..."
 
-for SVC_ID in $(aws servicediscovery list-services \
-  --query "Services[?contains(Name,'${PROJECT_NAME}')].Id" \
-  --output text --region "$AWS_REGION" 2>/dev/null || echo ""); do
+NAMESPACE_IDS=$(aws servicediscovery list-namespaces \
+  --query "Namespaces[?contains(Name,'${NAME_PREFIX}') || contains(Name,'${PROJECT_NAME}')].Id" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+cleanup_sd_service() {
+  local SVC_ID=$1
+  INSTANCE_IDS=$(aws servicediscovery list-instances \
+    --service-id "$SVC_ID" \
+    --query 'Instances[].Id' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for INSTANCE_ID in $INSTANCE_IDS; do
+    aws servicediscovery deregister-instance \
+      --service-id "$SVC_ID" \
+      --instance-id "$INSTANCE_ID" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deregistered instance $INSTANCE_ID from service $SVC_ID" || true
+  done
   aws servicediscovery delete-service \
     --id "$SVC_ID" \
-    --region "$AWS_REGION" > /dev/null 2>&1 || true
-  echo "  ✓ Service discovery deleted: $SVC_ID"
-done
+    --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted service: $SVC_ID" || true
+}
+
+if [ -n "$NAMESPACE_IDS" ]; then
+  for NS_ID in $NAMESPACE_IDS; do
+    NS_NAME=$(aws servicediscovery get-namespace \
+      --id "$NS_ID" \
+      --query 'Namespace.Name' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "$NS_ID")
+    echo "  Namespace: $NS_NAME ($NS_ID)"
+    SVC_IDS=$(aws servicediscovery list-services \
+      --filters "Name=NAMESPACE_ID,Values=${NS_ID},Condition=EQ" \
+      --query 'Services[].Id' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for SVC_ID in $SVC_IDS; do
+      cleanup_sd_service "$SVC_ID"
+    done
+  done
+else
+  for SVC_ID in $(aws servicediscovery list-services \
+    --query "Services[?contains(Name,'${PROJECT_NAME}')].Id" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo ""); do
+    cleanup_sd_service "$SVC_ID"
+  done
+fi
 
 # ------------------------------------------------------------------------------
 # Step 4 — Revoke cross-SG references
