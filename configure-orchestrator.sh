@@ -213,6 +213,13 @@ echo ""
 
 echo "Waiting for orchestrator to restart (up to 3 minutes)..."
 
+TG_ARN=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/alb_orchestrator_target_group_arn" \
+  --query Parameter.Value \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+HEALTHY=false
 for i in $(seq 1 18); do
   sleep 10
   RUNNING=$(aws ecs describe-services \
@@ -223,12 +230,36 @@ for i in $(seq 1 18); do
     --region "$AWS_REGION" 2>/dev/null || echo "0")
 
   if [ "$RUNNING" -ge 1 ] 2>/dev/null; then
-    echo "  ✓ Orchestrator is running with new configuration"
-    break
+    if [ -n "$TG_ARN" ]; then
+      HEALTHY_COUNT=$(aws elbv2 describe-target-health \
+        --target-group-arn "$TG_ARN" \
+        --query 'TargetHealthDescriptions[?TargetHealth.State==`healthy`] | length(@)' \
+        --output text \
+        --region "$AWS_REGION" 2>/dev/null || echo "0")
+      if [ "${HEALTHY_COUNT:-0}" -ge 1 ] 2>/dev/null; then
+        echo "  ✓ Orchestrator is running with new configuration"
+        HEALTHY=true
+        break
+      fi
+    else
+      echo "  ✓ Orchestrator is running with new configuration"
+      HEALTHY=true
+      break
+    fi
   fi
 
   echo "  Waiting... ($((i * 10))s elapsed)"
 done
+
+if [ "$HEALTHY" = "false" ]; then
+  echo ""
+  echo "  WARNING: New configuration was pushed but no healthy ALB target was"
+  echo "  detected within 3 minutes. The orchestrator may still be restarting."
+  echo "  Check target health manually:"
+  echo "  aws elbv2 describe-target-health \\"
+  echo "    --target-group-arn \$(aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/alb_orchestrator_target_group_arn --query Parameter.Value --output text --region ${AWS_REGION}) \\"
+  echo "    --region ${AWS_REGION}"
+fi
 
 # ------------------------------------------------------------------------------
 # Summary
