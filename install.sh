@@ -353,7 +353,6 @@ echo ""
 read -p "Project name (lowercase, hyphens only, e.g. acme-corp): " PROJECT_NAME < /dev/tty
 ENVIRONMENT="prod"
 read -p "Domain name for SSL certificate (e.g. revenue-growth.ai): " DOMAIN_NAME < /dev/tty
-read -p "Organization name (for SSL certificate, e.g. Acme Corporation): " ORG_NAME < /dev/tty
 
 if [ -n "$MY_IP" ]; then
   echo "Your current IP address is: $MY_IP"
@@ -375,7 +374,6 @@ cat > "$DEFAULTS_FILE" << EOF
 PROJECT_NAME="$PROJECT_NAME"
 ENVIRONMENT="$ENVIRONMENT"
 DOMAIN_NAME="$DOMAIN_NAME"
-ORGANIZATION_NAME="$ORG_NAME"
 ALLOWED_CIDR="$ALLOWED_CIDR"
 DEPLOYMENT_ROLE_ARN="$DEPLOY_ROLE_ARN"
 AWS_REGION="$AWS_REGION"

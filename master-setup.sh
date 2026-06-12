@@ -78,7 +78,6 @@ check_required() {
 echo "Validating defaults.env..."
 check_required "PROJECT_NAME"       "$PROJECT_NAME"
 check_required "ENVIRONMENT"        "$ENVIRONMENT"
-check_required "ORGANIZATION_NAME"  "$ORGANIZATION_NAME"
 check_required "ALLOWED_CIDR"       "$ALLOWED_CIDR"
 check_required "DEPLOYMENT_ROLE_ARN" "$DEPLOYMENT_ROLE_ARN"
 

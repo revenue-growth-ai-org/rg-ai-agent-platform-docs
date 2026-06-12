@@ -122,7 +122,6 @@ Fill in the following required values:
 |---|---|---|
 | PROJECT_NAME | Short identifier for this deployment, lowercase hyphens only | acme-corp |
 | ENVIRONMENT | Deployment environment | prod |
-| ORGANIZATION_NAME | Your company name for the SSL certificate | Acme Corporation |
 | ALLOWED_CIDR | Your office or VPN IP range that can access the platform | 203.0.113.0/24 |
 | DEPLOYMENT_ROLE_ARN | The terraform-deploy role ARN from Step 4 | arn:aws:iam::123456789012:role/terraform-deploy |
 
