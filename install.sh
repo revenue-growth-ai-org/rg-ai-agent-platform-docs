@@ -351,11 +351,16 @@ MY_IP=$(curl -s https://checkip.amazonaws.com 2>/dev/null || echo "")
 echo "Please answer a few questions to configure your deployment:"
 echo ""
 while true; do
-  read -p "Project name (lowercase, hyphens only, e.g. acme-corp): " PROJECT_NAME < /dev/tty
-  if [[ "$PROJECT_NAME" =~ ^[a-z0-9-]+$ ]]; then
-    break
+  read -p "Project name (lowercase, hyphens only, max 12 characters, e.g. acme-corp): " PROJECT_NAME < /dev/tty
+  if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9-]+$ ]]; then
+    echo "  Invalid: use only lowercase letters, numbers, and hyphens (no spaces or uppercase)"
+    continue
   fi
-  echo "  Invalid: use only lowercase letters, numbers, and hyphens (no spaces or uppercase)"
+  if [ ${#PROJECT_NAME} -gt 12 ]; then
+    echo "  Invalid: project name must be 12 characters or less (AWS resource name limits)"
+    continue
+  fi
+  break
 done
 ENVIRONMENT="prod"
 read -p "Domain name for SSL certificate (e.g. revenue-growth.ai): " DOMAIN_NAME < /dev/tty
