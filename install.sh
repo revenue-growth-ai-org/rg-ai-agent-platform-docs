@@ -350,7 +350,13 @@ MY_IP=$(curl -s https://checkip.amazonaws.com 2>/dev/null || echo "")
 # Prompt for the remaining values
 echo "Please answer a few questions to configure your deployment:"
 echo ""
-read -p "Project name (lowercase, hyphens only, e.g. acme-corp): " PROJECT_NAME < /dev/tty
+while true; do
+  read -p "Project name (lowercase, hyphens only, e.g. acme-corp): " PROJECT_NAME < /dev/tty
+  if [[ "$PROJECT_NAME" =~ ^[a-z0-9-]+$ ]]; then
+    break
+  fi
+  echo "  Invalid: use only lowercase letters, numbers, and hyphens (no spaces or uppercase)"
+done
 ENVIRONMENT="prod"
 read -p "Domain name for SSL certificate (e.g. revenue-growth.ai): " DOMAIN_NAME < /dev/tty
 
