@@ -66,13 +66,13 @@ cleanup() {
   echo "------------------------------------------------"
   echo "Cleaning up temporary resources..."
 
-  if [ "$LAMBDA_FUNCTION_CREATED" = "true" ]; then
-    echo "  Deleting Lambda function..."
-    aws lambda delete-function \
-      --function-name "$FUNCTION_NAME" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ Lambda function deleted"
-  fi
+  # Always attempt deletion — a function from a previous failed run may exist
+  # even if LAMBDA_FUNCTION_CREATED was never set to true this run.
+  echo "  Deleting Lambda function (if exists)..."
+  aws lambda delete-function \
+    --function-name "$FUNCTION_NAME" \
+    --region "$AWS_REGION" > /dev/null 2>&1 || true
+  echo "  ✓ Lambda function deleted (or did not exist)"
 
   # Revoke ALB SG ingress rule BEFORE deleting the Lambda SG — AWS rejects
   # delete-security-group while another SG holds a reference to it.
@@ -158,7 +158,26 @@ echo ""
 
 echo "Creating Lambda security group..."
 
-# Remove any leftover SG from a previous failed run before creating a new one
+# ------------------------------------------------------------------
+# Clean up any resources left over from a previous failed run
+# ------------------------------------------------------------------
+
+# Delete leftover Lambda function first — its ENIs will block SG deletion.
+EXISTING_FN=$(aws lambda get-function \
+  --function-name "$FUNCTION_NAME" \
+  --region "$AWS_REGION" \
+  --query 'Configuration.FunctionName' \
+  --output text 2>/dev/null || echo "")
+
+if [ -n "$EXISTING_FN" ] && [ "$EXISTING_FN" != "None" ]; then
+  echo "  Found leftover Lambda function from previous run: $EXISTING_FN"
+  aws lambda delete-function \
+    --function-name "$FUNCTION_NAME" \
+    --region "$AWS_REGION" > /dev/null 2>&1 || true
+  echo "  ✓ Leftover Lambda function deleted"
+fi
+
+# Find leftover SG, wait for ENIs to drain, then delete it.
 EXISTING_SG_ID=$(aws ec2 describe-security-groups \
   --filters "Name=group-name,Values=$LAMBDA_SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
   --query 'SecurityGroups[0].GroupId' \
@@ -167,10 +186,32 @@ EXISTING_SG_ID=$(aws ec2 describe-security-groups \
 
 if [ -n "$EXISTING_SG_ID" ] && [ "$EXISTING_SG_ID" != "None" ]; then
   echo "  Found leftover security group from previous run: $EXISTING_SG_ID"
+
+  # Revoke any ALB SG ingress rule referencing the leftover SG before polling.
   aws ec2 revoke-security-group-ingress \
     --group-id "$ALB_SG_ID" \
     --ip-permissions "[{\"IpProtocol\": \"tcp\", \"FromPort\": 443, \"ToPort\": 443, \"UserIdGroupPairs\": [{\"GroupId\": \"$EXISTING_SG_ID\"}]}]" \
     --region "$AWS_REGION" > /dev/null 2>&1 || true
+
+  echo "  Waiting for AWS to release Lambda ENIs from previous run (this can take up to 30 minutes)..."
+  for i in $(seq 1 90); do
+    ENI_COUNT=$(aws ec2 describe-network-interfaces \
+      --filters "Name=group-id,Values=$EXISTING_SG_ID" \
+      --query 'length(NetworkInterfaces)' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null || echo "1")
+    if [ "$ENI_COUNT" = "0" ]; then
+      echo "  ✓ Lambda ENIs released"
+      break
+    fi
+    if [ "$i" -eq 90 ]; then
+      echo "  WARNING: $ENI_COUNT ENI(s) still attached after 30 minutes; attempting SG deletion anyway..."
+    else
+      echo "    $ENI_COUNT ENI(s) still attached — attempt $i/90, retrying in 20s..."
+      sleep 20
+    fi
+  done
+
   aws ec2 delete-security-group \
     --group-id "$EXISTING_SG_ID" \
     --region "$AWS_REGION" > /dev/null 2>&1 || true
