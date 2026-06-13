@@ -397,17 +397,17 @@ echo "  ✓ defaults.env configured"
 
 WEBHOOK_SECRET=$(openssl rand -hex 32)
 aws ssm put-parameter \
-  --name "/${PROJECT_NAME}/${ENVIRONMENT}/webhook_secret" \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret" \
   --value "$WEBHOOK_SECRET" \
   --type SecureString \
   --overwrite \
   --region "$AWS_REGION" > /dev/null 2>&1
-echo "  ✓ Webhook secret stored in SSM: /${PROJECT_NAME}/${ENVIRONMENT}/webhook_secret"
+echo "  ✓ Webhook secret stored in SSM: /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
 echo ""
 echo "  NOTE: A random webhook secret has been generated and stored in SSM."
 echo "  If your CRM webhook sender supports HMAC signature verification,"
 echo "  configure it with this secret. Retrieve it at any time with:"
-echo "  aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/webhook_secret --with-decryption --query Parameter.Value --output text"
+echo "  aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret --with-decryption --query Parameter.Value --output text"
 
 echo ""
 echo "=================================================="
