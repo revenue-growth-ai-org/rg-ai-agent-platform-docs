@@ -74,6 +74,8 @@ cleanup() {
     echo "  ✓ Lambda function deleted"
   fi
 
+  # Revoke ALB SG ingress rule BEFORE deleting the Lambda SG — AWS rejects
+  # delete-security-group while another SG holds a reference to it.
   if [ "$ALB_INGRESS_ADDED" = "true" ] && [ -n "$ALB_SG_ID" ] && [ -n "$LAMBDA_SG_ID" ]; then
     echo "  Removing ALB SG ingress rule..."
     aws ec2 revoke-security-group-ingress \
@@ -86,6 +88,7 @@ cleanup() {
   if [ -n "$LAMBDA_SG_ID" ]; then
     echo "  Waiting 60s for Lambda ENI release before deleting SG..."
     sleep 60
+    # SG may already be gone if a previous cleanup ran; || true prevents failures.
     aws ec2 delete-security-group \
       --group-id "$LAMBDA_SG_ID" \
       --region "$AWS_REGION" > /dev/null 2>&1 || true
@@ -154,6 +157,25 @@ echo ""
 # ------------------------------------------------------------------------------
 
 echo "Creating Lambda security group..."
+
+# Remove any leftover SG from a previous failed run before creating a new one
+EXISTING_SG_ID=$(aws ec2 describe-security-groups \
+  --filters "Name=group-name,Values=$LAMBDA_SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
+  --query 'SecurityGroups[0].GroupId' \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -n "$EXISTING_SG_ID" ] && [ "$EXISTING_SG_ID" != "None" ]; then
+  echo "  Found leftover security group from previous run: $EXISTING_SG_ID"
+  aws ec2 revoke-security-group-ingress \
+    --group-id "$ALB_SG_ID" \
+    --ip-permissions "[{\"IpProtocol\": \"tcp\", \"FromPort\": 443, \"ToPort\": 443, \"UserIdGroupPairs\": [{\"GroupId\": \"$EXISTING_SG_ID\"}]}]" \
+    --region "$AWS_REGION" > /dev/null 2>&1 || true
+  aws ec2 delete-security-group \
+    --group-id "$EXISTING_SG_ID" \
+    --region "$AWS_REGION" > /dev/null 2>&1 || true
+  echo "  ✓ Leftover security group removed"
+fi
 
 LAMBDA_SG_ID=$(aws ec2 create-security-group \
   --group-name "$LAMBDA_SG_NAME" \
