@@ -712,7 +712,24 @@ echo "  ✓ Orchestrator image pushed to ECR"
 echo ""
 echo "Running Step 2 terraform apply..."
 terraform init
-terraform apply -var-file="prod.tfvars" -auto-approve
+APPLY_LOG=$(mktemp)
+set +e
+terraform apply -var-file="prod.tfvars" -auto-approve 2>&1 | tee "$APPLY_LOG"
+APPLY_EXIT=${PIPESTATUS[0]}
+set -e
+
+if [ $APPLY_EXIT -ne 0 ]; then
+  if grep -q "ParameterAlreadyExists" "$APPLY_LOG" && grep -q "orchestrator_webhook_secret" "$APPLY_LOG"; then
+    echo ""
+    echo "Detected orphaned webhook_secret SSM parameter from a previous attempt — importing into state and retrying..."
+    terraform import aws_ssm_parameter.orchestrator_webhook_secret "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
+    terraform apply -var-file="prod.tfvars" -auto-approve
+  else
+    rm -f "$APPLY_LOG"
+    exit $APPLY_EXIT
+  fi
+fi
+rm -f "$APPLY_LOG"
 
 echo ""
 echo "Step 2 complete."
