@@ -160,10 +160,9 @@ fi
 echo ""
 echo "[ Step 4 ] Revoking security group cross-references..."
 
-VPC_ID=$(aws ec2 describe-vpcs \
-  --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
-  --query 'Vpcs[0].VpcId' \
-  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+VPC_ID=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/vpc_id" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
 if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   SGS=$(aws ec2 describe-security-groups \
