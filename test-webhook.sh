@@ -215,6 +215,23 @@ if [ -n "$EXISTING_SG_ID" ] && [ "$EXISTING_SG_ID" != "None" ]; then
   aws ec2 delete-security-group \
     --group-id "$EXISTING_SG_ID" \
     --region "$AWS_REGION" > /dev/null 2>&1 || true
+
+  STILL_EXISTS=$(aws ec2 describe-security-groups \
+    --filters "Name=group-id,Values=$EXISTING_SG_ID" \
+    --query 'SecurityGroups[0].GroupId' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -n "$STILL_EXISTS" ] && [ "$STILL_EXISTS" != "None" ]; then
+    echo ""
+    echo "ERROR: Could not delete leftover security group $EXISTING_SG_ID."
+    echo "  Lambda ENIs attached to it have not been fully released by AWS yet."
+    echo ""
+    echo "  Wait a few more minutes, then re-run:"
+    echo "    bash test-webhook.sh"
+    exit 1
+  fi
+
   echo "  ✓ Leftover security group removed"
 fi
 
