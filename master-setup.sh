@@ -530,6 +530,27 @@ echo "    --secret-string \"sk-ant-your-key-here\""
 echo ""
 read -p "Press enter once you have pasted your Anthropic API key to continue..." < /dev/tty
 
+while true; do
+  KEY_VALUE=$(aws secretsmanager get-secret-value \
+    --secret-id "$ANTHROPIC_SECRET_ARN" \
+    --query SecretString --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+    https://api.anthropic.com/v1/messages \
+    -H "x-api-key: $KEY_VALUE" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "content-type: application/json" \
+    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}')
+  if [ "$HTTP_CODE" = "401" ]; then
+    echo ""
+    echo "✗ The Anthropic API key appears invalid (401 Unauthorized). Please re-check the key and run the put-secret-value command again, then press Enter to retry."
+    echo ""
+    read -p "Press enter once you have pasted your Anthropic API key to continue..." < /dev/tty
+  else
+    echo "✓ Anthropic API key validated"
+    break
+  fi
+done
+
 # ------------------------------------------------------------------------------
 # Step 1 — Base infrastructure
 # ------------------------------------------------------------------------------
