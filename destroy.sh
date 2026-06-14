@@ -281,6 +281,22 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   done
 fi
 
+echo ""
+echo "  Cleaning up leftover webhook-test security groups..."
+if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+  WEBHOOK_SGS=$(aws ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+              "Name=group-name,Values=${PROJECT_NAME}-${ENVIRONMENT}-webhook-test-lambda*" \
+    --query 'SecurityGroups[].GroupId' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  for WEBHOOK_SG_ID in $WEBHOOK_SGS; do
+    aws ec2 delete-security-group \
+      --group-id "$WEBHOOK_SG_ID" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted webhook-test SG: $WEBHOOK_SG_ID" || true
+  done
+fi
+
 # ------------------------------------------------------------------------------
 # Step 5 — Terraform destroy in reverse order
 # ------------------------------------------------------------------------------
