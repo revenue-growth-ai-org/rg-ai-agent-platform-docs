@@ -365,7 +365,7 @@ LAMBDA_FUNCTION_CREATED=true
 echo "  ✓ Lambda function created: $FUNCTION_NAME"
 
 echo "  Waiting for Lambda to become active..."
-for i in $(seq 1 12); do
+for i in $(seq 1 24); do
   STATE=$(aws lambda get-function \
     --function-name "$FUNCTION_NAME" \
     --query 'Configuration.State' --output text \
@@ -374,8 +374,8 @@ for i in $(seq 1 12); do
     echo "  ✓ Lambda function is active"
     break
   fi
-  if [ "$i" -eq 12 ]; then
-    echo "ERROR: Lambda function did not become active after 120s (last state: $STATE)."
+  if [ "$i" -eq 24 ]; then
+    echo "ERROR: Lambda function did not become active after 240s (last state: $STATE)."
     exit 1
   fi
   echo "    State: $STATE — retrying in 10s ($((i * 10))s elapsed)"
