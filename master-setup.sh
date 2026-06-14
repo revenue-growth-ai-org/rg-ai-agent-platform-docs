@@ -713,23 +713,58 @@ echo ""
 echo "Running Step 2 terraform apply..."
 terraform init
 APPLY_LOG=$(mktemp)
+APPLY_RETRY=0
 set +e
 terraform apply -var-file="prod.tfvars" -auto-approve 2>&1 | tee "$APPLY_LOG"
 APPLY_EXIT=${PIPESTATUS[0]}
 set -e
 
-if [ $APPLY_EXIT -ne 0 ]; then
+while [ $APPLY_EXIT -ne 0 ] && [ $APPLY_RETRY -lt 2 ]; do
+  APPLY_FIXED=false
+
   if grep -q "ParameterAlreadyExists" "$APPLY_LOG" && grep -q "orchestrator_webhook_secret" "$APPLY_LOG"; then
     echo ""
     echo "Detected orphaned webhook_secret SSM parameter from a previous attempt — importing into state and retrying..."
     terraform import aws_ssm_parameter.orchestrator_webhook_secret "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
-    terraform apply -var-file="prod.tfvars" -auto-approve
-  else
+    APPLY_FIXED=true
+  fi
+
+  if grep -q "ResourceInUse" "$APPLY_LOG" && grep -q "Service contains registered instances" "$APPLY_LOG"; then
+    echo ""
+    echo "Detected registered Cloud Map instances blocking service deletion — deregistering and retrying..."
+    SRV_IDS=$(grep -oE "srv-[a-z0-9]+" "$APPLY_LOG" | sort -u)
+    for SRV_ID in $SRV_IDS; do
+      INSTANCE_IDS=$(aws servicediscovery list-instances \
+        --service-id "$SRV_ID" \
+        --query 'Instances[].Id' \
+        --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      for INSTANCE_ID in $INSTANCE_IDS; do
+        aws servicediscovery deregister-instance \
+          --service-id "$SRV_ID" \
+          --instance-id "$INSTANCE_ID" \
+          --region "$AWS_REGION" > /dev/null 2>&1 && \
+          echo "  ✓ Deregistered instance $INSTANCE_ID from $SRV_ID" || true
+      done
+    done
+    APPLY_FIXED=true
+  fi
+
+  if [ "$APPLY_FIXED" = "false" ]; then
     rm -f "$APPLY_LOG"
     exit $APPLY_EXIT
   fi
-fi
+
+  APPLY_RETRY=$((APPLY_RETRY + 1))
+  set +e
+  terraform apply -var-file="prod.tfvars" -auto-approve 2>&1 | tee "$APPLY_LOG"
+  APPLY_EXIT=${PIPESTATUS[0]}
+  set -e
+done
+
 rm -f "$APPLY_LOG"
+if [ $APPLY_EXIT -ne 0 ]; then
+  exit $APPLY_EXIT
+fi
 
 echo ""
 echo "Step 2 complete."
