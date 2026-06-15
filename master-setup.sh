@@ -725,7 +725,7 @@ while [ $APPLY_EXIT -ne 0 ] && [ $APPLY_RETRY -lt 2 ]; do
   if grep -q "ParameterAlreadyExists" "$APPLY_LOG" && grep -q "orchestrator_webhook_secret" "$APPLY_LOG"; then
     echo ""
     echo "Detected orphaned webhook_secret SSM parameter from a previous attempt — importing into state and retrying..."
-    terraform import aws_ssm_parameter.orchestrator_webhook_secret "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
+    terraform import -var-file="prod.tfvars" aws_ssm_parameter.orchestrator_webhook_secret "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
     APPLY_FIXED=true
   fi
 
