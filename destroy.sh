@@ -294,19 +294,17 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
       --query 'length(NetworkInterfaces)' \
       --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
     if [ "$ENI_COUNT" != "0" ] && [ "$ENI_COUNT" != "None" ]; then
-      echo "  Waiting for Lambda ENI release on leftover webhook-test SG (up to 5 min)..."
-      for i in $(seq 1 20); do
-        sleep 15
+      ELAPSED=0
+      while [ "$ENI_COUNT" != "0" ] && [ "$ENI_COUNT" != "None" ]; do
+        echo "  Waiting for Lambda ENI release on leftover webhook-test SG $WEBHOOK_SG_ID (elapsed: ${ELAPSED}s)..."
+        sleep 30
+        ELAPSED=$((ELAPSED + 30))
         ENI_COUNT=$(aws ec2 describe-network-interfaces \
           --filters "Name=group-id,Values=$WEBHOOK_SG_ID" \
           --query 'length(NetworkInterfaces)' \
           --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
-        if [ "$ENI_COUNT" = "0" ] || [ "$ENI_COUNT" = "None" ]; then
-          echo "  ✓ Lambda ENIs released"
-          break
-        fi
-        echo "    $ENI_COUNT ENI(s) still attached — attempt $i/20"
       done
+      echo "  ✓ Lambda ENIs released"
     fi
     aws ec2 delete-security-group \
       --group-id "$WEBHOOK_SG_ID" \
