@@ -86,13 +86,7 @@ cleanup() {
   fi
 
   if [ -n "$LAMBDA_SG_ID" ]; then
-    echo "  Waiting 60s for Lambda ENI release before deleting SG..."
-    sleep 60
-    # SG may already be gone if a previous cleanup ran; || true prevents failures.
-    aws ec2 delete-security-group \
-      --group-id "$LAMBDA_SG_ID" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ Lambda security group deleted"
+    echo "  Lambda security group $LAMBDA_SG_ID left in place — will be cleaned up automatically when destroy.sh tears down the VPC (Lambda ENI release can take 10-30 minutes)."
   fi
 
   if [ "$LAMBDA_ROLE_CREATED" = "true" ]; then
