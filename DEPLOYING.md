@@ -48,6 +48,13 @@ from where it left off:
     cd rg-ai-agent-platform-docs
     bash master-setup.sh
 
+> **Caution:** If a step's prod.tfvars or backend.tf references a different
+> project_name than what bootstrap (Step 0) was actually run with — for
+> example, from a prior partial attempt — master-setup.sh may fail with a
+> "Backend configuration changed" or "S3 bucket does not exist" error. In
+> this case, manually verify and correct the project_name and environment
+> values in the affected step's prod.tfvars and backend.tf before re-running.
+
 ### Adding agents after deployment
 
     cd rg-ai-agent-platform-docs
@@ -113,19 +120,31 @@ After deploy completes paste your Anthropic API key:
 ## Cleaning up a failed install
 
 If a previous install failed partway through and left orphaned AWS resources
-run the cleanup script before trying again. This removes all platform resources
+run destroy.sh before trying again. This removes all platform resources
 for the configured project and environment so you can start completely fresh.
 
     cd rg-ai-agent-platform-docs
-    bash cleanup.sh
+    bash destroy.sh
+
+destroy.sh works through the following sequence automatically:
+1. Disables RDS and ALB deletion protection
+2. Stops ECS services
+3. Cleans up Cloud Map service discovery instances
+4. Revokes security group cross-references
+5. Deletes VPC endpoints and NAT gateways
+6. Runs terraform destroy for all four steps in reverse order (3 → 2 → 1 → 0)
+7. Removes local cloned repos
+8. Deletes CloudWatch log groups
 
 Then re-run the install:
 
     bash master-setup.sh
 
-Note: cleanup.sh will prompt for confirmation before deleting anything.
-RDS deletion takes 5-10 minutes — the script will initiate deletion and
-continue. Verify RDS is fully deleted before re-running master-setup.sh.
+Note: destroy.sh will prompt for confirmation before deleting anything.
+If a recent test-webhook.sh run left a security group with attached Lambda ENIs,
+the script will wait for those ENIs to release automatically before proceeding.
+If destroy.sh is interrupted during this wait, simply re-run it — it will
+pick up and complete the cleanup.
 
 ### Destroying the platform
 
@@ -202,6 +221,14 @@ Save the outputs as text files:
 - system_prompt.txt — the orchestrator's instructions and business context
 - routing_config.json — which agents handle which event types
 
+Each rule in routing_config.json maps an event_type to one or more agents.
+Rules may also include optional `match_field` and `match_value` keys to
+match a specific field in the incoming payload. When exactly one rule matches
+both the event_type and that field/value combination and resolves to exactly
+one agent, the orchestrator routes directly to that agent without calling the
+LLM (deterministic routing). Rules without these fields, or that match
+ambiguously, fall back to LLM-based routing via Claude.
+
 ### Step 2 — Push configuration to the orchestrator
 
     bash configure-orchestrator.sh \
@@ -210,6 +237,19 @@ Save the outputs as text files:
 
 This pushes both files to SSM and restarts the orchestrator automatically.
 No container rebuild required.
+
+### Step 2.5 — Validate the deployment
+
+Before building real agent implementations, confirm the routing configuration
+is working end-to-end:
+
+    cd rg-ai-agent-platform-docs
+    bash test-webhook.sh
+
+This sends a test webhook through the ALB to the orchestrator, confirms it
+routes to the configured agent, and checks CloudWatch logs for a successful
+routing decision. Run this after every configure-orchestrator.sh to catch
+misconfigured routing rules before they affect real traffic.
 
 ### Step 3 — Generate agent implementation using the Agent Implementation Engineer prompt
 
