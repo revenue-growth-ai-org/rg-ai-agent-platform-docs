@@ -146,7 +146,10 @@ Quick start:
 
 The script will ask how many agents you want to deploy and their names, then
 handle everything automatically. The only manual step is pasting your
-Anthropic API key when prompted.
+Anthropic API key when prompted. After you paste it, the script automatically
+validates the key against the Anthropic API before continuing. If the key is
+invalid (e.g. a typo or an expired key), the script will tell you and loop
+back to ask you to re-paste — it will not silently proceed with a bad key.
 
 ---
 
