@@ -289,27 +289,35 @@ if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
     --query 'SecurityGroups[].GroupId' \
     --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   for WEBHOOK_SG_ID in $WEBHOOK_SGS; do
-    ENI_COUNT=$(aws ec2 describe-network-interfaces \
+    # Attempt direct deletion of any available ENIs attached to this SG
+    ENI_IDS=$(aws ec2 describe-network-interfaces \
       --filters "Name=group-id,Values=$WEBHOOK_SG_ID" \
-      --query 'length(NetworkInterfaces)' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
-    if [ "$ENI_COUNT" != "0" ] && [ "$ENI_COUNT" != "None" ]; then
-      ELAPSED=0
-      while [ "$ENI_COUNT" != "0" ] && [ "$ENI_COUNT" != "None" ]; do
-        echo "  Waiting for Lambda ENI release on leftover webhook-test SG $WEBHOOK_SG_ID (elapsed: ${ELAPSED}s)..."
+      --query 'NetworkInterfaces[].NetworkInterfaceId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for ENI_ID in $ENI_IDS; do
+      aws ec2 delete-network-interface \
+        --network-interface-id "$ENI_ID" \
+        --region "$AWS_REGION" > /dev/null 2>&1 && \
+        echo "  ✓ Deleted ENI: $ENI_ID" || true
+    done
+    # Attempt SG deletion; retry on DependencyViolation until success
+    ELAPSED=0
+    while true; do
+      DELETE_OUTPUT=$(aws ec2 delete-security-group \
+        --group-id "$WEBHOOK_SG_ID" \
+        --region "$AWS_REGION" 2>&1) && {
+        echo "  ✓ Deleted webhook-test SG: $WEBHOOK_SG_ID"
+        break
+      }
+      if echo "$DELETE_OUTPUT" | grep -q "DependencyViolation"; then
+        echo "  Waiting for dependencies on webhook-test SG $WEBHOOK_SG_ID to clear (elapsed: ${ELAPSED}s)..."
         sleep 30
         ELAPSED=$((ELAPSED + 30))
-        ENI_COUNT=$(aws ec2 describe-network-interfaces \
-          --filters "Name=group-id,Values=$WEBHOOK_SG_ID" \
-          --query 'length(NetworkInterfaces)' \
-          --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
-      done
-      echo "  ✓ Lambda ENIs released"
-    fi
-    aws ec2 delete-security-group \
-      --group-id "$WEBHOOK_SG_ID" \
-      --region "$AWS_REGION" > /dev/null 2>&1 && \
-      echo "  ✓ Deleted webhook-test SG: $WEBHOOK_SG_ID" || true
+      else
+        echo "  Skipping webhook-test SG $WEBHOOK_SG_ID: $DELETE_OUTPUT"
+        break
+      fi
+    done
   done
 fi
 
