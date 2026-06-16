@@ -324,7 +324,8 @@ def handler(event, context):
         "event_type": "contact.created",
         "contact_id": "test-contact-001",
         "email": "test@example.com",
-        "name": "Test Contact"
+        "name": "Test Contact",
+        "object_type": "customer"
     }
     body = json.dumps(payload).encode("utf-8")
     sig = "sha256=" + hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
