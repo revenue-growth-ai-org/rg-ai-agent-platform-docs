@@ -298,13 +298,47 @@ clone_repos() {
 
   mkdir -p "$INSTALL_DIR"
 
+  local FIRST_REPO="0-rg-ai-agent-platform-bootstrap"
+  local attempt=1
+  local max_attempts=3
+
+  # Validate the token by cloning the first repo, retrying up to 3 times
+  if [ ! -d "$INSTALL_DIR/$FIRST_REPO" ]; then
+    if [ -z "$GITHUB_TOKEN" ]; then
+      echo "A GitHub access token is required to clone the platform's private repositories."
+      echo "Enter your GitHub access token:"
+      read -s GITHUB_TOKEN < /dev/tty
+      echo ""
+    fi
+
+    while [ $attempt -le $max_attempts ]; do
+      echo "  Cloning $FIRST_REPO..."
+      if git clone "https://${GITHUB_TOKEN}@github.com/$GITHUB_ORG/$FIRST_REPO.git" "$INSTALL_DIR/$FIRST_REPO" 2>/dev/null; then
+        break
+      fi
+      echo ""
+      echo "ERROR: Failed to clone repository. Your GitHub token may be invalid or expired."
+      attempt=$((attempt + 1))
+      if [ $attempt -le $max_attempts ]; then
+        echo "Please re-enter your GitHub access token (attempt $attempt of $max_attempts):"
+        read -s GITHUB_TOKEN < /dev/tty
+        echo ""
+      else
+        echo ""
+        echo "ERROR: Failed to authenticate with GitHub after $max_attempts attempts."
+        echo "Please contact Michael@revenue-growth.ai for a new access token."
+        exit 1
+      fi
+    done
+  fi
+
   for REPO in 0-rg-ai-agent-platform-bootstrap 1-rg-ai-agent-platform-base 2-rg-ai-agent-platform-orchestrator 3-rg-ai-agent-platform-agent rg-ai-agent-platform-docs; do
     if [ -d "$INSTALL_DIR/$REPO" ]; then
       echo "  Updating $REPO..."
       cd "$INSTALL_DIR/$REPO" && git pull origin main 2>/dev/null || true
     else
       echo "  Cloning $REPO..."
-      git clone "https://github.com/$GITHUB_ORG/$REPO.git" "$INSTALL_DIR/$REPO"
+      git clone "https://${GITHUB_TOKEN}@github.com/$GITHUB_ORG/$REPO.git" "$INSTALL_DIR/$REPO"
     fi
   done
 
