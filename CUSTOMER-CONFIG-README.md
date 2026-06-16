@@ -11,7 +11,11 @@ and deploy agent implementations.
     customer-{name}-platform-config/
     ├── customer-setup.sh        — runs all configuration steps automatically
     ├── system_prompt.txt        — orchestrator instructions and business context
-    ├── routing_config.json      — agent routing rules
+    ├── routing_config.json      — agent routing rules (each rule maps an event_type to one or
+    │                              more agents; rules may include optional "match_field" and
+    │                              "match_value" keys for deterministic routing — when a rule
+    │                              unambiguously identifies one agent via those fields, the
+    │                              orchestrator routes directly without calling the LLM)
     ├── agents/
     │   ├── researcher/
     │   │   ├── agent.py         — researcher agent implementation
@@ -55,6 +59,11 @@ Edit system_prompt.txt or routing_config.json then run:
     bash ~/aws-agent-platform/rg-ai-agent-platform-docs/configure-orchestrator.sh \
       --prompt system_prompt.txt \
       --routing routing_config.json
+
+After pushing updated configuration, run test-webhook.sh to confirm the new
+routing rules work correctly before considering the change complete:
+
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/test-webhook.sh
 
 ### Update an agent implementation
 
