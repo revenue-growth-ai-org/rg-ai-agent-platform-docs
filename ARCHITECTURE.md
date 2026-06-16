@@ -8,7 +8,7 @@ The AWS Agent Platform is a secure, multi-agent AI orchestration platform deploy
 
 1. A CRM or external system sends a webhook to the internal Application Load Balancer
 2. The ALB forwards the request to the Master Orchestrator
-3. The Master Orchestrator (LangGraph + Claude) analyzes the payload and decides which agents to invoke
+3. The Master Orchestrator checks its routing config for an unambiguous match on event type (and optional fields like CRM object type). If found, it routes directly with no LLM call (deterministic routing). Otherwise, it calls Claude to decide which agent(s) to invoke (LLM-based routing).
 4. The Orchestrator calls the selected agents via internal DNS
 5. Each agent executes its logic and returns a structured result
 6. The Orchestrator assembles the final response and returns it to the caller
@@ -44,6 +44,7 @@ The AWS Agent Platform is a secure, multi-agent AI orchestration platform deploy
 - AWS Cloud Map private DNS namespace
 - Each agent registers at {agent_name}.{project_name}-{environment}.internal
 - The Orchestrator resolves agents by name — adding a new agent requires no orchestrator code change
+- Routing rules in routing_config.json can specify optional match_field and match_value keys to enable deterministic routing for unambiguous cases, falling back to LLM-based routing when rules are ambiguous or absent — both modes coexist in the same orchestrator deployment.
 
 ---
 
