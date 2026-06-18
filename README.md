@@ -15,6 +15,7 @@ Before deploying any infrastructure, ensure the following tools are installed an
 - **Git**
 - **GitHub access token** (provided by Revenue-Growth.AI) — required to clone the private platform repositories during install
 - **Anthropic API key** — required during install to enable LLM-based routing in the orchestrator
+- **A domain with DNS access** — required for ACM certificate validation during install. If using revenue-growth.ai as the deployment domain, the CNAME validation record has already been added to Cloudflare DNS and will validate automatically. If using a customer's own domain, they will need to add a CNAME record to their DNS provider during install (instructions provided by the script).
 
 See [CUSTOMER-SETUP.md](CUSTOMER-SETUP.md) for full verification steps.
 
