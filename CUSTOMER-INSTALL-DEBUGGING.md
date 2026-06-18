@@ -1,0 +1,315 @@
+# Customer Install Debugging Guide
+
+Reference guide for walking customers through the install process. Covers every issue encountered during testing and live deployments.
+
+---
+
+## Before starting — confirm these first
+
+Have the customer run these two commands before anything else. If either fails, stop and fix before proceeding.
+
+```shell
+aws sts get-caller-identity
+terraform version
+```
+
+- `aws sts get-caller-identity` must return their correct AWS account ID — if it shows the wrong account, they need to switch profiles (see "Wrong AWS account" below)  
+- `terraform version` must show **\>= 1.11.1** — if lower, upgrade before running install (see "Terraform version too old" below)
+
+---
+
+## Issue 1 — Wrong AWS account active in terminal
+
+**Symptom**: Install creates resources in an account they didn't intend, or `aws sts get-caller-identity` shows the wrong account ID.
+
+**Cause**: AWS CLI defaults to whichever profile/credentials are currently active. The customer may have multiple accounts configured.
+
+**Fix**:
+
+```shell
+# If they have named profiles:
+export AWS_PROFILE=correct-profile-name
+aws sts get-caller-identity   # confirm correct account before proceeding
+
+# If they need to configure credentials for a new account:
+aws configure
+# Enter Access Key ID, Secret Access Key, and region, then verify:
+aws sts get-caller-identity
+
+# If using SSO:
+aws sso login --profile correct-profile-name
+export AWS_PROFILE=correct-profile-name
+```
+
+Always confirm `aws sts get-caller-identity` shows the right account **before** running the install command. If install already started in the wrong account, Ctrl+C, run `destroy.sh` in that account to clean up, then restart with the correct credentials.
+
+---
+
+## Issue 2 — Terraform version too old
+
+**Symptom**:
+
+```
+Error: Unsupported Terraform Core version
+Module module.rds does not support Terraform version 1.9.2.
+To proceed, either choose another supported Terraform version...
+```
+
+**Cause**: The RDS Terraform module requires \>= 1.11.1. The customer has an older version installed.
+
+**Fix**:
+
+```shell
+brew upgrade terraform
+# or if not installed via Homebrew:
+brew tap hashicorp/tap
+brew install hashicorp/tap/terraform
+
+terraform version   # confirm >= 1.11.1
+```
+
+After upgrading, resume from where the install failed — no need to start over. If this failed mid-Step-1:
+
+```shell
+cd ~/rg-ai-agent-platform/1-rg-ai-agent-platform-base
+terraform init -upgrade
+make deploy
+```
+
+**Note**: `CUSTOMER-SETUP.md` currently says Terraform \>= 1.5.0 — this is outdated. The actual minimum is 1.11.1 due to the RDS module constraint.
+
+---
+
+## Issue 3 — ACM certificate pending validation / ALB listener fails
+
+**Symptom**:
+
+```
+Error: creating ELBv2 Listener: UnsupportedCertificate: The certificate must
+have a fully-qualified domain name, a supported signature, and a supported key size.
+```
+
+Or certificate status shows `PENDING_VALIDATION`.
+
+**Cause**: The ACM certificate request was created but DNS validation was never completed. AWS requires a CNAME record to be added to the domain's DNS to prove ownership before issuing the certificate. The ALB listener cannot be created with an unvalidated certificate.
+
+**Check certificate status**:
+
+```shell
+aws acm describe-certificate \
+  --certificate-arn <arn-from-step-0-output> \
+  --query 'Certificate.[Status,DomainName,DomainValidationOptions]'
+```
+
+If status is `PENDING_VALIDATION`, the output will include the exact CNAME record that needs to be added — look for `ResourceRecord` with `Name` and `Value` fields.
+
+**Fix**: Add the CNAME record to whoever manages DNS for the domain used during install:
+
+- **Type**: CNAME  
+- **Name** (sometimes called "Host"): the long underscore-prefixed value from the output  
+- **Value** (sometimes called "Target" or "Points to"): the long underscore-prefixed value ending in `.acm-validations.aws`  
+- **TTL**: leave at default  
+- **If using Cloudflare**: make sure "Proxy status" is set to **DNS only** (gray cloud, NOT orange) — ACM validation CNAMEs must not be proxied
+
+If the customer doesn't have their own domain set up yet, you can use a subdomain of `revenue-growth.ai` as a temporary unblock for testing — add the validation CNAME record yourself in Cloudflare. Make clear to the customer this is a test placeholder, not their production domain.
+
+**Wait for validation** (usually a few minutes, up to 30):
+
+```shell
+aws acm describe-certificate \
+  --certificate-arn <arn> \
+  --query 'Certificate.Status'
+# Wait for "ISSUED"
+```
+
+**Resume after certificate is issued** — no need to destroy or restart:
+
+```shell
+cd ~/rg-ai-agent-platform/1-rg-ai-agent-platform-base
+make deploy
+```
+
+---
+
+## Issue 4 — GitHub token not set / private repo clone fails
+
+**Symptom**: Install fails during repo cloning, or prompts for a username/password for GitHub that the customer doesn't have.
+
+**Cause**: The four infrastructure repos (0-3) are private. The customer needs a GitHub access token to clone them.
+
+**Fix**: Provide the customer with the `customer-install-readonly` fine-grained PAT (scoped to the 4 private repos, Contents: Read-only). When the install prompts:
+
+```
+A GitHub access token is required to clone the platform's private repositories.
+Enter your GitHub access token:
+```
+
+Have them paste the token — nothing will appear on screen (hidden input, like a password). Press Enter to continue. The install retries up to 3 times if the token is rejected before exiting with an error.
+
+If the token has expired or been revoked, generate a new one: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → `customer-install-readonly`.
+
+---
+
+## Issue 5 — SSM parameter already exists (webhook\_secret duplicate)
+
+**Symptom**:
+
+```
+Error: creating SSM Parameter (/project/prod/orchestrator/webhook_secret):
+ParameterAlreadyExists: The parameter already exists.
+```
+
+**Cause**: A previous partial or interrupted install attempt created this SSM parameter in AWS, but Terraform's state file doesn't reflect it (state/reality drift from an interrupted apply). The auto-retry logic in `master-setup.sh` and each repo's `Makefile` should handle this automatically — if you see this error, the script should detect it, import the parameter into state, and retry automatically.
+
+**If the auto-retry doesn't fire** (running `terraform apply` manually outside the scripts):
+
+```shell
+# Delete the orphaned parameter manually, then retry:
+aws ssm delete-parameter --name "/project-name/prod/orchestrator/webhook_secret"
+make deploy
+```
+
+Or import it into state:
+
+```shell
+terraform import -var-file="prod.tfvars" \
+  aws_ssm_parameter.orchestrator_webhook_secret \
+  "/project-name/prod/orchestrator/webhook_secret"
+make deploy
+```
+
+---
+
+## Issue 6 — Cloud Map "Service contains registered instances"
+
+**Symptom**:
+
+```
+Error: deleting Service Discovery Service (srv-...):
+ResourceInUse: Service contains registered instances;
+delete the instances before deleting the service.
+```
+
+**Cause**: An ECS task deregistered from the load balancer but its Cloud Map service instance was not cleaned up before Terraform tried to delete or recreate the service. The auto-retry logic should handle this automatically.
+
+**If it doesn't auto-resolve**:
+
+```shell
+INSTANCE_ID=$(aws servicediscovery list-instances \
+  --service-id srv-xxxxxxxx \
+  --query 'Instances[0].Id' --output text)
+aws servicediscovery deregister-instance \
+  --service-id srv-xxxxxxxx \
+  --instance-id $INSTANCE_ID
+make deploy
+```
+
+---
+
+## Issue 7 — RDS security group placeholder in prod.tfvars
+
+**Symptom**:
+
+```
+Error: InvalidGroupId.Malformed: Invalid id: "sg-xxxxxxxxxxxxxxxxx"
+```
+
+**Cause**: The agent's `setup.sh` could not auto-detect the RDS security group ID and left a placeholder in `prod.tfvars`.
+
+**Fix**:
+
+```shell
+# Get the real RDS security group ID:
+aws rds describe-db-instances \
+  --db-instance-identifier <project>-<env>-postgres \
+  --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' \
+  --output text
+
+# Update prod.tfvars in 3-rg-ai-agent-platform-agent:
+sed -i '' "s/sg-xxxxxxxxxxxxxxxxx/<real-sg-id>/" prod.tfvars
+make deploy
+```
+
+---
+
+## Issue 8 — Resuming an interrupted install
+
+**Symptom**: Install was interrupted partway through (network drop, Ctrl+C, etc.).
+
+**Fix**: In most cases, just re-run from the interrupted step's directory:
+
+```shell
+cd ~/rg-ai-agent-platform/<step-directory>
+make deploy
+```
+
+Or resume via master-setup.sh (which handles all steps in sequence):
+
+```shell
+cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs
+bash master-setup.sh
+```
+
+**Caution**: If a step's `prod.tfvars` or `backend.tf` references a different `project_name` than what Step 0 (bootstrap) was actually deployed with (leftover file from a prior attempt with a different project name), `make deploy` will fail with a "Backend configuration changed" or "S3 bucket does not exist" error. Verify `project_name` and `environment` in `prod.tfvars` and `backend.tf` match the current deployment before retrying.
+
+---
+
+## Issue 9 — Destroy fails with VPC DependencyViolation
+
+**Symptom**:
+
+```
+Error: deleting EC2 VPC (vpc-...): DependencyViolation:
+The vpc has dependencies and cannot be deleted.
+```
+
+**Cause**: `test-webhook.sh` creates a temporary Lambda function and security group for testing. Lambda's underlying network interfaces (ENIs) can take 10-30+ minutes to release after the function is deleted, blocking VPC teardown.
+
+**Best practice**: Wait \~20 minutes after running `test-webhook.sh` before running `destroy.sh`. By then, ENIs are typically already released and destroy completes in one pass with no intervention.
+
+**If destroy fails immediately after test-webhook.sh**: The `destroy.sh` script will automatically wait for ENI release (polling every 30s, no upper time limit) — let it run. To speed this up manually:
+
+```shell
+# Check ENI status:
+aws ec2 describe-network-interfaces \
+  --filters "Name=group-id,Values=<leftover-sg-id>" \
+  --query 'NetworkInterfaces[].[NetworkInterfaceId,Status]'
+
+# If status shows "available" (not "in-use"), delete directly:
+aws ec2 delete-network-interface --network-interface-id <eni-id>
+# Repeat for each ENI, then re-run destroy.sh
+```
+
+---
+
+## Quick reference — resume commands by step
+
+| Situation | Command |
+| :---- | :---- |
+| Resume Step 0 (bootstrap) | `cd ~/rg-ai-agent-platform/0-rg-ai-agent-platform-bootstrap && make deploy` |
+| Resume Step 1 (base infra) | `cd ~/rg-ai-agent-platform/1-rg-ai-agent-platform-base && terraform init -upgrade && make deploy` |
+| Resume Step 2 (orchestrator) | `cd ~/rg-ai-agent-platform/2-rg-ai-agent-platform-orchestrator && make deploy` |
+| Resume Step 3 (agent) | `cd ~/rg-ai-agent-platform/3-rg-ai-agent-platform-agent && make deploy` |
+| Push routing config | `cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs && bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json` |
+| Run webhook test | `cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs && bash test-webhook.sh` |
+| Destroy everything | `cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs && bash destroy.sh` |
+
+---
+
+## Still stuck?
+
+Check CloudWatch logs for the failing service:
+
+```shell
+aws logs tail /ecs/<project>-<env>/orchestrator --since 10m
+aws logs tail /ecs/<project>-<env>/researcher --since 10m
+```
+
+Check ECS service events:
+
+```shell
+aws ecs describe-services \
+  --cluster <project>-<env>-ecs \
+  --services <project>-<env>-orchestrator \
+  --query 'services[0].events[:5]'
+```

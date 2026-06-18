@@ -10,9 +10,11 @@ Start here before deploying any infrastructure.
 Before deploying any infrastructure, ensure the following tools are installed and configured:
 
 - **AWS CLI** — configured with credentials (`aws configure` or environment variables)
-- **Terraform >= 1.5.0**
+- **Terraform >= 1.11.1**
 - **Docker Desktop** — must be running
 - **Git**
+- **GitHub access token** (provided by Revenue-Growth.AI) — required to clone the private platform repositories during install
+- **Anthropic API key** — required during install to enable LLM-based routing in the orchestrator
 
 See [CUSTOMER-SETUP.md](CUSTOMER-SETUP.md) for full verification steps.
 
@@ -36,6 +38,7 @@ The platform is split across four infrastructure repositories deployed in sequen
 - **Automated install (recommended):** `curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/main/install.sh | bash`
 - **After install.sh completes:** Push a system prompt and routing config to the orchestrator via `configure-orchestrator.sh` — see [DEPLOYING.md](DEPLOYING.md) ("Configuring and implementing agents" section)
 - **Validate your deployment:** Run `test-webhook.sh` after configuration to exercise the full request path end-to-end before building real agent implementations
+- **Troubleshooting install errors:** Read [CUSTOMER-INSTALL-DEBUGGING.md](CUSTOMER-INSTALL-DEBUGGING.md)
 - **First time setup (manual path):** Read [CUSTOMER-SETUP.md](CUSTOMER-SETUP.md)
 - **Full deployment guide:** Read [DEPLOYING.md](DEPLOYING.md)
 - **Architecture overview:** Read [ARCHITECTURE.md](ARCHITECTURE.md)
