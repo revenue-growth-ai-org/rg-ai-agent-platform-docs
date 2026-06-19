@@ -17,6 +17,16 @@ Before deploying any infrastructure, ensure the following tools are installed an
 - **Anthropic API key** — required during install to enable LLM-based routing in the orchestrator
 - **A domain with DNS access** — required for ACM certificate validation during install. If using revenue-growth.ai as the deployment domain, the CNAME validation record has already been added to Cloudflare DNS and will validate automatically. If using a customer's own domain, they will need to add a CNAME record to their DNS provider during install (instructions provided by the script).
 
+  To get the exact CNAME values to give your DNS provider, run this command after Step 0 completes (replace the ARN with the one printed by the install script):
+
+  ```bash
+  aws acm describe-certificate \
+    --certificate-arn <arn-from-step-0-output> \
+    --query 'Certificate.DomainValidationOptions[0].ResourceRecord'
+  ```
+
+  This returns the exact Name and Value to add as a CNAME record in your DNS provider. Once added, AWS verifies ownership automatically and issues the certificate. This is a one-time step per domain.
+
 See [CUSTOMER-SETUP.md](CUSTOMER-SETUP.md) for full verification steps.
 
 ---
