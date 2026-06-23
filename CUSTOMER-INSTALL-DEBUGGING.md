@@ -280,6 +280,34 @@ aws ec2 delete-network-interface --network-interface-id <eni-id>
 # Repeat for each ENI, then re-run destroy.sh
 ```
 
+### If the wait loop runs for more than 10 minutes
+
+ENIs in `available` state (Lambda already gone, AWS background reaper hasn't cleaned them up yet) can be deleted directly rather than waiting.
+
+Check ENI status:
+
+```shell
+aws ec2 describe-network-interfaces \
+  --filters "Name=group-id,Values=<leftover-sg-id>" \
+  --query 'NetworkInterfaces[].[NetworkInterfaceId,Status]'
+```
+
+If any show `available`, delete them directly:
+
+```shell
+aws ec2 delete-network-interface --network-interface-id <eni-id>
+```
+
+Repeat for each available ENI, then delete the SG:
+
+```shell
+aws ec2 delete-security-group --group-id <leftover-sg-id>
+```
+
+Then re-run `bash test-webhook.sh` — the leftover-SG branch will find nothing and proceed normally.
+
+> **Note**: the updated `test-webhook.sh` now handles this automatically by actively deleting available ENIs on each loop iteration. This manual step is only needed if running an older version of the script.
+
 ---
 
 ## Quick reference — resume commands by step
