@@ -222,11 +222,32 @@ if [ -n "$EXISTING_SG_ID" ] && [ "$EXISTING_SG_ID" != "None" ]; then
 
   echo "  Waiting for AWS to release Lambda ENIs from previous run (this can take up to 30 minutes)..."
   for i in $(seq 1 90); do
+    ENI_JSON=$(aws ec2 describe-network-interfaces \
+      --filters "Name=group-id,Values=$EXISTING_SG_ID" \
+      --query 'NetworkInterfaces[*].{Id:NetworkInterfaceId,Status:Status}' \
+      --output json \
+      --region "$AWS_REGION" 2>/dev/null || echo "[]")
+
+    # Delete any ENI that is "available" (detached, safe to remove immediately)
+    for ENI_ID in $(echo "$ENI_JSON" | python3 -c "
+import json, sys
+for e in json.load(sys.stdin):
+    if e.get('Status') == 'available':
+        print(e['Id'])
+"); do
+      echo "    Deleting orphaned ENI (available, safe to remove): $ENI_ID"
+      aws ec2 delete-network-interface \
+        --network-interface-id "$ENI_ID" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+
+    # Re-check total count after deletions
     ENI_COUNT=$(aws ec2 describe-network-interfaces \
       --filters "Name=group-id,Values=$EXISTING_SG_ID" \
       --query 'length(NetworkInterfaces)' \
       --output text \
       --region "$AWS_REGION" 2>/dev/null || echo "1")
+
     if [ "$ENI_COUNT" = "0" ]; then
       echo "  ✓ Lambda ENIs released"
       break
@@ -234,8 +255,8 @@ if [ -n "$EXISTING_SG_ID" ] && [ "$EXISTING_SG_ID" != "None" ]; then
     if [ "$i" -eq 90 ]; then
       echo "  WARNING: $ENI_COUNT ENI(s) still attached after 30 minutes; attempting SG deletion anyway..."
     else
-      echo "    $ENI_COUNT ENI(s) still attached — attempt $i/90, retrying in 20s..."
-      sleep 20
+      echo "    $ENI_COUNT ENI(s) still in-use — attempt $i/90, retrying in 30s..."
+      sleep 30
     fi
   done
 
