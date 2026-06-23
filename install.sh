@@ -401,10 +401,22 @@ read -p "Domain name for SSL certificate (e.g. revenue-growth.ai): " DOMAIN_NAME
 
 if [ -n "$MY_IP" ]; then
   echo "Your current IP address is: $MY_IP"
-  read -p "Allowed CIDR for ALB access (press enter to use ${MY_IP}/32): " ALLOWED_CIDR < /dev/tty
+  echo ""
+  echo "Allowed CIDR for ALB (webhook) access:"
+  echo "  - If your CRM publishes static IP ranges (e.g. Salesforce), enter those ranges here."
+  echo "  - If your CRM uses dynamic IPs (e.g. HubSpot), enter 0.0.0.0/0 — security is"
+  echo "    enforced via HMAC webhook signature validation in the orchestrator, not IP allowlisting."
+  echo "  - Always include your admin/office IP regardless of which option you choose."
+  read -p "Allowed CIDR (press enter to use ${MY_IP}/32): " ALLOWED_CIDR < /dev/tty
   ALLOWED_CIDR="${ALLOWED_CIDR:-${MY_IP}/32}"
 else
-  read -p "Allowed CIDR for ALB access (e.g. 203.0.113.0/24): " ALLOWED_CIDR < /dev/tty
+  echo ""
+  echo "Allowed CIDR for ALB (webhook) access:"
+  echo "  - If your CRM publishes static IP ranges (e.g. Salesforce), enter those ranges here."
+  echo "  - If your CRM uses dynamic IPs (e.g. HubSpot), enter 0.0.0.0/0 — security is"
+  echo "    enforced via HMAC webhook signature validation in the orchestrator, not IP allowlisting."
+  echo "  - Always include your admin/office IP regardless of which option you choose."
+  read -p "Allowed CIDR (e.g. 203.0.113.0/24 or 0.0.0.0/0): " ALLOWED_CIDR < /dev/tty
 fi
 
 # Write defaults.env
