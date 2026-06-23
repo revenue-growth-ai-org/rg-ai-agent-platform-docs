@@ -147,6 +147,39 @@ echo "  ✓ Webhook secret retrieved"
 echo ""
 
 # ------------------------------------------------------------------------------
+# Auto-detect deployed agent name(s) from ECS
+# ------------------------------------------------------------------------------
+
+echo "Auto-detecting deployed agent name(s) from ECS..."
+
+ALL_SERVICE_ARNS=$(aws ecs list-services \
+  --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+  --query 'serviceArns' --output text --region "$AWS_REGION")
+
+AGENT_NAMES=()
+PREFIX="${PROJECT_NAME}-${ENVIRONMENT}-"
+for ARN in $ALL_SERVICE_ARNS; do
+  SERVICE_SHORT="${ARN##*/}"
+  if [[ "$SERVICE_SHORT" != *"orchestrator"* ]]; then
+    AGENT_NAMES+=("${SERVICE_SHORT#${PREFIX}}")
+  fi
+done
+
+if [ "${#AGENT_NAMES[@]}" -eq 0 ]; then
+  echo "ERROR: No agent services found in cluster. Ensure at least one agent was deployed during install before running this test."
+  exit 1
+elif [ "${#AGENT_NAMES[@]}" -eq 1 ]; then
+  AGENT_NAME="${AGENT_NAMES[0]}"
+  echo "  ✓ Agent detected: $AGENT_NAME"
+else
+  NAMES_CSV=$(printf '%s, ' "${AGENT_NAMES[@]}")
+  NAMES_CSV="${NAMES_CSV%, }"
+  AGENT_NAME="${AGENT_NAMES[0]}"
+  echo "  ✓ Agents detected: $NAMES_CSV — testing with $AGENT_NAME"
+fi
+echo ""
+
+# ------------------------------------------------------------------------------
 # Create Lambda security group
 # ------------------------------------------------------------------------------
 
@@ -325,7 +358,8 @@ def handler(event, context):
         "contact_id": "test-contact-001",
         "email": "test@example.com",
         "name": "Test Contact",
-        "object_type": "customer"
+        "object_type": "customer",
+        "routing_config": {"agent_name": "${AGENT_NAME}"}
     }
     body = json.dumps(payload).encode("utf-8")
     sig = "sha256=" + hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
