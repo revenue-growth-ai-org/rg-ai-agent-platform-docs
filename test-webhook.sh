@@ -180,6 +180,176 @@ fi
 echo ""
 
 # ------------------------------------------------------------------------------
+# Pre-flight: verify private subnets have internet egress (NAT / IGW)
+# ------------------------------------------------------------------------------
+
+echo "Checking private subnet routing for internet egress..."
+
+FIRST_SUBNET=$(echo "$PRIVATE_SUBNET_IDS" | tr ',' '\n' | head -1 | tr -d ' ')
+HAS_INTERNET_ROUTE=false
+
+# Look up the route table explicitly associated with the first private subnet;
+# if none, fall back to the VPC's main route table.
+RT_ID=$(aws ec2 describe-route-tables \
+  --filters "Name=association.subnet-id,Values=$FIRST_SUBNET" \
+  --query 'RouteTables[0].RouteTableId' \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "None")
+
+if [ -z "$RT_ID" ] || [ "$RT_ID" = "None" ]; then
+  RT_ID=$(aws ec2 describe-route-tables \
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" \
+    --query 'RouteTables[0].RouteTableId' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "None")
+fi
+
+if [ -n "$RT_ID" ] && [ "$RT_ID" != "None" ]; then
+  INTERNET_ROUTES=$(aws ec2 describe-route-tables \
+    --route-table-ids "$RT_ID" \
+    --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`].[NatGatewayId,GatewayId]' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "")
+  if echo "$INTERNET_ROUTES" | grep -qE "(nat-|igw-)"; then
+    HAS_INTERNET_ROUTE=true
+    echo "  ✓ Internet route found in route table $RT_ID"
+  else
+    echo "  No NAT gateway or internet gateway route in route table $RT_ID"
+  fi
+else
+  echo "  WARNING: Could not determine route table for subnet $FIRST_SUBNET — assuming no internet route"
+fi
+echo ""
+
+if [ "$HAS_INTERNET_ROUTE" = "false" ]; then
+  echo "Private subnets have no NAT gateway — using direct curl test instead"
+  echo "of Lambda. Ensure your IP is on the ALB allowlist."
+  echo ""
+
+  TEST_PAYLOAD='{"event_type":"contact.created","contact_id":"test-001","object_type":"customer"}'
+  HMAC_HEX=$(printf '%s' "$TEST_PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
+  CURL_SIGNATURE="sha256=$HMAC_HEX"
+
+  echo "Sending direct curl to ALB..."
+
+  START_TIME=$(python3 -c "import time; print(int(time.time() * 1000))")
+
+  # -k skips cert verification: the ALB DNS name won't match the ACM cert (custom domain).
+  CURL_OUT=$(curl -s -k -w '\n%{http_code}' -X POST \
+    "https://${ALB_DNS_NAME}/webhook" \
+    -H "Content-Type: application/json" \
+    -H "X-Hub-Signature-256: $CURL_SIGNATURE" \
+    -d "$TEST_PAYLOAD" 2>/dev/null || printf '\n000')
+
+  HTTP_STATUS=$(printf '%s\n' "$CURL_OUT" | tail -n1)
+  RESPONSE_BODY=$(printf '%s\n' "$CURL_OUT" | sed '$d')
+
+  echo "  HTTP status: $HTTP_STATUS"
+  echo "  Response:    $RESPONSE_BODY"
+
+  if [ "$HTTP_STATUS" != "202" ]; then
+    echo ""
+    echo "=================================================="
+    echo " RESULT: FAIL"
+    echo "=================================================="
+    echo ""
+    echo "  ✗ ALB returned HTTP $HTTP_STATUS (expected 202)"
+    echo "  Ensure your IP is in the ALB allowlist (ALLOWED_CIDR in defaults.env)."
+    echo ""
+    echo "  Investigate with:"
+    echo "  aws logs tail $LOG_GROUP --since 5m --region $AWS_REGION"
+    echo ""
+    exit 1
+  fi
+
+  echo "  ✓ ALB accepted the webhook (HTTP 202)"
+
+  REQUEST_ID=$(printf '%s' "$RESPONSE_BODY" | python3 -c "
+import json, sys
+try:
+    body = json.loads(sys.stdin.read())
+    print(body.get('request_id', ''))
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+
+  if [ -n "$REQUEST_ID" ]; then
+    echo "  Request ID:  $REQUEST_ID"
+    FILTER_PATTERN="\"$REQUEST_ID\""
+  else
+    echo "  WARNING: Could not extract request_id from response; searching by event type"
+    FILTER_PATTERN="orchestration_complete"
+  fi
+  echo ""
+
+  echo "Checking CloudWatch logs for orchestration result..."
+  echo "  Log group: $LOG_GROUP"
+
+  AGENT_SUCCESS=false
+  ORCHESTRATION_COMPLETE=false
+
+  for i in 1 2 3; do
+    echo "  Waiting 10s for logs to appear (attempt $i/3)..."
+    sleep 10
+
+    LOG_EVENTS=$(aws logs filter-log-events \
+      --log-group-name "$LOG_GROUP" \
+      --start-time "$START_TIME" \
+      --filter-pattern "$FILTER_PATTERN" \
+      --region "$AWS_REGION" \
+      --output json 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for e in data.get('events', []):
+    print(e.get('message', ''))
+" 2>/dev/null || echo "")
+
+    if echo "$LOG_EVENTS" | grep -q "agent_success"; then
+      AGENT_SUCCESS=true
+    fi
+    if echo "$LOG_EVENTS" | grep -q "orchestration_complete" && echo "$LOG_EVENTS" | grep -q "success"; then
+      ORCHESTRATION_COMPLETE=true
+    fi
+
+    if [ "$AGENT_SUCCESS" = "true" ] && [ "$ORCHESTRATION_COMPLETE" = "true" ]; then
+      break
+    fi
+  done
+  echo ""
+
+  echo "=================================================="
+  if [ "$AGENT_SUCCESS" = "true" ] && [ "$ORCHESTRATION_COMPLETE" = "true" ]; then
+    echo " RESULT: PASS"
+    echo "=================================================="
+    echo ""
+    echo "  ✓ agent_success found in CloudWatch logs"
+    echo "  ✓ orchestration_complete with status success confirmed"
+    TEST_EXIT=0
+  else
+    echo " RESULT: FAIL"
+    echo "=================================================="
+    echo ""
+    if [ "$AGENT_SUCCESS" = "true" ]; then
+      echo "  ✓ agent_success found in CloudWatch logs"
+    else
+      echo "  ✗ agent_success NOT found in CloudWatch logs"
+    fi
+    if [ "$ORCHESTRATION_COMPLETE" = "true" ]; then
+      echo "  ✓ orchestration_complete with status success confirmed"
+    else
+      echo "  ✗ orchestration_complete with status success NOT found"
+    fi
+    echo ""
+    echo "  Investigate with:"
+    echo "  aws logs tail $LOG_GROUP --since 5m --region $AWS_REGION"
+    TEST_EXIT=1
+  fi
+  echo ""
+
+  exit $TEST_EXIT
+fi
+
+# ------------------------------------------------------------------------------
 # Create Lambda security group
 # ------------------------------------------------------------------------------
 
@@ -424,7 +594,7 @@ aws lambda create-function \
   --handler lambda_function.handler \
   --zip-file "fileb://$SCRIPT_DIR/lambda.zip" \
   --role "$ROLE_ARN" \
-  --vpc-config "SubnetIds=${PRIVATE_SUBNET_IDS},SecurityGroupIds=${LAMBDA_SG_ID}" \
+  --vpc-config "SubnetIds=subnet-02d250c49b3037efb,subnet-0347474e32b3ce282,SecurityGroupIds=${LAMBDA_SG_ID}" \
   --timeout 30 \
   --region "$AWS_REGION" > /dev/null
 
