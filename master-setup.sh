@@ -889,6 +889,59 @@ EOF
 done
 
 # ------------------------------------------------------------------------------
+# Auto-push default routing config to SSM using deployed agent names
+# ------------------------------------------------------------------------------
+
+echo ""
+TEMP_ROUTING=$(mktemp)
+TEMP_PROMPT=$(mktemp)
+
+{
+  printf '{\n  "rules": [\n'
+  FIRST_RULE=true
+  for NAME in "${AGENT_NAMES[@]}"; do
+    [ "$FIRST_RULE" = "true" ] || printf ',\n'
+    FIRST_RULE=false
+    printf '    {\n      "event_type": "contact.created",\n      "agents": ["%s"],\n      "description": "Route contact.created events to %s"\n    }' "$NAME" "$NAME"
+  done
+  printf '\n  ]\n}\n'
+} > "$TEMP_ROUTING"
+
+printf 'You are a helpful AI assistant. Update this prompt via configure-orchestrator.sh.\n' > "$TEMP_PROMPT"
+
+ROUTING_CONFIG_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing"
+SYSTEM_PROMPT_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/system_prompt"
+
+aws ssm put-parameter \
+  --name "$ROUTING_CONFIG_PATH" \
+  --value "$(cat "$TEMP_ROUTING")" \
+  --type "String" \
+  --overwrite \
+  --region "$AWS_REGION" > /dev/null
+
+# Push placeholder system prompt only if not already configured
+EXISTING_PROMPT=$(aws ssm get-parameter \
+  --name "$SYSTEM_PROMPT_PATH" \
+  --query Parameter.Value \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -z "$EXISTING_PROMPT" ]; then
+  aws ssm put-parameter \
+    --name "$SYSTEM_PROMPT_PATH" \
+    --value "$(cat "$TEMP_PROMPT")" \
+    --type "String" \
+    --region "$AWS_REGION" > /dev/null
+fi
+
+rm -f "$TEMP_ROUTING" "$TEMP_PROMPT"
+
+NAMES_STR=""
+for NAME in "${AGENT_NAMES[@]}"; do
+  [ -z "$NAMES_STR" ] && NAMES_STR="$NAME" || NAMES_STR="$NAMES_STR, $NAME"
+done
+echo "✓ Default routing config pushed to SSM using agent name(s): $NAMES_STR"
+
+# ------------------------------------------------------------------------------
 # Post-install verification
 # ------------------------------------------------------------------------------
 
