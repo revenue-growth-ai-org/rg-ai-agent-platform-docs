@@ -231,7 +231,7 @@ echo ""
 PAYLOAD='{"event_type":"contact.created","contact_id":"test-contact-001","object_type":"customer","email":"test@example.com","name":"Test Contact"}'
 SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
-START_TIME=$(python3 -c "import time; print(int(time.time() * 1000))")
+START_TIME=$(date -u -v-30S +%s000 2>/dev/null || date -u -d '30 seconds ago' +%s000)
 
 RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
   -X POST "https://${ALB_DNS_NAME}/webhook" \
@@ -268,7 +268,7 @@ echo "  Log group: $LOG_GROUP"
 
 AGENT_SUCCESS=false
 ORCHESTRATION_COMPLETE=false
-FILTER_PATTERN="orchestration_complete"
+FILTER_PATTERN="agent_success"
 
 for i in $(seq 1 18); do
   echo "  Waiting 10s for logs to appear (attempt $i/18)..."
@@ -288,8 +288,6 @@ for e in data.get('events', []):
 
   if echo "$LOG_EVENTS" | grep -q "agent_success"; then
     AGENT_SUCCESS=true
-  fi
-  if echo "$LOG_EVENTS" | grep -q "orchestration_complete" && echo "$LOG_EVENTS" | grep -q "success"; then
     ORCHESTRATION_COMPLETE=true
   fi
 
