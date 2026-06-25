@@ -293,6 +293,27 @@ done
 
 echo ""
 echo "=================================================="
+echo " CRM Configuration"
+echo "=================================================="
+echo ""
+echo "Which CRM will be sending webhooks to this platform?"
+echo "  1. HubSpot   — internet-facing ALB, open to all IPs, HMAC signature validation"
+echo "  2. Salesforce — internet-facing ALB, restricted to Salesforce IP ranges"
+echo "  3. Other      — internal ALB, manual CIDR allowlist"
+echo ""
+read -p "Enter 1, 2, or 3: " CRM_CHOICE < /dev/tty
+
+case "$CRM_CHOICE" in
+  1) CRM_TYPE="hubspot" ;;
+  2) CRM_TYPE="salesforce" ;;
+  3) CRM_TYPE="other" ;;
+  *) echo "ERROR: Please enter 1, 2, or 3."; exit 1 ;;
+esac
+
+echo "  ✓ CRM type: $CRM_TYPE"
+
+echo ""
+echo "=================================================="
 echo " Deployment Plan"
 echo "=================================================="
 echo ""
@@ -302,6 +323,7 @@ echo "  AWS Account:  $AWS_ACCOUNT_ID"
 echo "  AWS Region:   $AWS_REGION"
 echo "  VPC CIDR:     $VPC_CIDR"
 echo "  Allowed CIDR: $ALLOWED_CIDR"
+echo "  CRM Type:     $CRM_TYPE"
 echo "  Agents:       ${AGENT_NAMES[*]}"
 echo ""
 read -p "Proceed with deployment? (yes/no): " CONFIRM < /dev/tty
@@ -593,6 +615,8 @@ deployment_role_arn       = "$DEPLOYMENT_ROLE_ARN"
 rds_database_name   = "agentdb"
 rds_master_username = "agentadmin"
 rds_instance_class  = "${RDS_INSTANCE_CLASS}"
+
+crm_type = "$CRM_TYPE"
 EOF
 fi
 
@@ -602,6 +626,15 @@ if [ -f "$BASE_DIR/prod.tfvars" ]; then
   sed -i.bak "s|alb_certificate_arn.*=.*\".*\"|alb_certificate_arn = \"$ACM_CERT_ARN\"|" "$BASE_DIR/prod.tfvars"
   echo "  ✓ alb_certificate_arn updated: $ACM_CERT_ARN"
 fi
+
+# Always write crm_type — update if present, append if not
+if grep -q "^crm_type" "$BASE_DIR/prod.tfvars"; then
+  sed -i.bak "s|crm_type.*=.*\".*\"|crm_type = \"$CRM_TYPE\"|" "$BASE_DIR/prod.tfvars"
+else
+  printf '\ncrm_type = "%s"\n' "$CRM_TYPE" >> "$BASE_DIR/prod.tfvars"
+fi
+rm -f "$BASE_DIR/prod.tfvars.bak"
+echo "  ✓ crm_type set: $CRM_TYPE"
 
 write_backend "$BASE_DIR" "1-rg-ai-agent-platform-base/terraform.tfstate"
 
