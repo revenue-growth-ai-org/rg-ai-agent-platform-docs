@@ -902,7 +902,7 @@ TEMP_PROMPT=$(mktemp)
   for NAME in "${AGENT_NAMES[@]}"; do
     [ "$FIRST_RULE" = "true" ] || printf ',\n'
     FIRST_RULE=false
-    printf '    {\n      "event_type": "contact.created",\n      "agents": ["%s"],\n      "description": "Route contact.created events to %s"\n    }' "$NAME" "$NAME"
+    printf '    {\n      "event_type": "contact.created",\n      "match_field": "object_type",\n      "match_value": "customer",\n      "agents": ["%s"],\n      "description": "Route contact.created customer events to %s"\n    }' "$NAME" "$NAME"
   done
   printf '\n  ]\n}\n'
 } > "$TEMP_ROUTING"
@@ -935,11 +935,18 @@ fi
 
 rm -f "$TEMP_ROUTING" "$TEMP_PROMPT"
 
+aws ecs update-service \
+  --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+  --service "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
+  --force-new-deployment \
+  --region "$AWS_REGION" > /dev/null
+
 NAMES_STR=""
 for NAME in "${AGENT_NAMES[@]}"; do
   [ -z "$NAMES_STR" ] && NAMES_STR="$NAME" || NAMES_STR="$NAMES_STR, $NAME"
 done
-echo "✓ Default routing config pushed to SSM using agent name(s): $NAMES_STR"
+echo "✓ Routing config pushed to SSM using agent name(s): $NAMES_STR"
+echo "✓ Orchestrator restarting to pick up new routing config"
 
 # ------------------------------------------------------------------------------
 # Post-install verification
