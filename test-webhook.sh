@@ -594,7 +594,7 @@ aws lambda create-function \
   --handler lambda_function.handler \
   --zip-file "fileb://$SCRIPT_DIR/lambda.zip" \
   --role "$ROLE_ARN" \
-  --vpc-config "SubnetIds=subnet-02d250c49b3037efb,subnet-0347474e32b3ce282,SecurityGroupIds=${LAMBDA_SG_ID}" \
+  --vpc-config "SubnetIds=${PRIVATE_SUBNET_IDS},SecurityGroupIds=${LAMBDA_SG_ID}" \
   --timeout 30 \
   --region "$AWS_REGION" > /dev/null
 
