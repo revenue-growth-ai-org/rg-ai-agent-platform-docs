@@ -901,51 +901,34 @@ EOF
 done
 
 # ------------------------------------------------------------------------------
-# Auto-push default routing config to SSM using deployed agent names
+# Build and push routing config to SSM from deployed agent names
 # ------------------------------------------------------------------------------
 
-echo ""
-TEMP_ROUTING=$(mktemp)
-TEMP_PROMPT=$(mktemp)
+# Build routing rules for each agent
+RULES="[]"
+for AGENT_NAME in "${AGENT_NAMES[@]}"; do
+  RULES=$(echo "$RULES" | python3 -c "
+import sys, json
+rules = json.load(sys.stdin)
+rules.append({
+  'event_type': 'contact.created',
+  'match_field': 'object_type',
+  'match_value': 'customer',
+  'agents': ['$AGENT_NAME'],
+  'description': 'Deterministic route to $AGENT_NAME.'
+})
+print(json.dumps(rules))
+")
+done
 
-{
-  printf '{\n  "rules": [\n'
-  FIRST_RULE=true
-  for NAME in "${AGENT_NAMES[@]}"; do
-    [ "$FIRST_RULE" = "true" ] || printf ',\n'
-    FIRST_RULE=false
-    printf '    {\n      "event_type": "contact.created",\n      "match_field": "object_type",\n      "match_value": "customer",\n      "agents": ["%s"],\n      "description": "Route contact.created customer events to %s"\n    }' "$NAME" "$NAME"
-  done
-  printf '\n  ]\n}\n'
-} > "$TEMP_ROUTING"
-
-printf 'You are a helpful AI assistant. Update this prompt via configure-orchestrator.sh.\n' > "$TEMP_PROMPT"
-
-ROUTING_CONFIG_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing"
-SYSTEM_PROMPT_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/system_prompt"
+ROUTING_CONFIG="{\"rules\": $RULES}"
 
 aws ssm put-parameter \
-  --name "$ROUTING_CONFIG_PATH" \
-  --value "$(cat "$TEMP_ROUTING")" \
-  --type "String" \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing" \
+  --value "$ROUTING_CONFIG" \
+  --type String \
   --overwrite \
   --region "$AWS_REGION" > /dev/null
-
-# Push placeholder system prompt only if not already configured
-EXISTING_PROMPT=$(aws ssm get-parameter \
-  --name "$SYSTEM_PROMPT_PATH" \
-  --query Parameter.Value \
-  --output text \
-  --region "$AWS_REGION" 2>/dev/null || echo "")
-if [ -z "$EXISTING_PROMPT" ]; then
-  aws ssm put-parameter \
-    --name "$SYSTEM_PROMPT_PATH" \
-    --value "$(cat "$TEMP_PROMPT")" \
-    --type "String" \
-    --region "$AWS_REGION" > /dev/null
-fi
-
-rm -f "$TEMP_ROUTING" "$TEMP_PROMPT"
 
 aws ecs update-service \
   --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
@@ -953,11 +936,7 @@ aws ecs update-service \
   --force-new-deployment \
   --region "$AWS_REGION" > /dev/null
 
-NAMES_STR=""
-for NAME in "${AGENT_NAMES[@]}"; do
-  [ -z "$NAMES_STR" ] && NAMES_STR="$NAME" || NAMES_STR="$NAMES_STR, $NAME"
-done
-echo "✓ Routing config pushed to SSM using agent name(s): $NAMES_STR"
+echo "✓ Routing config pushed to SSM using agent name(s): ${AGENT_NAMES[*]}"
 echo "✓ Orchestrator restarting to pick up new routing config"
 
 # ------------------------------------------------------------------------------
