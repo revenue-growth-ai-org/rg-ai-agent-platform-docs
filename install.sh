@@ -399,25 +399,77 @@ done
 ENVIRONMENT="prod"
 read -p "Domain name for SSL certificate (e.g. revenue-growth.ai): " DOMAIN_NAME < /dev/tty
 
-if [ -n "$MY_IP" ]; then
-  echo "Your current IP address is: $MY_IP"
-  echo ""
-  echo "Allowed CIDR for ALB (webhook) access:"
-  echo "  - If your CRM publishes static IP ranges (e.g. Salesforce), enter those ranges here."
-  echo "  - If your CRM uses dynamic IPs (e.g. HubSpot), enter 0.0.0.0/0 — security is"
-  echo "    enforced via HMAC webhook signature validation in the orchestrator, not IP allowlisting."
-  echo "  - Always include your admin/office IP regardless of which option you choose."
-  read -p "Allowed CIDR (press enter to use ${MY_IP}/32): " ALLOWED_CIDR < /dev/tty
-  ALLOWED_CIDR="${ALLOWED_CIDR:-${MY_IP}/32}"
-else
-  echo ""
-  echo "Allowed CIDR for ALB (webhook) access:"
-  echo "  - If your CRM publishes static IP ranges (e.g. Salesforce), enter those ranges here."
-  echo "  - If your CRM uses dynamic IPs (e.g. HubSpot), enter 0.0.0.0/0 — security is"
-  echo "    enforced via HMAC webhook signature validation in the orchestrator, not IP allowlisting."
-  echo "  - Always include your admin/office IP regardless of which option you choose."
-  read -p "Allowed CIDR (e.g. 203.0.113.0/24 or 0.0.0.0/0): " ALLOWED_CIDR < /dev/tty
-fi
+ADMIN_IP="${MY_IP}"
+
+echo "Which CRM will be sending webhooks to this platform?"
+echo "  1. HubSpot"
+echo "  2. Salesforce"
+echo "  3. Other (I will configure manually)"
+read -p "Enter 1, 2, or 3: " CRM_CHOICE < /dev/tty
+
+case "$CRM_CHOICE" in
+  1)
+    CRM_TYPE="hubspot"
+    ALLOWED_CIDR="0.0.0.0/0"
+    echo ""
+    echo "HubSpot uses dynamic outbound IPs — setting ALB to accept all traffic."
+    echo "Webhook signature validation (X-Hub-Signature-256) will be the security control."
+    ;;
+  2)
+    CRM_TYPE="salesforce"
+    echo ""
+    read -p "What is your Salesforce region? (e.g. NA, EU, AP): " SF_REGION < /dev/tty
+    SF_REGION=$(echo "$SF_REGION" | tr '[:lower:]' '[:upper:]')
+    case "$SF_REGION" in
+      NA)
+        SF_CIDRS="96.43.144.0/20,204.14.232.0/21"
+        ;;
+      EU)
+        SF_CIDRS="185.79.140.0/22"
+        ;;
+      AP)
+        SF_CIDRS="103.237.212.0/22"
+        ;;
+      *)
+        echo "  Unknown region — update ALLOWED_CIDR in defaults.env with your Salesforce outbound IP ranges."
+        SF_CIDRS=""
+        ;;
+    esac
+    if [ -n "$MY_IP" ] && [ -n "$SF_CIDRS" ]; then
+      ALLOWED_CIDR="${SF_CIDRS},${MY_IP}/32"
+    elif [ -n "$SF_CIDRS" ]; then
+      ALLOWED_CIDR="$SF_CIDRS"
+    elif [ -n "$MY_IP" ]; then
+      ALLOWED_CIDR="${MY_IP}/32"
+    else
+      read -p "Allowed CIDR (e.g. 203.0.113.0/24): " ALLOWED_CIDR < /dev/tty
+    fi
+    echo ""
+    echo "Setting ALB to accept traffic from Salesforce IP ranges and your admin IP only."
+    ;;
+  *)
+    CRM_TYPE="other"
+    if [ -n "$MY_IP" ]; then
+      echo "Your current IP address is: $MY_IP"
+      echo ""
+      echo "Allowed CIDR for ALB (webhook) access:"
+      echo "  - If your CRM publishes static IP ranges (e.g. Salesforce), enter those ranges here."
+      echo "  - If your CRM uses dynamic IPs (e.g. HubSpot), enter 0.0.0.0/0 — security is"
+      echo "    enforced via HMAC webhook signature validation in the orchestrator, not IP allowlisting."
+      echo "  - Always include your admin/office IP regardless of which option you choose."
+      read -p "Allowed CIDR (press enter to use ${MY_IP}/32): " ALLOWED_CIDR < /dev/tty
+      ALLOWED_CIDR="${ALLOWED_CIDR:-${MY_IP}/32}"
+    else
+      echo ""
+      echo "Allowed CIDR for ALB (webhook) access:"
+      echo "  - If your CRM publishes static IP ranges (e.g. Salesforce), enter those ranges here."
+      echo "  - If your CRM uses dynamic IPs (e.g. HubSpot), enter 0.0.0.0/0 — security is"
+      echo "    enforced via HMAC webhook signature validation in the orchestrator, not IP allowlisting."
+      echo "  - Always include your admin/office IP regardless of which option you choose."
+      read -p "Allowed CIDR (e.g. 203.0.113.0/24 or 0.0.0.0/0): " ALLOWED_CIDR < /dev/tty
+    fi
+    ;;
+esac
 
 # Write defaults.env
 if [ -f "$DEFAULTS_FILE" ]; then
@@ -436,6 +488,8 @@ DEPLOYMENT_ROLE_ARN="$DEPLOY_ROLE_ARN"
 AWS_REGION="$AWS_REGION"
 COST_CENTER="unallocated"
 OWNER="platform-engineering"
+CRM_TYPE="$CRM_TYPE"
+ADMIN_IP="$ADMIN_IP"
 EOF
 
 echo ""
