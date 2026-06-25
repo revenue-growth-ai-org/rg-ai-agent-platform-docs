@@ -293,27 +293,6 @@ done
 
 echo ""
 echo "=================================================="
-echo " CRM Configuration"
-echo "=================================================="
-echo ""
-echo "Which CRM will be sending webhooks to this platform?"
-echo "  1. HubSpot   — internet-facing ALB, open to all IPs, HMAC signature validation"
-echo "  2. Salesforce — internet-facing ALB, restricted to Salesforce IP ranges"
-echo "  3. Other      — internal ALB, manual CIDR allowlist"
-echo ""
-read -p "Enter 1, 2, or 3: " CRM_CHOICE < /dev/tty
-
-case "$CRM_CHOICE" in
-  1) CRM_TYPE="hubspot" ;;
-  2) CRM_TYPE="salesforce" ;;
-  3) CRM_TYPE="other" ;;
-  *) echo "ERROR: Please enter 1, 2, or 3."; exit 1 ;;
-esac
-
-echo "  ✓ CRM type: $CRM_TYPE"
-
-echo ""
-echo "=================================================="
 echo " Deployment Plan"
 echo "=================================================="
 echo ""
