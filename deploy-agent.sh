@@ -55,15 +55,31 @@ done
 # Validate arguments
 # ------------------------------------------------------------------------------
 
-if [ -z "$AGENT_NAME" ] || [ -z "$AGENT_FILE" ]; then
-  echo "ERROR: --agent and --file arguments are required."
+if [ -z "$AGENT_NAME" ]; then
+  echo "ERROR: --agent argument is required."
   echo "Usage: bash deploy-agent.sh --agent <name> --file <path/to/agent.py>"
   exit 1
+fi
+
+AGENT_INSTALL_DIR=~/rg-ai-agent-platform/agent_install
+
+if [ -z "$AGENT_FILE" ]; then
+  if [ -f "$AGENT_INSTALL_DIR/agent.py" ]; then
+    AGENT_FILE="$AGENT_INSTALL_DIR/agent.py"
+    echo "  ✓ Using agent.py from ~/rg-ai-agent-platform/agent_install/"
+  else
+    echo "ERROR: No agent.py found. Either provide --file <path> or save your agent.py to ~/rg-ai-agent-platform/agent_install/agent.py"
+    exit 1
+  fi
 fi
 
 if [ ! -f "$AGENT_FILE" ]; then
   echo "ERROR: Agent file not found: $AGENT_FILE"
   exit 1
+fi
+
+if [ -z "$REQUIREMENTS_FILE" ] && [ -f "$AGENT_INSTALL_DIR/requirements.txt" ]; then
+  REQUIREMENTS_FILE="$AGENT_INSTALL_DIR/requirements.txt"
 fi
 
 if [ -n "$REQUIREMENTS_FILE" ] && [ ! -f "$REQUIREMENTS_FILE" ]; then
