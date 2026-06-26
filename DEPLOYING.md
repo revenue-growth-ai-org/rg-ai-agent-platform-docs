@@ -229,6 +229,16 @@ one agent, the orchestrator routes directly to that agent without calling the
 LLM (deterministic routing). Rules without these fields, or that match
 ambiguously, fall back to LLM-based routing via Claude.
 
+> **Note:** The `routing_config.json` in the repo root is a template — it
+> contains `YOUR_AGENT_NAME` as a placeholder. Before pushing to SSM, replace
+> `YOUR_AGENT_NAME` with the exact agent name used during install (e.g. `arr`,
+> `researcher`, `scorer`). This is a one-word substitution — do not add new
+> rules or restructure the file unless intentionally changing the routing logic.
+>
+> For fresh installs, `master-setup.sh` automatically generates and pushes the
+> correct routing config from the actual agent names entered during install —
+> no manual substitution needed for the initial deployment.
+
 ### Step 2 — Push configuration to the orchestrator
 
     bash configure-orchestrator.sh \
