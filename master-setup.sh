@@ -553,6 +553,46 @@ while true; do
 done
 
 # ------------------------------------------------------------------------------
+# External API Keys
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "=================================================="
+echo " External API Keys"
+echo "=================================================="
+echo ""
+read -p "Do you need to store any external API keys? (yes/no): " STORE_EXTERNAL_KEYS < /dev/tty
+
+if [ "$STORE_EXTERNAL_KEYS" = "yes" ]; then
+  while true; do
+    echo ""
+    read -p "Enter the secret name (e.g. HUBSPOT_API_KEY): " SECRET_NAME < /dev/tty
+    read -s -p "Enter the secret value: " SECRET_VALUE < /dev/tty
+    echo ""
+
+    if aws secretsmanager create-secret \
+        --name "$SECRET_NAME" \
+        --secret-string "$SECRET_VALUE" \
+        --region "$AWS_REGION" > /dev/null 2>&1; then
+      echo "  ✓ $SECRET_NAME stored successfully"
+    else
+      aws secretsmanager update-secret \
+        --secret-id "$SECRET_NAME" \
+        --secret-string "$SECRET_VALUE" \
+        --region "$AWS_REGION" > /dev/null
+      echo "  ✓ $SECRET_NAME stored successfully"
+    fi
+
+    read -p "Do you have another API key to store? (yes/no): " ANOTHER_KEY < /dev/tty
+    if [ "$ANOTHER_KEY" != "yes" ]; then
+      break
+    fi
+  done
+fi
+
+echo ""
+
+# ------------------------------------------------------------------------------
 # Step 1 — Base infrastructure
 # ------------------------------------------------------------------------------
 
