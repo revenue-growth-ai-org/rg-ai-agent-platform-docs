@@ -294,3 +294,34 @@ To update an agent implementation at any time:
 
 Both scripts back up existing files before making changes so you can
 always roll back if needed.
+
+### Adding API keys after deployment
+
+API keys for agent workflows are stored in AWS Secrets Manager and
+can be added at any time without reinstalling or redeploying
+infrastructure. To add a new key:
+
+    aws secretsmanager create-secret \
+      --name "SECRET_NAME" \
+      --secret-string "your-secret-value-here" \
+      --region <your-region>
+
+To update an existing key:
+
+    aws secretsmanager update-secret \
+      --secret-id "SECRET_NAME" \
+      --secret-string "your-new-value-here" \
+      --region <your-region>
+
+Replace SECRET_NAME with the exact name used in your agent.py
+(e.g. HUBSPOT_API_KEY, SLACK_BOT_TOKEN, ZOOMINFO_API_KEY).
+The name must match exactly — it is case sensitive.
+
+After adding or updating a key, force-redeploy the agent to pick
+up the new value:
+
+    aws ecs update-service \
+      --cluster <project>-<env>-ecs \
+      --service <project>-<env>-<agent-name> \
+      --force-new-deployment \
+      --region <your-region>
