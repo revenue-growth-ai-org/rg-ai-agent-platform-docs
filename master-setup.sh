@@ -518,38 +518,23 @@ echo ""
 echo "Step 0 complete."
 echo ""
 echo "=================================================="
-echo " ACTION REQUIRED — Paste your Anthropic API key"
+echo " Anthropic API Key"
 echo "=================================================="
 echo ""
-echo "Open a NEW terminal tab, run the command below, then return here and press Enter to continue:"
-echo ""
-echo "Run this command and replace sk-ant-your-key-here with your real key:"
-echo ""
-echo "  aws secretsmanager put-secret-value \\"
-echo "    --secret-id $ANTHROPIC_SECRET_ARN \\"
-echo "    --secret-string \"sk-ant-your-key-here\""
-echo ""
-read -p "Press enter once you have pasted your Anthropic API key to continue..." < /dev/tty
 
 while true; do
-  KEY_VALUE=$(aws secretsmanager get-secret-value \
-    --secret-id "$ANTHROPIC_SECRET_ARN" \
-    --query SecretString --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
-    https://api.anthropic.com/v1/messages \
-    -H "x-api-key: $KEY_VALUE" \
-    -H "anthropic-version: 2023-06-01" \
-    -H "content-type: application/json" \
-    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}')
-  if [ "$HTTP_CODE" = "401" ]; then
-    echo ""
-    echo "✗ The Anthropic API key appears invalid (401 Unauthorized). Please re-check the key and run the put-secret-value command again, then press Enter to retry."
-    echo ""
-    read -p "Press enter once you have pasted your Anthropic API key to continue..." < /dev/tty
-  else
-    echo "✓ Anthropic API key validated"
-    break
+  echo "Enter your Anthropic API key:"
+  read -s ANTHROPIC_API_KEY < /dev/tty
+  echo ""
+  if [ -z "$ANTHROPIC_API_KEY" ]; then
+    echo "API key cannot be empty. Please try again."
+    continue
   fi
+  aws secretsmanager put-secret-value \
+    --secret-id "$ANTHROPIC_SECRET_ARN" \
+    --secret-string "$ANTHROPIC_API_KEY"
+  echo "✓ Anthropic API key stored successfully"
+  break
 done
 
 # ------------------------------------------------------------------------------
