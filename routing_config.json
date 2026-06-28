@@ -5,14 +5,19 @@
       "match_field": "object_type",
       "match_value": "customer",
       "agents": ["YOUR_AGENT_NAME"],
-      "description": "New customer contact — deterministic route to YOUR_AGENT_NAME."
+      "description": "New customer — route to YOUR_AGENT_NAME."
     },
     {
       "event_type": "contact.created",
       "match_field": "object_type",
       "match_value": "prospect",
       "agents": ["YOUR_AGENT_NAME"],
-      "description": "New prospect contact — deterministic route to YOUR_AGENT_NAME (placeholder, would be a different agent in a 2-agent setup)."
+      "description": "New prospect — route to YOUR_AGENT_NAME."
+    },
+    {
+      "event_type": "deal.propertyChange",
+      "agents": ["YOUR_AGENT_NAME"],
+      "description": "Deal property change — route to YOUR_AGENT_NAME."
     }
   ]
 }
