@@ -228,7 +228,31 @@ fi
 echo "Sending test webhook directly from this machine..."
 echo ""
 
-PAYLOAD='{"event_type":"contact.created","contact_id":"test-contact-001","object_type":"customer","email":"test@example.com","name":"Test Contact"}'
+ROUTING_CONFIG=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing" \
+  --query Parameter.Value \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+if [ -z "$ROUTING_CONFIG" ]; then
+  echo "  WARNING: Could not read routing config from SSM; falling back to event_type=contact.created"
+  EVENT_TYPE="contact.created"
+else
+  EVENT_TYPE=$(echo "$ROUTING_CONFIG" | python3 -c "
+import sys, json
+rules = json.loads(sys.stdin.read()).get('rules', [])
+print(rules[0]['event_type'] if rules else 'contact.created')
+" 2>/dev/null || echo "")
+  if [ -z "$EVENT_TYPE" ]; then
+    echo "  WARNING: Routing config has no rules; falling back to event_type=contact.created"
+    EVENT_TYPE="contact.created"
+  fi
+fi
+
+echo "  Using event_type from routing config: $EVENT_TYPE"
+echo ""
+
+PAYLOAD="{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-contact-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
 SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
 START_TIME=$(date -u -v-30S +%s000 2>/dev/null || date -u -d '30 seconds ago' +%s000)
