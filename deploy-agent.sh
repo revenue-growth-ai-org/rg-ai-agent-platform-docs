@@ -185,6 +185,34 @@ fi
 mkdir -p ~/rg-ai-agent-platform/app
 
 # ------------------------------------------------------------------------------
+# Ensure required platform files exist in app directory
+# ------------------------------------------------------------------------------
+
+PLATFORM_SRC="$AGENT_REPO/app"
+
+if [ ! -f "$PLATFORM_SRC/main.py" ] || [ ! -f "$PLATFORM_SRC/config.py" ] || [ ! -d "$PLATFORM_SRC/utils" ]; then
+  echo "ERROR: Platform files not found in"
+  echo "   ~/rg-ai-agent-platform/3-rg-ai-agent-platform-agent/app/"
+  echo "   Ensure the agent repo is cloned before running deploy-agent.sh"
+  exit 1
+fi
+
+if [ ! -f ~/rg-ai-agent-platform/app/main.py ]; then
+  cp "$PLATFORM_SRC/main.py" ~/rg-ai-agent-platform/app/main.py
+  echo "  ✓ Copied main.py to app directory"
+fi
+
+if [ ! -f ~/rg-ai-agent-platform/app/config.py ]; then
+  cp "$PLATFORM_SRC/config.py" ~/rg-ai-agent-platform/app/config.py
+  echo "  ✓ Copied config.py to app directory"
+fi
+
+if [ ! -d ~/rg-ai-agent-platform/app/utils ]; then
+  cp -r "$PLATFORM_SRC/utils" ~/rg-ai-agent-platform/app/utils
+  echo "  ✓ Copied utils/ to app directory"
+fi
+
+# ------------------------------------------------------------------------------
 # Back up existing agent.py
 # ------------------------------------------------------------------------------
 
