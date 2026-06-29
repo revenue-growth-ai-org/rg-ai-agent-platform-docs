@@ -568,6 +568,22 @@ if [ "$STORE_EXTERNAL_KEYS" = "yes" ]; then
       echo "  ✓ $SECRET_NAME stored successfully"
     fi
 
+    SECRET_ARN=$(aws secretsmanager describe-secret \
+      --secret-id "$SECRET_NAME" \
+      --query ARN \
+      --output text \
+      --region "$AWS_REGION")
+
+    for AGENT_NAME in "${AGENT_NAMES[@]}"; do
+      aws ssm put-parameter \
+        --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_secret_arn" \
+        --value "$SECRET_ARN" \
+        --type String \
+        --overwrite \
+        --region "$AWS_REGION" > /dev/null
+      echo "  ✓ Updated SSM external_api_secret_arn for agent: $AGENT_NAME"
+    done
+
     read -p "Do you have another API key to store? (yes/no): " ANOTHER_KEY < /dev/tty
     if [ "$ANOTHER_KEY" != "yes" ]; then
       break
