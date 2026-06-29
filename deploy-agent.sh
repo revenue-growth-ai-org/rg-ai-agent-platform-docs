@@ -232,6 +232,21 @@ if [ -n "$REQUIREMENTS_FILE" ]; then
   echo "  ✓ New requirements.txt copied"
 fi
 
+BASE_DEPS=(
+  "fastapi==0.115.0"
+  "uvicorn==0.30.6"
+  "pydantic==2.9.2"
+  "boto3==1.35.0"
+  "python-json-logger==2.0.7"
+)
+
+for dep in "${BASE_DEPS[@]}"; do
+  pkg=$(echo "$dep" | cut -d'=' -f1)
+  if ! grep -qi "^${pkg}" "$AGENT_REPO/app/requirements.txt"; then
+    echo "$dep" >> "$AGENT_REPO/app/requirements.txt"
+  fi
+done
+
 # ------------------------------------------------------------------------------
 # Check Docker is running
 # ------------------------------------------------------------------------------
