@@ -533,3 +533,5 @@ else
   echo "  bash master-setup.sh"
   echo ""
 fi
+
+git remote set-url origin https://github.com/revenue-growth-ai-org/rg-ai-agent-platform-docs.git 2>/dev/null || true
