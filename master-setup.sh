@@ -775,10 +775,25 @@ set -e
 while [ $APPLY_EXIT -ne 0 ] && [ $APPLY_RETRY -lt 2 ]; do
   APPLY_FIXED=false
 
-  if grep -q "ParameterAlreadyExists" "$APPLY_LOG" && grep -q "orchestrator_webhook_secret" "$APPLY_LOG"; then
+  if grep -q "ParameterAlreadyExists" "$APPLY_LOG"; then
     echo ""
-    echo "Detected orphaned webhook_secret SSM parameter from a previous attempt — importing into state and retrying..."
-    terraform import -var-file="prod.tfvars" aws_ssm_parameter.orchestrator_webhook_secret "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
+    echo "Detected orphaned SSM parameter(s) from a previous attempt — importing into state and retrying..."
+    while IFS=' ' read -r SSM_RESOURCE SSM_PATH; do
+      [ -z "$SSM_RESOURCE" ] && continue
+      echo "  Importing $SSM_RESOURCE <- $SSM_PATH"
+      terraform import -var-file="prod.tfvars" "$SSM_RESOURCE" "$SSM_PATH"
+    done < <(awk '
+      /ParameterAlreadyExists/ {
+        if (match($0, /\([^)]+\)/))
+          pending = substr($0, RSTART+1, RLENGTH-2)
+      }
+      /with aws_ssm_parameter\./ && pending != "" {
+        if (match($0, /aws_ssm_parameter\.[A-Za-z0-9_]+/)) {
+          print substr($0, RSTART, RLENGTH) " " pending
+          pending = ""
+        }
+      }
+    ' "$APPLY_LOG")
     APPLY_FIXED=true
   fi
 
