@@ -395,6 +395,79 @@ terraform {
 EOF
 }
 
+apply_with_retry() {
+  local TFVARS_FILE=$1
+  local APPLY_LOG APPLY_EXIT APPLY_RETRY APPLY_FIXED SRV_IDS SRV_ID INSTANCE_IDS INSTANCE_ID
+  APPLY_LOG=$(mktemp)
+  APPLY_RETRY=0
+  set +e
+  terraform apply -var-file="$TFVARS_FILE" -auto-approve 2>&1 | tee "$APPLY_LOG"
+  APPLY_EXIT=${PIPESTATUS[0]}
+  set -e
+
+  while [ $APPLY_EXIT -ne 0 ] && [ $APPLY_RETRY -lt 2 ]; do
+    APPLY_FIXED=false
+
+    if grep -q "ParameterAlreadyExists" "$APPLY_LOG"; then
+      echo ""
+      echo "Detected orphaned SSM parameter(s) from a previous attempt — importing into state and retrying..."
+      while IFS=' ' read -r SSM_RESOURCE SSM_PATH; do
+        [ -z "$SSM_RESOURCE" ] && continue
+        echo "  Importing $SSM_RESOURCE <- $SSM_PATH"
+        terraform import -var-file="$TFVARS_FILE" "$SSM_RESOURCE" "$SSM_PATH"
+      done < <(awk '
+        /ParameterAlreadyExists/ {
+          if (match($0, /\([^)]+\)/))
+            pending = substr($0, RSTART+1, RLENGTH-2)
+        }
+        /with aws_ssm_parameter\./ && pending != "" {
+          if (match($0, /aws_ssm_parameter\.[A-Za-z0-9_]+/)) {
+            print substr($0, RSTART, RLENGTH) " " pending
+            pending = ""
+          }
+        }
+      ' "$APPLY_LOG")
+      APPLY_FIXED=true
+    fi
+
+    if grep -q "ResourceInUse" "$APPLY_LOG" && grep -q "Service contains registered instances" "$APPLY_LOG"; then
+      echo ""
+      echo "Detected registered Cloud Map instances blocking service deletion — deregistering and retrying..."
+      SRV_IDS=$(grep -oE "srv-[a-z0-9]+" "$APPLY_LOG" | sort -u)
+      for SRV_ID in $SRV_IDS; do
+        INSTANCE_IDS=$(aws servicediscovery list-instances \
+          --service-id "$SRV_ID" \
+          --query 'Instances[].Id' \
+          --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+        for INSTANCE_ID in $INSTANCE_IDS; do
+          aws servicediscovery deregister-instance \
+            --service-id "$SRV_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$AWS_REGION" > /dev/null 2>&1 && \
+            echo "  ✓ Deregistered instance $INSTANCE_ID from $SRV_ID" || true
+        done
+      done
+      APPLY_FIXED=true
+    fi
+
+    if [ "$APPLY_FIXED" = "false" ]; then
+      rm -f "$APPLY_LOG"
+      exit $APPLY_EXIT
+    fi
+
+    APPLY_RETRY=$((APPLY_RETRY + 1))
+    set +e
+    terraform apply -var-file="$TFVARS_FILE" -auto-approve 2>&1 | tee "$APPLY_LOG"
+    APPLY_EXIT=${PIPESTATUS[0]}
+    set -e
+  done
+
+  rm -f "$APPLY_LOG"
+  if [ $APPLY_EXIT -ne 0 ]; then
+    exit $APPLY_EXIT
+  fi
+}
+
 # ------------------------------------------------------------------------------
 # Step 0 — Bootstrap
 # ------------------------------------------------------------------------------
@@ -427,7 +500,7 @@ make doctor
 echo ""
 echo "Running Step 0 terraform apply..."
 terraform init
-terraform apply -var-file="prod.tfvars" -auto-approve
+apply_with_retry "prod.tfvars"
 
 CERT_ARN=$(terraform output -raw acm_certificate_arn 2>/dev/null || \
   aws ssm get-parameter \
@@ -662,7 +735,7 @@ make doctor
 echo ""
 echo "Running Step 1 terraform apply..."
 terraform init
-terraform apply -var-file="prod.tfvars" -auto-approve
+apply_with_retry "prod.tfvars"
 
 echo ""
 echo "Step 1 complete."
@@ -765,74 +838,7 @@ echo "  ✓ Orchestrator image pushed to ECR"
 echo ""
 echo "Running Step 2 terraform apply..."
 terraform init
-APPLY_LOG=$(mktemp)
-APPLY_RETRY=0
-set +e
-terraform apply -var-file="prod.tfvars" -auto-approve 2>&1 | tee "$APPLY_LOG"
-APPLY_EXIT=${PIPESTATUS[0]}
-set -e
-
-while [ $APPLY_EXIT -ne 0 ] && [ $APPLY_RETRY -lt 2 ]; do
-  APPLY_FIXED=false
-
-  if grep -q "ParameterAlreadyExists" "$APPLY_LOG"; then
-    echo ""
-    echo "Detected orphaned SSM parameter(s) from a previous attempt — importing into state and retrying..."
-    while IFS=' ' read -r SSM_RESOURCE SSM_PATH; do
-      [ -z "$SSM_RESOURCE" ] && continue
-      echo "  Importing $SSM_RESOURCE <- $SSM_PATH"
-      terraform import -var-file="prod.tfvars" "$SSM_RESOURCE" "$SSM_PATH"
-    done < <(awk '
-      /ParameterAlreadyExists/ {
-        if (match($0, /\([^)]+\)/))
-          pending = substr($0, RSTART+1, RLENGTH-2)
-      }
-      /with aws_ssm_parameter\./ && pending != "" {
-        if (match($0, /aws_ssm_parameter\.[A-Za-z0-9_]+/)) {
-          print substr($0, RSTART, RLENGTH) " " pending
-          pending = ""
-        }
-      }
-    ' "$APPLY_LOG")
-    APPLY_FIXED=true
-  fi
-
-  if grep -q "ResourceInUse" "$APPLY_LOG" && grep -q "Service contains registered instances" "$APPLY_LOG"; then
-    echo ""
-    echo "Detected registered Cloud Map instances blocking service deletion — deregistering and retrying..."
-    SRV_IDS=$(grep -oE "srv-[a-z0-9]+" "$APPLY_LOG" | sort -u)
-    for SRV_ID in $SRV_IDS; do
-      INSTANCE_IDS=$(aws servicediscovery list-instances \
-        --service-id "$SRV_ID" \
-        --query 'Instances[].Id' \
-        --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-      for INSTANCE_ID in $INSTANCE_IDS; do
-        aws servicediscovery deregister-instance \
-          --service-id "$SRV_ID" \
-          --instance-id "$INSTANCE_ID" \
-          --region "$AWS_REGION" > /dev/null 2>&1 && \
-          echo "  ✓ Deregistered instance $INSTANCE_ID from $SRV_ID" || true
-      done
-    done
-    APPLY_FIXED=true
-  fi
-
-  if [ "$APPLY_FIXED" = "false" ]; then
-    rm -f "$APPLY_LOG"
-    exit $APPLY_EXIT
-  fi
-
-  APPLY_RETRY=$((APPLY_RETRY + 1))
-  set +e
-  terraform apply -var-file="prod.tfvars" -auto-approve 2>&1 | tee "$APPLY_LOG"
-  APPLY_EXIT=${PIPESTATUS[0]}
-  set -e
-done
-
-rm -f "$APPLY_LOG"
-if [ $APPLY_EXIT -ne 0 ]; then
-  exit $APPLY_EXIT
-fi
+apply_with_retry "prod.tfvars"
 
 echo ""
 echo "Step 2 complete."
@@ -949,7 +955,7 @@ EOF
   echo ""
   echo "Running terraform apply for agent $AGENT_NAME..."
   terraform init -reconfigure
-  terraform apply -var-file="prod.tfvars" -auto-approve
+  apply_with_retry "prod.tfvars"
 
   echo ""
   echo "Agent $AGENT_NAME deployed."
