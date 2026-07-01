@@ -16,6 +16,7 @@ set -o pipefail
 #   --agent         Agent name (must match an existing deployed agent)
 #   --file          Path to the new agent.py implementation file
 #   --requirements  Optional path to a new requirements.txt file
+#   --secret-arn   (optional) Secrets Manager ARN to write to SSM as external_api_secret_arn
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +30,7 @@ DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
 AGENT_NAME=""
 AGENT_FILE=""
 REQUIREMENTS_FILE=""
+SECRET_ARN=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -42,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --requirements)
       REQUIREMENTS_FILE="$2"
+      shift 2
+      ;;
+    --secret-arn)
+      SECRET_ARN="$2"
       shift 2
       ;;
     *)
@@ -231,6 +237,16 @@ echo "  ✓ New agent.py copied"
 if [ -n "$REQUIREMENTS_FILE" ]; then
   cp "$REQUIREMENTS_FILE" "$AGENT_REPO/app/requirements.txt"
   echo "  ✓ New requirements.txt copied"
+fi
+
+if [ -n "$SECRET_ARN" ]; then
+  aws ssm put-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_secret_arn" \
+    --value "$SECRET_ARN" \
+    --type String \
+    --overwrite \
+    --region "$AWS_REGION" > /dev/null
+  echo "  ✓ SSM external_api_secret_arn updated for agent: $AGENT_NAME"
 fi
 
 BASE_DEPS=(
