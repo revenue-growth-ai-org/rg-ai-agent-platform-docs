@@ -28,6 +28,19 @@ fi
 
 source "$DEFAULTS_FILE"
 
+OVERRIDE_AGENT=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --agent)
+      OVERRIDE_AGENT="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
@@ -252,6 +265,59 @@ fi
 echo "  Using event_type from routing config: $EVENT_TYPE"
 echo ""
 
+ROUTING_OVERRIDDEN=false
+if [ -n "$OVERRIDE_AGENT" ]; then
+  echo "Temporarily routing $EVENT_TYPE to agent: $OVERRIDE_AGENT..."
+
+  ORIGINAL_ROUTING_CONFIG="$ROUTING_CONFIG"
+
+  NEW_ROUTING_CONFIG=$(echo "$ROUTING_CONFIG" | python3 -c "
+import sys, json
+config = json.loads(sys.stdin.read())
+for rule in config.get('rules', []):
+    if rule.get('event_type') == '$EVENT_TYPE':
+        rule['agent'] = '$OVERRIDE_AGENT'
+print(json.dumps(config))
+")
+
+  aws ssm put-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing" \
+    --value "$NEW_ROUTING_CONFIG" \
+    --type String \
+    --overwrite \
+    --region "$AWS_REGION" > /dev/null
+
+  aws ecs update-service \
+    --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+    --service "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
+    --force-new-deployment \
+    --region "$AWS_REGION" > /dev/null
+
+  for i in $(seq 1 12); do
+    sleep 5
+    RUNNING_COUNT=$(aws ecs describe-services \
+      --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+      --services "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
+      --query 'services[0].runningCount' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null || echo "0")
+    DESIRED_COUNT=$(aws ecs describe-services \
+      --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+      --services "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
+      --query 'services[0].desiredCount' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null || echo "1")
+
+    if [ "$RUNNING_COUNT" = "$DESIRED_COUNT" ]; then
+      break
+    fi
+  done
+
+  echo "  ✓ Routing temporarily set to: $OVERRIDE_AGENT"
+  ROUTING_OVERRIDDEN=true
+  echo ""
+fi
+
 PAYLOAD="{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-contact-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
 SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
@@ -353,5 +419,25 @@ else
   TEST_EXIT=1
 fi
 echo ""
+
+if [ "$ROUTING_OVERRIDDEN" = "true" ]; then
+  echo "Restoring original routing config..."
+
+  aws ssm put-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing" \
+    --value "$ORIGINAL_ROUTING_CONFIG" \
+    --type String \
+    --overwrite \
+    --region "$AWS_REGION" > /dev/null
+
+  aws ecs update-service \
+    --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+    --service "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
+    --force-new-deployment \
+    --region "$AWS_REGION" > /dev/null
+
+  echo "  ✓ Routing restored to original config"
+  echo ""
+fi
 
 exit $TEST_EXIT
