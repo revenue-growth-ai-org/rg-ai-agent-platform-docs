@@ -177,6 +177,11 @@ add_agent() {
         --output text \
         --region "$AWS_REGION")
 
+      if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
+        echo "ERROR: Could not determine secret ARN for $SECRET_NAME."
+        exit 1
+      fi
+
       EXTERNAL_SECRETS="[\"$SECRET_ARN\"]"
 
       aws ssm put-parameter \
@@ -208,7 +213,17 @@ add_agent() {
 
   RDS_SG_ID=$(aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
-    --query Parameter.Value --output text 2>/dev/null || echo "sg-xxxxxxxxxxxxxxxxx")
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
+  aws ec2 describe-security-groups \
+    --filters "Name=tag:Name,Values=*${PROJECT_NAME}*rds*" \
+    --query 'SecurityGroups[0].GroupId' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -z "$RDS_SG_ID" ]; then
+    echo "ERROR: Could not determine RDS security group ID. Verify the platform is fully deployed."
+    exit 1
+  fi
 
   if [ -z "$STATE_BUCKET" ]; then
     echo "ERROR: Cannot read state bucket from SSM."
