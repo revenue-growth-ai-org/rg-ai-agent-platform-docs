@@ -247,6 +247,23 @@ if [ -n "$SECRET_ARN" ]; then
     --overwrite \
     --region "$AWS_REGION" > /dev/null
   echo "  ✓ SSM external_api_secret_arn updated for agent: $AGENT_NAME"
+
+  TFVARS_FILE="$AGENT_REPO/prod.tfvars"
+  CURRENT_SECRETS_ARNS=$(grep "^external_secrets_arns" "$TFVARS_FILE")
+
+  if [[ "$CURRENT_SECRETS_ARNS" == *"[]"* ]] || [[ "$CURRENT_SECRETS_ARNS" == *"REPLACE_WITH_SECRETS_MANAGER_ARN"* ]]; then
+    sed -i.bak "s|^external_secrets_arns.*|external_secrets_arns  = [\"$SECRET_ARN\"]|" "$TFVARS_FILE"
+    rm -f "$TFVARS_FILE.bak"
+
+    ORIGINAL_DIR="$(pwd)"
+    cd "$AGENT_REPO"
+    terraform apply -var-file=prod.tfvars -auto-approve
+    cd "$ORIGINAL_DIR"
+
+    echo "  ✓ prod.tfvars updated and Terraform redeployed to grant Secrets Manager access"
+  else
+    echo "  ✓ external_secrets_arns already set in prod.tfvars — skipping Terraform redeploy"
+  fi
 fi
 
 BASE_DEPS=(
