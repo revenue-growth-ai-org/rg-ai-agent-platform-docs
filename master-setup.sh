@@ -647,6 +647,18 @@ if [ "$STORE_EXTERNAL_KEYS" = "yes" ]; then
       --output text \
       --region "$AWS_REGION")
 
+    for idx in "${!AGENT_NAMES[@]}"; do
+      AGENT_SECRETS[$idx]="$SECRET_ARN"
+    done
+
+    if [ "$CRM_TYPE" = "hubspot" ]; then
+      EXTERNAL_API_ENDPOINT="https://api.hubapi.com"
+    elif [ "$CRM_TYPE" = "salesforce" ]; then
+      EXTERNAL_API_ENDPOINT="https://api.salesforce.com"
+    else
+      EXTERNAL_API_ENDPOINT="https://api.hubapi.com"
+    fi
+
     for AGENT_NAME in "${AGENT_NAMES[@]}"; do
       aws ssm put-parameter \
         --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_secret_arn" \
@@ -655,6 +667,14 @@ if [ "$STORE_EXTERNAL_KEYS" = "yes" ]; then
         --overwrite \
         --region "$AWS_REGION" > /dev/null
       echo "  ✓ Updated SSM external_api_secret_arn for agent: $AGENT_NAME"
+
+      aws ssm put-parameter \
+        --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_endpoint" \
+        --value "$EXTERNAL_API_ENDPOINT" \
+        --type String \
+        --overwrite \
+        --region "$AWS_REGION" > /dev/null
+      echo "  ✓ Updated SSM external_api_endpoint for agent: $AGENT_NAME"
     done
 
     read -p "Do you have another API key to store? (yes/no): " ANOTHER_KEY < /dev/tty
@@ -967,18 +987,30 @@ done
 # ------------------------------------------------------------------------------
 
 # Build routing rules for each agent
+if [ "$CRM_TYPE" = "salesforce" ]; then
+  ROUTING_EVENT_TYPE="contact.created"
+  ROUTING_MATCH_FIELD="object_type"
+  ROUTING_MATCH_VALUE="customer"
+else
+  ROUTING_EVENT_TYPE="deal.propertyChange"
+  ROUTING_MATCH_FIELD=""
+  ROUTING_MATCH_VALUE=""
+fi
+
 RULES="[]"
 for AGENT_NAME in "${AGENT_NAMES[@]}"; do
   RULES=$(echo "$RULES" | python3 -c "
 import sys, json
 rules = json.load(sys.stdin)
-rules.append({
-  'event_type': 'contact.created',
-  'match_field': 'object_type',
-  'match_value': 'customer',
-  'agents': ['$AGENT_NAME'],
-  'description': 'Deterministic route to $AGENT_NAME.'
-})
+rule = {
+  'event_type': '$ROUTING_EVENT_TYPE',
+}
+if '$ROUTING_MATCH_FIELD':
+    rule['match_field'] = '$ROUTING_MATCH_FIELD'
+    rule['match_value'] = '$ROUTING_MATCH_VALUE'
+rule['agents'] = ['$AGENT_NAME']
+rule['description'] = 'Route $ROUTING_EVENT_TYPE events to $AGENT_NAME.'
+rules.append(rule)
 print(json.dumps(rules))
 ")
 done
