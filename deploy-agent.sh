@@ -126,7 +126,7 @@ echo ""
 # Find agent repo
 # ------------------------------------------------------------------------------
 
-AGENT_REPO=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "*agent*" | grep -v "orchestrator" | grep -v "docs" | head -1)
+AGENT_REPO=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*agent*" | grep -v "orchestrator" | grep -v "docs" | head -1)
 
 if [ -z "$AGENT_REPO" ]; then
   echo "ERROR: Cannot find agent repo in $PARENT_DIR"
@@ -182,7 +182,7 @@ fi
 # Ensure app directory exists
 # ------------------------------------------------------------------------------
 
-mkdir -p ~/rg-ai-agent-platform/app
+mkdir -p "$AGENT_REPO/app"
 
 # ------------------------------------------------------------------------------
 # Ensure required platform files exist in app directory
@@ -197,18 +197,18 @@ if [ ! -f "$PLATFORM_SRC/main.py" ] || [ ! -f "$PLATFORM_SRC/config.py" ] || [ !
   exit 1
 fi
 
-if [ ! -f ~/rg-ai-agent-platform/app/main.py ]; then
-  cp "$PLATFORM_SRC/main.py" ~/rg-ai-agent-platform/app/main.py
+if [ ! -f "$AGENT_REPO/app/main.py" ]; then
+  cp "$PLATFORM_SRC/main.py" "$AGENT_REPO/app/main.py"
   echo "  ✓ Copied main.py to app directory"
 fi
 
-if [ ! -f ~/rg-ai-agent-platform/app/config.py ]; then
-  cp "$PLATFORM_SRC/config.py" ~/rg-ai-agent-platform/app/config.py
+if [ ! -f "$AGENT_REPO/app/config.py" ]; then
+  cp "$PLATFORM_SRC/config.py" "$AGENT_REPO/app/config.py"
   echo "  ✓ Copied config.py to app directory"
 fi
 
-if [ ! -d ~/rg-ai-agent-platform/app/utils ]; then
-  cp -r "$PLATFORM_SRC/utils" ~/rg-ai-agent-platform/app/utils
+if [ ! -d "$AGENT_REPO/app/utils" ]; then
+  cp -r "$PLATFORM_SRC/utils" "$AGENT_REPO/app/utils"
   echo "  ✓ Copied utils/ to app directory"
 fi
 
@@ -243,6 +243,7 @@ BASE_DEPS=(
 for dep in "${BASE_DEPS[@]}"; do
   pkg=$(echo "$dep" | cut -d'=' -f1)
   if ! grep -qi "^${pkg}" "$AGENT_REPO/app/requirements.txt"; then
+    printf '\n' >> "$AGENT_REPO/app/requirements.txt"
     echo "$dep" >> "$AGENT_REPO/app/requirements.txt"
   fi
 done
@@ -273,6 +274,10 @@ aws ecr get-login-password --region "$AWS_REGION" | \
 
 cd "$AGENT_REPO/app"
 docker build --platform linux/amd64 -t "${PROJECT_NAME}-${AGENT_NAME}" . 2>&1 | tail -5
+if [ $? -ne 0 ]; then
+  echo "ERROR: docker build failed. Aborting deploy to prevent pushing a stale image."
+  exit 1
+fi
 docker tag "${PROJECT_NAME}-${AGENT_NAME}:latest" "${ECR_REPO}:latest"
 docker push "${ECR_REPO}:latest" 2>&1 | tail -5
 
