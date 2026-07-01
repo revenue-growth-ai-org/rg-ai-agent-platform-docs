@@ -295,9 +295,11 @@ EOF
     docker login --username AWS --password-stdin \
     "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
+  cd "$AGENT_DIR/app"
   docker build -t "${PROJECT_NAME}-${AGENT_NAME}" .
   docker tag "${PROJECT_NAME}-${AGENT_NAME}:latest" "${ECR_IMAGE}"
   docker push "${ECR_IMAGE}"
+  cd "$AGENT_DIR"
   echo "  ✓ Image pushed to ECR"
 
   # Deploy
