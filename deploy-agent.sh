@@ -302,6 +302,15 @@ ECR_REPO="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-
 echo ""
 echo "Building new Docker image..."
 
+echo "Ensuring ECR repository exists..."
+aws ecr describe-repositories \
+  --repository-names "${PROJECT_NAME}-${AGENT_NAME}" \
+  --region "$AWS_REGION" > /dev/null 2>&1 || \
+aws ecr create-repository \
+  --repository-name "${PROJECT_NAME}-${AGENT_NAME}" \
+  --region "$AWS_REGION" > /dev/null
+echo "  ✓ ECR repository ready: ${PROJECT_NAME}-${AGENT_NAME}"
+
 aws ecr get-login-password --region "$AWS_REGION" | \
   docker login --username AWS --password-stdin \
   "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" > /dev/null 2>&1
