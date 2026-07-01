@@ -480,6 +480,29 @@ EOF
   terraform init -reconfigure -input=false
   terraform destroy -var-file="prod.tfvars" -auto-approve
 
+  echo "Waiting for ECS service to fully deregister..."
+  for i in $(seq 1 18); do
+    SERVICE_STATUS=$(aws ecs describe-services \
+      --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+      --services "${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}" \
+      --query 'services[0].status' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null || echo "NOT_FOUND")
+
+    if [ "$SERVICE_STATUS" = "NOT_FOUND" ] || [ "$SERVICE_STATUS" = "INACTIVE" ] || [ "$SERVICE_STATUS" = "None" ]; then
+      echo "  ✓ ECS service fully deregistered"
+      break
+    fi
+
+    if [ "$i" -eq 18 ]; then
+      echo "  WARNING: ECS service still shows as $SERVICE_STATUS after 3 minutes."
+      echo "  You may see a false 'already deployed' warning if you re-add this agent immediately."
+    else
+      echo "  Waiting... ($((i * 10))s elapsed) Status: $SERVICE_STATUS"
+      sleep 10
+    fi
+  done
+
   echo ""
   echo "Cleaning up ECR repository..."
   aws ecr delete-repository \
