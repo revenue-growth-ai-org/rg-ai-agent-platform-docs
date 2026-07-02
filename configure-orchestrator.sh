@@ -29,6 +29,7 @@ DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
 
 PROMPT_FILE=""
 ROUTING_FILE=""
+ASSUME_YES="false"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -40,9 +41,13 @@ while [[ $# -gt 0 ]]; do
       ROUTING_FILE="$2"
       shift 2
       ;;
+    --yes)
+      ASSUME_YES="true"
+      shift
+      ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json"
+      echo "Usage: bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json [--yes]"
       exit 1
       ;;
   esac
@@ -156,6 +161,93 @@ if [ "$CONFIRM" != "yes" ]; then
 fi
 
 # ------------------------------------------------------------------------------
+# Validate and confirm routing config changes (before anything is pushed)
+# ------------------------------------------------------------------------------
+# The routing config drives which agents every CRM event is dispatched to. A
+# file with no "rules" (or rules missing "agents") would silently wipe out live
+# routing and leave every webhook unrouted. Validate the incoming file, show the
+# operator a diff against what's currently in SSM, and require confirmation —
+# all before the system prompt or routing config are touched in SSM. If
+# validation fails or the operator declines, nothing gets pushed.
+
+ROUTING_CONFIG_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing"
+ROUTING_CONFIG_VALUE=$(cat "$ROUTING_FILE")
+
+# 1. Structural validation: non-empty "rules", each with a non-empty "agents" list.
+if ! python3 -c "
+import json, sys
+data = json.load(open('$ROUTING_FILE'))
+rules = data.get('rules')
+if not isinstance(rules, list) or len(rules) == 0:
+    sys.exit(1)
+for rule in rules:
+    agents = rule.get('agents')
+    if not isinstance(agents, list) or len(agents) == 0:
+        sys.exit(1)
+sys.exit(0)
+" 2>/dev/null; then
+  echo ""
+  echo "ERROR: Routing config has no usable routing rules: $ROUTING_FILE"
+  echo "  The file must contain a non-empty \"rules\" array, and every rule must"
+  echo "  have a non-empty \"agents\" list. Pushing this would wipe out the live"
+  echo "  routing config and leave every incoming CRM event unrouted."
+  echo "  Aborting without touching SSM. Nothing has been pushed."
+  exit 1
+fi
+
+# 2. Fetch the CURRENT live value and show a diff-style summary of what changes.
+CURRENT_ROUTING_VALUE=$(aws ssm get-parameter \
+  --name "$ROUTING_CONFIG_PATH" \
+  --query Parameter.Value \
+  --output text \
+  --region "$AWS_REGION" 2>/dev/null || echo "")
+
+echo ""
+echo "Routing changes (event_type: current agents -> new agents):"
+CURRENT_ROUTING_VALUE="$CURRENT_ROUTING_VALUE" python3 -c "
+import json, os
+
+def load(text):
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    mapping = {}
+    for rule in data.get('rules', []):
+        et = rule.get('event_type', '(no event_type)')
+        agents = [a for a in rule.get('agents', [])]
+        mapping[et] = agents
+    return mapping
+
+new = load(open('$ROUTING_FILE').read())
+old = load(os.environ.get('CURRENT_ROUTING_VALUE', ''))
+
+if old is None:
+    print('  (no valid current routing config in SSM — this will be the first push)')
+    old = {}
+
+for et in sorted(set(old) | set(new)):
+    old_agents = old.get(et)
+    new_agents = new.get(et)
+    old_str = ', '.join(old_agents) if old_agents else '(none)'
+    new_str = ', '.join(new_agents) if new_agents else '(REMOVED)'
+    marker = '  ' if old_agents == new_agents else '* '
+    print('%s%s: %s -> %s' % (marker, et, old_str, new_str))
+"
+echo ""
+
+# 3. Require explicit confirmation before overwriting (unless --yes was passed).
+if [ "$ASSUME_YES" = "true" ]; then
+  echo "  --yes supplied; applying routing changes without prompting."
+else
+  read -p "Overwrite the live routing config with these changes? (y/N): " ROUTING_CONFIRM < /dev/tty
+  if [ "$ROUTING_CONFIRM" != "y" ]; then
+    echo "Cancelled. Nothing has been pushed to SSM."
+    exit 0
+  fi
+fi
+
+# ------------------------------------------------------------------------------
 # Push system prompt to SSM
 # ------------------------------------------------------------------------------
 
@@ -179,9 +271,6 @@ echo "  ✓ System prompt pushed to SSM: $SYSTEM_PROMPT_PATH"
 # ------------------------------------------------------------------------------
 
 echo "Pushing routing config to SSM..."
-
-ROUTING_CONFIG_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing"
-ROUTING_CONFIG_VALUE=$(cat "$ROUTING_FILE")
 
 aws ssm put-parameter \
   --name "$ROUTING_CONFIG_PATH" \
