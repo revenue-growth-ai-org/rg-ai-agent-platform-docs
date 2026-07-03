@@ -557,23 +557,21 @@ for r in unique:
   echo "  This CNAME stays in DNS permanently."
   echo "  Future installs will validate automatically."
   echo ""
-  echo "  Once added, DNS validation takes 2-5 minutes."
+  echo "=================================================="
+  echo " Action required before continuing"
+  echo "=================================================="
   echo ""
-  read -p "Press Enter once you have added the CNAME record..." < /dev/tty
-
-  echo "  Waiting for certificate validation..."
-  for i in $(seq 1 24); do
-    CERT_STATUS=$(aws acm describe-certificate \
-      --certificate-arn "$CERT_ARN" \
-      --query 'Certificate.Status' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
-    if [ "$CERT_STATUS" = "ISSUED" ]; then
-      echo "  ✓ Certificate validated and issued"
-      break
-    fi
-    echo "  Waiting... ($((i * 10))s) Status: $CERT_STATUS"
-    sleep 10
-  done
+  echo "  This is a prerequisite: add the CNAME record above in your DNS provider,"
+  echo "  then wait for DNS propagation and AWS certificate validation — typically"
+  echo "  2-5 minutes, sometimes longer."
+  echo ""
+  echo "  Once the record is live, re-run this installer:"
+  echo "    bash master-setup.sh"
+  echo ""
+  echo "  This check will pass automatically once the certificate shows as ISSUED —"
+  echo "  no need to redo anything else."
+  echo ""
+  exit 1
 else
   echo "  ✓ Certificate already validated and issued"
 fi
