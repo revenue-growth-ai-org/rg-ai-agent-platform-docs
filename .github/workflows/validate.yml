@@ -1,0 +1,87 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck-syntax:
+    name: Shell syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run bash -n on all scripts
+        run: |
+          set +e
+          files=(
+            redeploy-orchestrator.sh
+            master-setup.sh
+            redeploy-agent.sh
+            install.sh
+            deploy-agent.sh
+            test-webhook.sh
+            redeploy-common.sh
+            destroy.sh
+            generate-routing-config.sh
+            configure-orchestrator.sh
+            add-agent.sh
+          )
+
+          failed=0
+          for f in "${files[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Expected script '$f' not found in repo root"
+              failed=1
+              continue
+            fi
+
+            output=$(bash -n "$f" 2>&1)
+            if [ $? -ne 0 ]; then
+              echo "::error::Syntax error in $f:"
+              echo "$output"
+              failed=1
+            else
+              echo "OK: $f"
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo ""
+            echo "One or more shell scripts failed syntax validation. See ::error annotations above."
+            exit 1
+          fi
+
+  routing-config-check:
+    name: routing_config.json must not contain committed rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify routing_config.json has no committed rules
+        run: |
+          file="routing_config.json"
+
+          if [ ! -f "$file" ]; then
+            echo "$file not present in repo - nothing to check."
+            exit 0
+          fi
+
+          if ! jq empty "$file" 2>/tmp/jq_err; then
+            echo "::error file=$file::$file is not valid JSON:"
+            cat /tmp/jq_err
+            exit 1
+          fi
+
+          rules_count=$(jq '(.rules // []) | length' "$file")
+
+          if [ "$rules_count" -ne 0 ]; then
+            echo "::error file=$file::$file contains $rules_count routing rule(s). This file must never be committed with real routing data - it is generated locally per-install (see generate-routing-config.sh) and should not be version-controlled with hardcoded agent names."
+            exit 1
+          fi
+
+          echo "OK: $file has no committed rules."

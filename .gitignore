@@ -1,2 +1,4 @@
 # Never commit these
 defaults.env
+routing_config.json
+system_prompt.txt
