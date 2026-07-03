@@ -472,10 +472,24 @@ CERT_ARN=$(terraform output -raw acm_certificate_arn 2>/dev/null || \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/acm_certificate_arn" \
     --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
 
-CERT_STATUS=$(aws acm describe-certificate \
-  --certificate-arn "$CERT_ARN" \
-  --query 'Certificate.Status' \
-  --output text --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
+# ACM's validation-status propagation can lag a few seconds behind actual DNS
+# validation, so a CNAME that already existed before this run can still show
+# as pending right after terraform apply. Poll briefly before concluding the
+# record is actually missing.
+for i in $(seq 1 6); do
+  CERT_STATUS=$(aws acm describe-certificate \
+    --certificate-arn "$CERT_ARN" \
+    --query 'Certificate.Status' \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
+
+  if [ "$CERT_STATUS" = "ISSUED" ]; then
+    break
+  fi
+
+  if [ "$i" -lt 6 ]; then
+    sleep 5
+  fi
+done
 
 if [ "$CERT_STATUS" != "ISSUED" ]; then
   echo ""
