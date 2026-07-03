@@ -257,61 +257,6 @@ echo "All pre-flight checks passed. Starting deployment..."
 echo ""
 
 # ------------------------------------------------------------------------------
-# Collect agent configuration
-# ------------------------------------------------------------------------------
-
-echo "=================================================="
-echo " Agent Configuration"
-echo "=================================================="
-echo ""
-echo "How many agent types do you want to deploy?"
-echo "Common agents: researcher, scorer, crm, outbound"
-echo ""
-read -p "Number of agents (1-10): " AGENT_COUNT < /dev/tty
-
-if ! [[ "$AGENT_COUNT" =~ ^[1-9][0-9]?$ ]] || [ "$AGENT_COUNT" -gt 10 ]; then
-  echo "ERROR: Please enter a number between 1 and 10."
-  exit 1
-fi
-
-AGENT_NAMES=()
-AGENT_DESCRIPTIONS=()
-AGENT_EXTERNAL=()
-AGENT_SECRETS=()
-
-for i in $(seq 1 "$AGENT_COUNT"); do
-  echo ""
-  echo "--- Agent $i of $AGENT_COUNT ---"
-  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
-  AGENT_DESC="Isolated agent node"
-  AGENT_EXTERNAL+=("true")
-  AGENT_SECRETS+=("")
-
-  AGENT_NAMES+=("$AGENT_NAME")
-  AGENT_DESCRIPTIONS+=("$AGENT_DESC")
-done
-
-echo ""
-echo "=================================================="
-echo " Deployment Plan"
-echo "=================================================="
-echo ""
-echo "  Project:      $PROJECT_NAME"
-echo "  Environment:  $ENVIRONMENT"
-echo "  AWS Account:  $AWS_ACCOUNT_ID"
-echo "  AWS Region:   $AWS_REGION"
-echo "  VPC CIDR:     $VPC_CIDR"
-echo "  Allowed CIDR: $ALLOWED_CIDR"
-echo "  CRM Type:     $CRM_TYPE"
-echo "  Agents:       ${AGENT_NAMES[*]}"
-echo ""
-read -p "Proceed with deployment? (yes/no): " CONFIRM < /dev/tty
-if [ "$CONFIRM" != "yes" ]; then
-  echo "Deployment cancelled."
-  exit 0
-fi
-
-# ------------------------------------------------------------------------------
 # Helper — print progress banner
 # ------------------------------------------------------------------------------
 
@@ -469,6 +414,26 @@ apply_with_retry() {
 }
 
 # ------------------------------------------------------------------------------
+# Confirm before touching AWS at all
+# ------------------------------------------------------------------------------
+
+echo "=================================================="
+echo " Bootstrap Setup"
+echo "=================================================="
+echo ""
+echo "  This will create initial bootstrap infrastructure — Terraform state"
+echo "  storage and an ACM certificate — in this AWS account:"
+echo ""
+echo "  AWS Account: $AWS_ACCOUNT_ID"
+echo "  AWS Region:  $AWS_REGION"
+echo ""
+read -p "Proceed with setup? (yes/no): " SETUP_CONFIRM < /dev/tty
+if [ "$SETUP_CONFIRM" != "yes" ]; then
+  echo "Setup cancelled. No resources have been created."
+  exit 0
+fi
+
+# ------------------------------------------------------------------------------
 # Step 0 — Bootstrap
 # ------------------------------------------------------------------------------
 
@@ -607,6 +572,61 @@ while true; do
   echo "✓ Anthropic API key stored successfully"
   break
 done
+
+# ------------------------------------------------------------------------------
+# Collect agent configuration
+# ------------------------------------------------------------------------------
+
+echo "=================================================="
+echo " Agent Configuration"
+echo "=================================================="
+echo ""
+echo "How many agent types do you want to deploy?"
+echo "Common agents: researcher, scorer, crm, outbound"
+echo ""
+read -p "Number of agents (1-10): " AGENT_COUNT < /dev/tty
+
+if ! [[ "$AGENT_COUNT" =~ ^[1-9][0-9]?$ ]] || [ "$AGENT_COUNT" -gt 10 ]; then
+  echo "ERROR: Please enter a number between 1 and 10."
+  exit 1
+fi
+
+AGENT_NAMES=()
+AGENT_DESCRIPTIONS=()
+AGENT_EXTERNAL=()
+AGENT_SECRETS=()
+
+for i in $(seq 1 "$AGENT_COUNT"); do
+  echo ""
+  echo "--- Agent $i of $AGENT_COUNT ---"
+  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
+  AGENT_DESC="Isolated agent node"
+  AGENT_EXTERNAL+=("true")
+  AGENT_SECRETS+=("")
+
+  AGENT_NAMES+=("$AGENT_NAME")
+  AGENT_DESCRIPTIONS+=("$AGENT_DESC")
+done
+
+echo ""
+echo "=================================================="
+echo " Deployment Plan"
+echo "=================================================="
+echo ""
+echo "  Project:      $PROJECT_NAME"
+echo "  Environment:  $ENVIRONMENT"
+echo "  AWS Account:  $AWS_ACCOUNT_ID"
+echo "  AWS Region:   $AWS_REGION"
+echo "  VPC CIDR:     $VPC_CIDR"
+echo "  Allowed CIDR: $ALLOWED_CIDR"
+echo "  CRM Type:     $CRM_TYPE"
+echo "  Agents:       ${AGENT_NAMES[*]}"
+echo ""
+read -p "Proceed with deployment? (yes/no): " CONFIRM < /dev/tty
+if [ "$CONFIRM" != "yes" ]; then
+  echo "Deployment cancelled."
+  exit 0
+fi
 
 # ------------------------------------------------------------------------------
 # External API Keys
