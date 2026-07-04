@@ -338,6 +338,11 @@ ORCH_DIR=$(find_repo "orchestrator")
 BASE_DIR=$(find_repo "base")
 BOOTSTRAP_DIR=$(find_repo "bootstrap")
 
+STATE_BUCKET=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_bucket" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
+  aws s3 ls | grep "${PROJECT_NAME}" | grep "terraform-state" | awk '{print $3}' | head -1)
+
 for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
   if [ -z "$DIR" ]; then
     continue
@@ -349,7 +354,21 @@ for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
   echo ""
   echo "  Destroying $(basename $DIR)..."
   cd "$DIR"
-  terraform init -reconfigure > /dev/null 2>&1
+
+  if [ "$DIR" = "$AGENT_DIR" ]; then
+    AGENT_NAME=$(sed -n 's/^agent_name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' prod.tfvars)
+    STATE_KEY="3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+  elif [ "$DIR" = "$ORCH_DIR" ]; then
+    STATE_KEY="2-rg-ai-agent-platform-orchestrator/terraform.tfstate"
+  else
+    STATE_KEY="1-rg-ai-agent-platform-base/terraform.tfstate"
+  fi
+
+  terraform init -reconfigure \
+    -backend-config="bucket=${STATE_BUCKET}" \
+    -backend-config="key=${STATE_KEY}" \
+    -backend-config="region=${AWS_REGION}" \
+    > /dev/null 2>&1
 
   if [ "$DIR" = "$BASE_DIR" ]; then
     # Delete CloudTrail trails
@@ -387,10 +406,6 @@ if [ -n "$BOOTSTRAP_DIR" ] && [ -f "$BOOTSTRAP_DIR/prod.tfvars" ]; then
   echo ""
   echo "  Emptying state bucket..."
   cd "$BOOTSTRAP_DIR"
-  STATE_BUCKET=$(aws ssm get-parameter \
-    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_bucket" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
-    aws s3 ls | grep "${PROJECT_NAME}" | grep "terraform-state" | awk '{print $3}' | head -1)
   if [ -n "$STATE_BUCKET" ] && [ "$STATE_BUCKET" != "None" ]; then
     aws s3 rm "s3://$STATE_BUCKET" --recursive --region "$AWS_REGION" > /dev/null 2>&1 || true
     aws s3api list-object-versions \
