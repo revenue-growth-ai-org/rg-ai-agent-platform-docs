@@ -2,14 +2,33 @@
 # =============================================================================
 # AWS Agent Platform — Shared Redeploy Helpers
 # =============================================================================
-# Sourced by redeploy-orchestrator.sh and redeploy-agent.sh. Not meant to be
-# run directly — it only defines functions used by those two scripts.
+# Sourced by redeploy-orchestrator.sh, redeploy-agent.sh, deploy-agent.sh,
+# and master-setup.sh. Not meant to be run directly — it only defines
+# functions used by those scripts.
 #
 # Callers are expected to have already set (as plain shell variables, not
 # necessarily exported): PROJECT_NAME, ENVIRONMENT, AWS_REGION, AWS_ACCOUNT_ID,
 # PARENT_DIR. These functions read those directly rather than taking them as
 # arguments, matching the convention already used by the helper functions in
 # master-setup.sh (e.g. verify_service()).
+#
+# build_tag_push_and_verify() additionally requires CODEBUILD_PROJECT_NAME and
+# BUILD_ARTIFACTS_BUCKET to be set — read them from the bootstrap repo's
+# Terraform outputs (falling back to SSM), the same way callers already read
+# ANTHROPIC_SECRET_ARN / ACM_CERT_ARN, e.g.:
+#
+#   CODEBUILD_PROJECT_NAME=$(terraform -chdir="$BOOTSTRAP_DIR" output -raw codebuild_project_name 2>/dev/null || \
+#     aws ssm get-parameter --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/codebuild_project_name" \
+#       --query Parameter.Value --output text --region "$AWS_REGION")
+#   BUILD_ARTIFACTS_BUCKET=$(terraform -chdir="$BOOTSTRAP_DIR" output -raw build_artifacts_bucket_name 2>/dev/null || \
+#     aws ssm get-parameter --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/build_artifacts_bucket_name" \
+#       --query Parameter.Value --output text --region "$AWS_REGION")
+#
+# Local machines no longer need Docker installed, running, or any ECR push
+# permissions — all image builds happen inside CodeBuild. The only local AWS
+# permissions this flow needs are: s3:PutObject (artifacts bucket, builds/*
+# prefix only), codebuild:StartBuild + BatchGetBuilds (this project's ARN
+# only), and logs:GetLogEvents/FilterLogEvents (the CodeBuild log group only).
 # =============================================================================
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
@@ -51,13 +70,144 @@ get_ecr_digest() {
 }
 
 # ------------------------------------------------------------------------------
-# Build (always --platform linux/amd64 — Fargate is amd64; Docker on Apple
-# Silicon Macs defaults to arm64), tag, and push an image to ECR. Then confirms
-# the pushed digest actually differs from what was previously deployed. If it
-# doesn't, that means the build silently produced nothing new (stale cache,
-# failed build that still exited 0, or no code changes) — warn and require
-# explicit confirmation before letting the caller force a ECS deployment of
-# an image that isn't actually new.
+# Zip an app directory into a source artifact for CodeBuild, excluding files
+# that should never leave the local machine or aren't needed for the build:
+# local env/secret files, real tfvars, prior deploy-agent.sh backups, any
+# stray Terraform state/cache, and node_modules (JS tooling, if ever added).
+#
+# Args: APP_DIR DEST_ZIP_PATH
+# ------------------------------------------------------------------------------
+zip_source_for_build() {
+  local APP_DIR=$1
+  local DEST_ZIP=$2
+
+  rm -f "$DEST_ZIP"
+
+  local ORIGINAL_DIR
+  ORIGINAL_DIR="$(pwd)"
+  cd "$APP_DIR"
+  zip -r -q "$DEST_ZIP" . \
+    -x ".env" \
+    -x "*.env" \
+    -x "*.tfvars" \
+    -x "*.backup.*" \
+    -x ".terraform/*" \
+    -x "*.tfstate*" \
+    -x "node_modules/*" \
+    -x ".git/*"
+  cd "$ORIGINAL_DIR"
+
+  if [ ! -f "$DEST_ZIP" ]; then
+    echo "ERROR: Failed to create source archive: $DEST_ZIP"
+    exit 1
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Start a CodeBuild run against a given S3 source object, poll until it
+# finishes, and on failure pull the failing phase's CloudWatch logs so the
+# operator sees the same "why did it break" signal a local docker build would
+# have given. Prints the CodeBuild build ID as its result.
+#
+# Args: S3_BUCKET S3_KEY IMAGE_NAME ECR_REPO_URI
+# Returns: 0 on SUCCEEDED, 1 otherwise.
+# ------------------------------------------------------------------------------
+run_codebuild_and_wait() {
+  local S3_BUCKET=$1
+  local S3_KEY=$2
+  local IMAGE_NAME=$3
+  local ECR_REPO_URI=$4
+  local POLL_INTERVAL=10
+
+  echo "Starting CodeBuild run for $IMAGE_NAME..."
+  local BUILD_ID
+  BUILD_ID=$(aws codebuild start-build \
+    --project-name "$CODEBUILD_PROJECT_NAME" \
+    --source-type-override S3 \
+    --source-location-override "${S3_BUCKET}/${S3_KEY}" \
+    --environment-variables-override \
+      "name=IMAGE_NAME,value=${IMAGE_NAME},type=PLAINTEXT" \
+      "name=ECR_REPO_URI,value=${ECR_REPO_URI},type=PLAINTEXT" \
+    --query 'build.id' \
+    --output text \
+    --region "$AWS_REGION")
+
+  if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "None" ]; then
+    echo "ERROR: Failed to start CodeBuild build."
+    return 1
+  fi
+  echo "  ✓ Build started: $BUILD_ID"
+  echo ""
+  echo "Waiting for image build to complete (checking every ${POLL_INTERVAL}s)..."
+
+  local BUILD_STATUS PHASE
+  while true; do
+    BUILD_STATUS=$(aws codebuild batch-get-builds \
+      --ids "$BUILD_ID" \
+      --query 'builds[0].buildStatus' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
+
+    PHASE=$(aws codebuild batch-get-builds \
+      --ids "$BUILD_ID" \
+      --query 'builds[0].currentPhase' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
+
+    echo "  [$(date +%H:%M:%S)] phase=$PHASE status=$BUILD_STATUS"
+
+    if [ "$BUILD_STATUS" != "IN_PROGRESS" ]; then
+      break
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+
+  if [ "$BUILD_STATUS" = "SUCCEEDED" ]; then
+    echo "  ✓ CodeBuild run succeeded"
+    return 0
+  fi
+
+  echo ""
+  echo "=================================================="
+  echo " CodeBuild run FAILED (status=$BUILD_STATUS)"
+  echo "=================================================="
+
+  local LOG_GROUP LOG_STREAM
+  LOG_GROUP=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+    --query 'builds[0].logs.groupName' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  LOG_STREAM=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+    --query 'builds[0].logs.streamName' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -n "$LOG_GROUP" ] && [ "$LOG_GROUP" != "None" ] && [ -n "$LOG_STREAM" ] && [ "$LOG_STREAM" != "None" ]; then
+    echo ""
+    echo "  Build log ($LOG_GROUP / $LOG_STREAM):"
+    echo ""
+    aws logs get-log-events \
+      --log-group-name "$LOG_GROUP" \
+      --log-stream-name "$LOG_STREAM" \
+      --query 'events[*].message' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null | tail -40 || \
+      echo "  (Could not fetch logs — check the CodeBuild console for build $BUILD_ID.)"
+  else
+    echo "  (No log stream recorded for this build — check the CodeBuild console for build $BUILD_ID.)"
+  fi
+
+  return 1
+}
+
+# ------------------------------------------------------------------------------
+# Zip APP_DIR, upload it to the build-artifacts bucket, trigger a CodeBuild
+# run to build --platform linux/amd64 (Fargate is amd64; CodeBuild's Linux
+# x86_64 image makes this explicit rather than assumed) and push to ECR, then
+# confirm the pushed digest actually differs from what was previously
+# deployed. If it doesn't, that means the build silently produced nothing new
+# (stale cache, failed build that still exited 0, or no code changes) — warn
+# and require explicit confirmation before letting the caller force an ECS
+# deployment of an image that isn't actually new.
+#
+# Requires CODEBUILD_PROJECT_NAME and BUILD_ARTIFACTS_BUCKET to already be set
+# (see header comment above for how callers obtain these).
 #
 # Args: APP_DIR IMAGE_NAME ECR_REPO_URI (without :tag)
 # ------------------------------------------------------------------------------
@@ -71,11 +221,11 @@ build_tag_push_and_verify() {
     exit 1
   fi
 
-  if ! docker info > /dev/null 2>&1; then
-    echo ""
-    echo "ERROR: Docker Desktop is not running."
-    echo "Please start Docker Desktop and press enter to continue..."
-    read -p "" < /dev/tty
+  if [ -z "$CODEBUILD_PROJECT_NAME" ] || [ -z "$BUILD_ARTIFACTS_BUCKET" ]; then
+    echo "ERROR: CODEBUILD_PROJECT_NAME and BUILD_ARTIFACTS_BUCKET must be set before calling"
+    echo "build_tag_push_and_verify. Read them from the bootstrap repo's Terraform outputs —"
+    echo "see the comment at the top of redeploy-common.sh."
+    exit 1
   fi
 
   echo "Ensuring ECR repository exists: $IMAGE_NAME"
@@ -87,10 +237,6 @@ build_tag_push_and_verify() {
     --region "$AWS_REGION" > /dev/null
   echo "  ✓ ECR repository ready: $IMAGE_NAME"
 
-  aws ecr get-login-password --region "$AWS_REGION" | \
-    docker login --username AWS --password-stdin \
-    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" > /dev/null 2>&1
-
   echo "Reading currently-deployed image digest (before build)..."
   local OLD_DIGEST
   OLD_DIGEST=$(get_ecr_digest "$IMAGE_NAME" "latest")
@@ -101,37 +247,23 @@ build_tag_push_and_verify() {
   fi
 
   echo ""
-  echo "Building image (--platform linux/amd64 — required for Fargate)..."
-  local ORIGINAL_DIR BUILD_EXIT PUSH_EXIT
-  ORIGINAL_DIR="$(pwd)"
-  cd "$APP_DIR"
-  set +e
-  docker build --platform linux/amd64 -t "$IMAGE_NAME" . 2>&1 | tail -30
-  BUILD_EXIT=${PIPESTATUS[0]}
-  set -e
-  cd "$ORIGINAL_DIR"
+  echo "Packaging source for CodeBuild..."
+  local SOURCE_ZIP S3_KEY
+  SOURCE_ZIP="$(mktemp -u /tmp/${IMAGE_NAME}-source-XXXXXX.zip)"
+  zip_source_for_build "$APP_DIR" "$SOURCE_ZIP"
+  S3_KEY="builds/${IMAGE_NAME}/$(date +%Y%m%d%H%M%S).zip"
 
-  if [ "$BUILD_EXIT" -ne 0 ]; then
-    echo ""
-    echo "ERROR: docker build failed (exit $BUILD_EXIT). Aborting before pushing anything."
-    exit 1
-  fi
-
-  docker tag "${IMAGE_NAME}:latest" "${ECR_REPO_URI}:latest"
-
+  echo "Uploading source to s3://${BUILD_ARTIFACTS_BUCKET}/${S3_KEY}..."
+  aws s3 cp "$SOURCE_ZIP" "s3://${BUILD_ARTIFACTS_BUCKET}/${S3_KEY}" --only-show-errors
+  rm -f "$SOURCE_ZIP"
+  echo "  ✓ Source uploaded"
   echo ""
-  echo "Pushing image to ECR..."
-  set +e
-  docker push "${ECR_REPO_URI}:latest" 2>&1 | tail -30
-  PUSH_EXIT=${PIPESTATUS[0]}
-  set -e
 
-  if [ "$PUSH_EXIT" -ne 0 ]; then
+  if ! run_codebuild_and_wait "$BUILD_ARTIFACTS_BUCKET" "$S3_KEY" "$IMAGE_NAME" "$ECR_REPO_URI"; then
     echo ""
-    echo "ERROR: docker push failed (exit $PUSH_EXIT)."
+    echo "ERROR: CodeBuild run failed. Aborting before forcing an ECS deployment."
     exit 1
   fi
-  echo "  ✓ Image pushed: ${ECR_REPO_URI}:latest"
 
   echo ""
   echo "Verifying the pushed image is actually new..."
@@ -147,7 +279,7 @@ build_tag_push_and_verify() {
     echo ""
     echo "WARNING: The pushed image digest is identical to the previously deployed digest:"
     echo "  $NEW_DIGEST"
-    echo "This usually means either there were no code changes, or docker build silently"
+    echo "This usually means either there were no code changes, or the build silently"
     echo "reused a cached layer instead of picking up your changes."
     read -p "Continue and force a new ECS deployment anyway? (yes/no): " DIGEST_CONFIRM < /dev/tty
     if [ "$DIGEST_CONFIRM" != "yes" ]; then
