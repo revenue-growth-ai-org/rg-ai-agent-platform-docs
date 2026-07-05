@@ -6,7 +6,8 @@ set -o pipefail
 # AWS Agent Platform — Agent Deployment Script
 # =============================================================================
 # Deploys a new agent implementation by copying agent.py into the agent repo,
-# rebuilding the Docker image, pushing to ECR, and forcing a new ECS deployment.
+# rebuilding the image via CodeBuild, pushing to ECR, and forcing a new ECS
+# deployment. No local Docker is required — the build runs in AWS.
 #
 # Usage:
 #   bash deploy-agent.sh --agent researcher --file ~/Downloads/agent.py
@@ -22,6 +23,7 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
+source "$SCRIPT_DIR/redeploy-common.sh"
 
 # ------------------------------------------------------------------------------
 # Parse arguments
@@ -115,6 +117,20 @@ source "$DEFAULTS_FILE"
 
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
+
+CODEBUILD_PROJECT_NAME=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/codebuild_project_name" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+BUILD_ARTIFACTS_BUCKET=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/build_artifacts_bucket_name" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+
+if [ -z "$CODEBUILD_PROJECT_NAME" ] || [ -z "$BUILD_ARTIFACTS_BUCKET" ]; then
+  echo "ERROR: Could not read codebuild_project_name / build_artifacts_bucket_name from SSM."
+  echo "Make sure bootstrap (0-rg-ai-agent-platform-bootstrap) has been applied with the"
+  echo "CodeBuild image-builder changes before running deploy-agent.sh."
+  exit 1
+fi
 
 echo ""
 echo "=================================================="
@@ -283,46 +299,15 @@ for dep in "${BASE_DEPS[@]}"; do
 done
 
 # ------------------------------------------------------------------------------
-# Check Docker is running
-# ------------------------------------------------------------------------------
-
-if ! docker info > /dev/null 2>&1; then
-  echo ""
-  echo "ERROR: Docker Desktop is not running."
-  echo "Please start Docker Desktop and press enter to continue..."
-  read -p "" < /dev/tty
-fi
-
-# ------------------------------------------------------------------------------
-# Build and push new Docker image
+# Build and push new image (via CodeBuild — no local Docker required)
 # ------------------------------------------------------------------------------
 
 ECR_REPO="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}"
 
 echo ""
-echo "Building new Docker image..."
+echo "Building new image via CodeBuild..."
 
-echo "Ensuring ECR repository exists..."
-aws ecr describe-repositories \
-  --repository-names "${PROJECT_NAME}-${AGENT_NAME}" \
-  --region "$AWS_REGION" > /dev/null 2>&1 || \
-aws ecr create-repository \
-  --repository-name "${PROJECT_NAME}-${AGENT_NAME}" \
-  --region "$AWS_REGION" > /dev/null
-echo "  ✓ ECR repository ready: ${PROJECT_NAME}-${AGENT_NAME}"
-
-aws ecr get-login-password --region "$AWS_REGION" | \
-  docker login --username AWS --password-stdin \
-  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" > /dev/null 2>&1
-
-cd "$AGENT_REPO/app"
-docker build --platform linux/amd64 -t "${PROJECT_NAME}-${AGENT_NAME}" . 2>&1 | tail -5
-if [ $? -ne 0 ]; then
-  echo "ERROR: docker build failed. Aborting deploy to prevent pushing a stale image."
-  exit 1
-fi
-docker tag "${PROJECT_NAME}-${AGENT_NAME}:latest" "${ECR_REPO}:latest"
-docker push "${ECR_REPO}:latest" 2>&1 | tail -5
+build_tag_push_and_verify "$AGENT_REPO/app" "${PROJECT_NAME}-${AGENT_NAME}" "$ECR_REPO"
 
 echo "  ✓ New image pushed to ECR: ${ECR_REPO}:latest"
 
