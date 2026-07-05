@@ -10,9 +10,12 @@ set -e
 # Prerequisites:
 #   - AWS CLI installed and configured
 #   - Terraform >= 1.5 installed
-#   - Docker Desktop installed (will prompt to start if not running)
 #   - All four platform repos cloned into the same parent directory as this repo
 #   - defaults.env filled in with customer values
+#
+# Note: Docker is not required on this machine. Image builds run in AWS via
+# CodeBuild (see bootstrap's codebuild.tf) — this machine only zips source,
+# uploads it to S3, and triggers/polls the build.
 #
 # Usage:
 #   bash master-setup.sh
@@ -205,17 +208,6 @@ if command -v terraform > /dev/null 2>&1; then
   fi
 else
   preflight_fail "Terraform is not installed — install from https://developer.hashicorp.com/terraform/install"
-fi
-
-# Docker installed and running
-if command -v docker > /dev/null 2>&1; then
-  if docker info > /dev/null 2>&1; then
-    preflight_ok "Docker Desktop is installed and running"
-  else
-    preflight_fail "Docker is installed but not running — start Docker Desktop and re-run"
-  fi
-else
-  preflight_fail "Docker is not installed — install from https://www.docker.com/products/docker-desktop/"
 fi
 
 # IAM role — create automatically if missing
@@ -564,6 +556,24 @@ ANTHROPIC_SECRET_ARN=$(terraform output -raw anthropic_api_key_secret_arn 2>/dev
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/anthropic_api_key_secret_arn" \
     --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
 
+CODEBUILD_PROJECT_NAME=$(terraform output -raw codebuild_project_name 2>/dev/null || \
+  aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/codebuild_project_name" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+BUILD_ARTIFACTS_BUCKET=$(terraform output -raw build_artifacts_bucket_name 2>/dev/null || \
+  aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/build_artifacts_bucket_name" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+
+if [ -z "$CODEBUILD_PROJECT_NAME" ] || [ -z "$BUILD_ARTIFACTS_BUCKET" ]; then
+  echo "ERROR: Could not read codebuild_project_name / build_artifacts_bucket_name from"
+  echo "Step 0 outputs. Make sure bootstrap includes the CodeBuild image-builder resources"
+  echo "(codebuild.tf) and Step 0's terraform apply succeeded."
+  exit 1
+fi
+
+source "$SCRIPT_DIR/redeploy-common.sh"
+
 echo ""
 echo "Step 0 complete."
 echo ""
@@ -802,14 +812,6 @@ ORCH_DIR=$(find_repo "orchestrator")
 echo "Found: $ORCH_DIR"
 cd "$ORCH_DIR"
 
-# Check Docker is running
-if ! docker info > /dev/null 2>&1; then
-  echo ""
-  echo "ERROR: Docker Desktop is not running."
-  echo "Please start Docker Desktop and press enter to continue..."
-  read -p "" < /dev/tty
-fi
-
 ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
 
 echo "Reading RDS security group from AWS..."
@@ -865,26 +867,10 @@ write_backend "$ORCH_DIR" "2-rg-ai-agent-platform-orchestrator/terraform.tfstate
 
 make doctor
 echo ""
-echo "Building and pushing orchestrator image..."
-echo "Creating ECR repository for orchestrator..."
-aws ecr create-repository \
-  --repository-name "${PROJECT_NAME}-orchestrator" \
-  --region "$AWS_REGION" 2>/dev/null || echo "ECR repo already exists"
+echo "Building and pushing orchestrator image via CodeBuild..."
 
-echo "Logging into ECR..."
-aws ecr get-login-password --region "$AWS_REGION" | \
-  docker login --username AWS --password-stdin \
-  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-echo "Building orchestrator image..."
-cd "$ORCH_DIR/app"
-docker build --platform linux/amd64 \
-  -t "${PROJECT_NAME}-orchestrator" .
-docker tag "${PROJECT_NAME}-orchestrator:latest" \
-  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
-docker push \
-  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
-cd "$ORCH_DIR"
+build_tag_push_and_verify "$ORCH_DIR/app" "${PROJECT_NAME}-orchestrator" \
+  "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator"
 
 echo "  ✓ Orchestrator image pushed to ECR"
 echo ""
@@ -975,18 +961,7 @@ EOF
 
   write_backend "$AGENT_DIR" "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
 
-  echo "Building and pushing agent image for $AGENT_NAME..."
-  echo "Creating ECR repository for $AGENT_NAME..."
-  aws ecr create-repository \
-    --repository-name "${PROJECT_NAME}-${AGENT_NAME}" \
-    --region "$AWS_REGION" 2>/dev/null || echo "ECR repo already exists"
-
-  echo "Logging into ECR..."
-  aws ecr get-login-password --region "$AWS_REGION" | \
-    docker login --username AWS --password-stdin \
-    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-  echo "Building agent image..."
+  echo "Building and pushing agent image for $AGENT_NAME via CodeBuild..."
   echo "  Agent dir: $AGENT_DIR"
   echo "  App dir: $AGENT_DIR/app"
   if [ ! -d "$AGENT_DIR/app" ]; then
@@ -994,14 +969,9 @@ EOF
     echo "Contents of parent: $(ls $PARENT_DIR)"
     exit 1
   fi
-  cd "$AGENT_DIR/app"
-  docker build --platform linux/amd64 \
-    -t "${PROJECT_NAME}-${AGENT_NAME}" .
-  docker tag "${PROJECT_NAME}-${AGENT_NAME}:latest" \
-    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
-  docker push \
-    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
-  cd "$AGENT_DIR"
+
+  build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" \
+    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}"
 
   echo "  ✓ Image pushed to ECR"
   echo ""
