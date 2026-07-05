@@ -9,10 +9,13 @@ set -e
 #
 # This script:
 #   1. Detects your operating system
-#   2. Installs missing prerequisites (Terraform, AWS CLI, Git, Docker)
+#   2. Installs missing prerequisites (Terraform, AWS CLI, Git)
 #   3. Clones all five platform repositories
 #   4. Opens defaults.env for editing
 #   5. Hands off to master-setup.sh
+#
+# Docker is NOT installed or required on this machine — image builds run in
+# AWS via CodeBuild, not locally.
 # =============================================================================
 
 GITHUB_ORG="revenue-growth-ai-org"
@@ -192,54 +195,6 @@ install_terraform() {
 }
 
 # ------------------------------------------------------------------------------
-# Install Docker
-# ------------------------------------------------------------------------------
-
-install_docker() {
-  if ! command -v docker > /dev/null 2>&1; then
-    echo "Installing Docker..."
-    case $OS in
-      mac)
-        echo ""
-        echo "Docker Desktop must be installed manually on Mac."
-        echo "Opening the Docker Desktop download page..."
-        open "https://www.docker.com/products/docker-desktop/"
-        echo ""
-        read -p "Press enter after Docker Desktop is installed and running..." < /dev/tty
-        ;;
-      linux|wsl)
-        curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-        sudo sh /tmp/get-docker.sh
-        sudo usermod -aG docker "$USER"
-        rm /tmp/get-docker.sh
-        echo "Docker installed. You may need to log out and back in for group changes to take effect."
-        ;;
-    esac
-  else
-    if docker info > /dev/null 2>&1; then
-      echo "  ✓ Docker already installed and running: $(docker --version)"
-    else
-      echo "  ✓ Docker installed but not running."
-      if [ "$OS" = "mac" ]; then
-        echo "    Opening Docker Desktop..."
-        open -a Docker
-        echo "    Waiting for Docker to start..."
-        for i in $(seq 1 30); do
-          if docker info > /dev/null 2>&1; then
-            echo "  ✓ Docker is now running."
-            break
-          fi
-          sleep 3
-        done
-      else
-        echo "    Please start Docker and press enter to continue..."
-        read -p "" < /dev/tty
-      fi
-    fi
-  fi
-}
-
-# ------------------------------------------------------------------------------
 # Create terraform-deploy IAM role
 # ------------------------------------------------------------------------------
 
@@ -361,7 +316,6 @@ install_git
 install_aws_cli
 verify_aws_credentials
 install_terraform
-install_docker
 create_iam_role
 
 echo ""
