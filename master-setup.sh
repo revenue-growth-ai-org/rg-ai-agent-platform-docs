@@ -559,11 +559,11 @@ ANTHROPIC_SECRET_ARN=$(terraform output -raw anthropic_api_key_secret_arn 2>/dev
 CODEBUILD_PROJECT_NAME=$(terraform output -raw codebuild_project_name 2>/dev/null || \
   aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/codebuild_project_name" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null) || true
 BUILD_ARTIFACTS_BUCKET=$(terraform output -raw build_artifacts_bucket_name 2>/dev/null || \
   aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/build_artifacts_bucket_name" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null) || true
 
 if [ -z "$CODEBUILD_PROJECT_NAME" ] || [ -z "$BUILD_ARTIFACTS_BUCKET" ]; then
   echo "ERROR: Could not read codebuild_project_name / build_artifacts_bucket_name from"

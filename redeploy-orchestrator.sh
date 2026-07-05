@@ -84,10 +84,10 @@ AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 CODEBUILD_PROJECT_NAME=$(aws ssm get-parameter \
   --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/codebuild_project_name" \
-  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null) || true
 BUILD_ARTIFACTS_BUCKET=$(aws ssm get-parameter \
   --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/build_artifacts_bucket_name" \
-  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null) || true
 
 if [ -z "$CODEBUILD_PROJECT_NAME" ] || [ -z "$BUILD_ARTIFACTS_BUCKET" ]; then
   echo "ERROR: Could not read codebuild_project_name / build_artifacts_bucket_name from SSM."
