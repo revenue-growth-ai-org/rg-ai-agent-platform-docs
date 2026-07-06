@@ -1,0 +1,79 @@
+name: E2E Test (install / test / destroy)
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [e2e-test]
+
+# Never run two e2e cycles at once — they'd collide on the same
+# PROJECT_NAME's AWS resources and Terraform state bucket.
+concurrency:
+  group: e2e-test
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  e2e:
+    name: Full install / 5 scenarios / destroy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout docs repo
+        uses: actions/checkout@v4
+        with:
+          path: rg-ai-agent-platform-docs
+
+      - name: Checkout bootstrap repo
+        uses: actions/checkout@v4
+        with:
+          repository: revenue-growth-ai-org/0-rg-ai-agent-platform-bootstrap
+          token: ${{ secrets.CI_REPO_READ_TOKEN }}
+          path: 0-rg-ai-agent-platform-bootstrap
+
+      - name: Checkout base repo
+        uses: actions/checkout@v4
+        with:
+          repository: revenue-growth-ai-org/1-rg-ai-agent-platform-base
+          token: ${{ secrets.CI_REPO_READ_TOKEN }}
+          path: 1-rg-ai-agent-platform-base
+
+      - name: Checkout orchestrator repo
+        uses: actions/checkout@v4
+        with:
+          repository: revenue-growth-ai-org/2-rg-ai-agent-platform-orchestrator
+          token: ${{ secrets.CI_REPO_READ_TOKEN }}
+          path: 2-rg-ai-agent-platform-orchestrator
+
+      - name: Checkout agent repo
+        uses: actions/checkout@v4
+        with:
+          repository: revenue-growth-ai-org/3-rg-ai-agent-platform-agent
+          token: ${{ secrets.CI_REPO_READ_TOKEN }}
+          path: 3-rg-ai-agent-platform-agent
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: us-east-2
+          role-duration-seconds: 7200
+
+      - name: Run e2e cycle
+        working-directory: rg-ai-agent-platform-docs
+        env:
+          CI_ANTHROPIC_API_KEY: ${{ secrets.CI_ANTHROPIC_API_KEY }}
+          CI_DOMAIN_NAME: revenue-growth.ai
+          CI_PROJECT_NAME: citest
+          CI_AGENT_NAME: testagent
+          AWS_REGION: us-east-2
+        run: bash ci-e2e-test.sh
