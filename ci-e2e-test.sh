@@ -52,6 +52,14 @@ echo "  Region:   $AWS_REGION"
 echo ""
 
 # ------------------------------------------------------------------------------
+# Sweep orphaned resources from a prior run whose state was lost (ephemeral
+# runner + failure after bootstrap apply). Runs before install so bootstrap
+# doesn't hit 409 AlreadyExists on buckets/tables/roles/etc from last time.
+# ------------------------------------------------------------------------------
+
+AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/ci-cleanup-citest.sh"
+
+# ------------------------------------------------------------------------------
 # Write defaults.env (normally produced interactively by install.sh)
 # ------------------------------------------------------------------------------
 
@@ -110,6 +118,8 @@ teardown() {
   aws ssm delete-parameter \
     --name "/${CI_PROJECT_NAME}/prod/orchestrator/webhook_secret" \
     --region "$AWS_REGION" > /dev/null 2>&1
+  # Belt-and-suspenders: final sweep in case destroy.sh left orphans behind
+  AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/ci-cleanup-citest.sh"
 }
 trap teardown EXIT
 
