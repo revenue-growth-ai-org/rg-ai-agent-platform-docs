@@ -238,7 +238,7 @@ fi
 
 # All four platform repos in parent directory
 for REPO_PATTERN in "bootstrap" "base" "orchestrator" "agent"; do
-  REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "*${REPO_PATTERN}*" | head -1)
+  REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "*${REPO_PATTERN}" | head -1)
   if [ -n "$REPO_DIR" ]; then
     preflight_ok "Repo found: $(basename "$REPO_DIR")"
   else
@@ -307,7 +307,7 @@ verify_service() {
 
 find_repo() {
   local REPO_PATTERN=$1
-  local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${REPO_PATTERN}*" | grep -vE '/[^/]*docs[^/]*$' | head -1)
+  local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${REPO_PATTERN}" | grep -vE '/[^/]*docs[^/]*$' | head -1)
   if [ -z "$REPO_DIR" ]; then
     echo ""
     echo "ERROR: Cannot find repo matching *${REPO_PATTERN}* in $PARENT_DIR"

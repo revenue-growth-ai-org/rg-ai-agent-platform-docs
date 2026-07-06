@@ -149,7 +149,7 @@ echo ""
 # Find agent repo
 # ------------------------------------------------------------------------------
 
-AGENT_REPO=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*agent*" | grep -v "orchestrator" | grep -v "docs" | head -1)
+AGENT_REPO=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*agent" | grep -vE '/[^/]*orchestrator[^/]*$' | grep -vE '/[^/]*docs[^/]*$' | head -1)
 
 if [ -z "$AGENT_REPO" ]; then
   echo "ERROR: Cannot find agent repo in $PARENT_DIR"

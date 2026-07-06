@@ -93,7 +93,7 @@ echo ""
 # ------------------------------------------------------------------------------
 
 find_agent_repo() {
-  local REPO_DIR=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*agent*" | grep -vE '/[^/]*orchestrator[^/]*$' | grep -vE '/[^/]*docs[^/]*$' | head -1)
+  local REPO_DIR=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*agent" | grep -vE '/[^/]*orchestrator[^/]*$' | grep -vE '/[^/]*docs[^/]*$' | head -1)
   if [ -z "$REPO_DIR" ]; then
     echo ""
     echo "ERROR: Cannot find 3-rg-ai-agent-platform-agent repo in $PARENT_DIR"

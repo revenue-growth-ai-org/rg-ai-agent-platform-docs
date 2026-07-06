@@ -336,7 +336,7 @@ echo "[ Step 5 ] Destroying infrastructure (this takes 20-30 minutes)..."
 
 find_repo() {
   local PATTERN=$1
-  find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${PATTERN}*" | grep -v "docs" | head -1
+  find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${PATTERN}" | grep -vE '/[^/]*docs[^/]*$' | head -1
 }
 
 AGENT_DIR=$(find_repo "agent")

@@ -102,6 +102,7 @@ INSTALL_STARTED=false
 
 teardown() {
   set +e
+  DESTROY_EXIT=0
   if [ "$INSTALL_STARTED" = "true" ]; then
     echo ""
     echo "=================================================="
@@ -118,8 +119,13 @@ teardown() {
   aws ssm delete-parameter \
     --name "/${CI_PROJECT_NAME}/prod/orchestrator/webhook_secret" \
     --region "$AWS_REGION" > /dev/null 2>&1
-  # Belt-and-suspenders: final sweep in case destroy.sh left orphans behind
-  AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/ci-cleanup-citest.sh"
+  if [ "$DESTROY_EXIT" -eq 0 ]; then
+    # Belt-and-suspenders: final sweep in case destroy.sh left orphans behind
+    AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/ci-cleanup-citest.sh"
+  else
+    echo ""
+    echo "::warning::destroy.sh FAILED — skipping final cleanup sweep so terraform state is preserved for manual retry. Live infra likely still exists in account $AWS_ACCOUNT_ID — investigate before re-running (see nuke-citest-stack.sh if state is unrecoverable)."
+  fi
 }
 trap teardown EXIT
 
