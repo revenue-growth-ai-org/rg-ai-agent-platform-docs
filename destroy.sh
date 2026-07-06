@@ -20,6 +20,8 @@ if [ ! -f "$DEFAULTS_FILE" ]; then
   exit 1
 fi
 
+CI_MODE="${CI_MODE:-false}"
+
 source "$DEFAULTS_FILE"
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AWS_REGION="${AWS_REGION:-us-east-2}"
@@ -36,7 +38,11 @@ echo "  Env:      $ENVIRONMENT"
 echo "  Account:  $AWS_ACCOUNT_ID"
 echo "  Region:   $AWS_REGION"
 echo ""
-read -p "Type 'yes' to destroy ALL platform resources: " CONFIRM < /dev/tty
+if [ "$CI_MODE" = "true" ]; then
+  CONFIRM="yes"
+else
+  read -p "Type 'yes' to destroy ALL platform resources: " CONFIRM < /dev/tty
+fi
 if [ "$CONFIRM" != "yes" ]; then
   echo "Cancelled."
   exit 0

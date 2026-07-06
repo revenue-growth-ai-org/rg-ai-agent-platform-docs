@@ -50,6 +50,16 @@ echo "Loaded defaults.env"
 echo ""
 
 # ------------------------------------------------------------------------------
+# CI mode — non-interactive. All values normally prompted for must be supplied
+# via environment variables. Used by GitHub Actions e2e testing.
+# ------------------------------------------------------------------------------
+CI_MODE="${CI_MODE:-false}"
+if [ "$CI_MODE" = "true" ]; then
+  echo "CI_MODE enabled — running non-interactively."
+  echo ""
+fi
+
+# ------------------------------------------------------------------------------
 # Auto-detect AWS values
 # ------------------------------------------------------------------------------
 
@@ -419,7 +429,11 @@ echo ""
 echo "  AWS Account: $AWS_ACCOUNT_ID"
 echo "  AWS Region:  $AWS_REGION"
 echo ""
-read -p "Proceed with setup? (yes/no): " SETUP_CONFIRM < /dev/tty
+if [ "$CI_MODE" = "true" ]; then
+  SETUP_CONFIRM="yes"
+else
+  read -p "Proceed with setup? (yes/no): " SETUP_CONFIRM < /dev/tty
+fi
 if [ "$SETUP_CONFIRM" != "yes" ]; then
   echo "Setup cancelled. No resources have been created."
   exit 0
@@ -583,9 +597,17 @@ echo "=================================================="
 echo ""
 
 while true; do
-  echo "Enter your Anthropic API key:"
-  read -s ANTHROPIC_API_KEY < /dev/tty
-  echo ""
+  if [ "$CI_MODE" = "true" ]; then
+    ANTHROPIC_API_KEY="${CI_ANTHROPIC_API_KEY:-}"
+    if [ -z "$ANTHROPIC_API_KEY" ]; then
+      echo "ERROR: CI_MODE=true but CI_ANTHROPIC_API_KEY is not set."
+      exit 1
+    fi
+  else
+    echo "Enter your Anthropic API key:"
+    read -s ANTHROPIC_API_KEY < /dev/tty
+    echo ""
+  fi
   if [ -z "$ANTHROPIC_API_KEY" ]; then
     echo "API key cannot be empty. Please try again."
     continue
@@ -608,7 +630,11 @@ echo ""
 echo "How many agent types do you want to deploy?"
 echo "Common agents: researcher, scorer, crm, outbound"
 echo ""
-read -p "Number of agents (1-10): " AGENT_COUNT < /dev/tty
+if [ "$CI_MODE" = "true" ]; then
+  AGENT_COUNT="${CI_AGENT_COUNT:-1}"
+else
+  read -p "Number of agents (1-10): " AGENT_COUNT < /dev/tty
+fi
 
 if ! [[ "$AGENT_COUNT" =~ ^[1-9][0-9]?$ ]] || [ "$AGENT_COUNT" -gt 10 ]; then
   echo "ERROR: Please enter a number between 1 and 10."
@@ -623,7 +649,15 @@ AGENT_SECRETS=()
 for i in $(seq 1 "$AGENT_COUNT"); do
   echo ""
   echo "--- Agent $i of $AGENT_COUNT ---"
-  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
+  if [ "$CI_MODE" = "true" ]; then
+    if [ "$i" = "1" ]; then
+      AGENT_NAME="${CI_AGENT_NAME:-testagent}"
+    else
+      AGENT_NAME="${CI_AGENT_NAME:-testagent}${i}"
+    fi
+  else
+    read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
+  fi
   AGENT_DESC="Isolated agent node"
   AGENT_EXTERNAL+=("true")
   AGENT_SECRETS+=("")
@@ -646,7 +680,11 @@ echo "  Allowed CIDR: $ALLOWED_CIDR"
 echo "  CRM Type:     $CRM_TYPE"
 echo "  Agents:       ${AGENT_NAMES[*]}"
 echo ""
-read -p "Proceed with deployment? (yes/no): " CONFIRM < /dev/tty
+if [ "$CI_MODE" = "true" ]; then
+  CONFIRM="yes"
+else
+  read -p "Proceed with deployment? (yes/no): " CONFIRM < /dev/tty
+fi
 if [ "$CONFIRM" != "yes" ]; then
   echo "Deployment cancelled."
   exit 0
@@ -661,7 +699,11 @@ echo "=================================================="
 echo " External API Keys"
 echo "=================================================="
 echo ""
-read -p "Do you need to store any external API keys? (yes/no): " STORE_EXTERNAL_KEYS < /dev/tty
+if [ "$CI_MODE" = "true" ]; then
+  STORE_EXTERNAL_KEYS="no"
+else
+  read -p "Do you need to store any external API keys? (yes/no): " STORE_EXTERNAL_KEYS < /dev/tty
+fi
 
 if [ "$STORE_EXTERNAL_KEYS" = "yes" ]; then
   while true; do
@@ -1103,7 +1145,11 @@ for NAME in "${AGENT_NAMES[@]}"; do
   echo "    aws logs tail /ecs/${PROJECT_NAME}-${ENVIRONMENT}/${NAME} --follow"
 done
 echo ""
-read -p "Enter email for CloudWatch alarm notifications (or press enter to skip): " ALARM_EMAIL < /dev/tty
+if [ "$CI_MODE" = "true" ]; then
+  ALARM_EMAIL=""
+else
+  read -p "Enter email for CloudWatch alarm notifications (or press enter to skip): " ALARM_EMAIL < /dev/tty
+fi
 if [ -n "$ALARM_EMAIL" ]; then
   SNS_ARN=$(aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/sns_alarm_topic_arn" \
