@@ -17,6 +17,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
 
+source "$SCRIPT_DIR/redeploy-common.sh"
+
 echo ""
 echo "=================================================="
 echo " AWS Agent Platform — Agent Manager"
@@ -42,6 +44,20 @@ source "$DEFAULTS_FILE"
 
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
+
+CODEBUILD_PROJECT_NAME=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/codebuild_project_name" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null) || true
+BUILD_ARTIFACTS_BUCKET=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/build_artifacts_bucket_name" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null) || true
+
+if [ -z "$CODEBUILD_PROJECT_NAME" ] || [ -z "$BUILD_ARTIFACTS_BUCKET" ]; then
+  echo "ERROR: Could not read codebuild_project_name / build_artifacts_bucket_name from SSM."
+  echo "Make sure bootstrap (0-rg-ai-agent-platform-bootstrap) has been applied with the"
+  echo "CodeBuild image-builder changes before running add-agent.sh."
+  exit 1
+fi
 
 echo "Account:     $AWS_ACCOUNT_ID"
 echo "Region:      $AWS_REGION"
@@ -252,7 +268,7 @@ add_agent() {
     fi
   fi
 
-  ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
+  ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}"
 
   echo "Deployment plan:"
   echo "  Agent name:      $AGENT_NAME"
@@ -290,7 +306,7 @@ step1_ssm_prefix = ""
 step2_ssm_prefix = ""
 
 rds_security_group_id  = "$RDS_SG_ID"
-agent_image            = "$ECR_IMAGE"
+agent_image            = "${ECR_IMAGE}:latest"
 deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets_arns  = $EXTERNAL_SECRETS
@@ -309,42 +325,10 @@ terraform {
 }
 EOF
 
-  # Check Docker is running
-  if ! docker info > /dev/null 2>&1; then
-    echo ""
-    echo "ERROR: Docker Desktop is not running."
-    if [ "$OS" = "mac" ]; then
-      echo "Opening Docker Desktop..."
-      open -a Docker
-      echo "Waiting for Docker to start..."
-      for i in $(seq 1 30); do
-        if docker info > /dev/null 2>&1; then
-          echo "Docker is running."
-          break
-        fi
-        sleep 3
-      done
-    else
-      read -p "Please start Docker and press enter to continue..." < /dev/tty
-    fi
-  fi
-
-  # Build and push image
+  # Build and push image (via CodeBuild — no local Docker required)
   echo ""
-  echo "Building and pushing agent image..."
-  aws ecr create-repository \
-    --repository-name "${PROJECT_NAME}-${AGENT_NAME}" \
-    --region "$AWS_REGION" 2>/dev/null || echo "ECR repo already exists"
-
-  aws ecr get-login-password --region "$AWS_REGION" | \
-    docker login --username AWS --password-stdin \
-    "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-  cd "$AGENT_DIR/app"
-  docker build --platform linux/amd64 -t "${PROJECT_NAME}-${AGENT_NAME}" .
-  docker tag "${PROJECT_NAME}-${AGENT_NAME}:latest" "${ECR_IMAGE}"
-  docker push "${ECR_IMAGE}"
-  cd "$AGENT_DIR"
+  echo "Building and pushing agent image via CodeBuild..."
+  build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" "$ECR_IMAGE"
   echo "  ✓ Image pushed to ECR"
 
   # Deploy
