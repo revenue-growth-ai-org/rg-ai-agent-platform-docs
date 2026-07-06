@@ -10,6 +10,7 @@ set -uo pipefail
 
 REGION="${AWS_REGION:-us-east-2}"
 PROJECT="citest-prod"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region "$REGION")
 
 echo "=================================================="
 echo " Nuking ALL ${PROJECT} infrastructure in ${REGION}"
@@ -351,15 +352,35 @@ echo "[11/11] Terraform state lock table and S3 buckets..."
 aws dynamodb delete-table --table-name "${PROJECT}-terraform-state-lock" --region "$REGION" >/dev/null 2>&1 \
   && echo "  deleted DynamoDB table ${PROJECT}-terraform-state-lock" || echo "  DynamoDB table not found"
 
-BUCKETS=$(aws s3api list-buckets --query "Buckets[?starts_with(Name,'${PROJECT}-terraform-state-') || starts_with(Name,'${PROJECT}-build-artifacts-')].Name" --output text 2>/dev/null || echo "")
-if [ -n "$BUCKETS" ]; then
-  for BUCKET in $BUCKETS; do
-    aws s3 rb "s3://${BUCKET}" --force --region "$REGION" >/dev/null 2>&1 \
-      && echo "  deleted bucket $BUCKET" || true
+# Version-aware bucket purge — plain `s3 rb --force` fails on versioned buckets
+# because it only removes the current version, leaving old versions/delete
+# markers behind that block bucket deletion.
+purge_bucket() {
+  local BUCKET=$1
+  if ! aws s3api head-bucket --bucket "$BUCKET" --region "$REGION" 2>/dev/null; then
+    echo "  bucket $BUCKET not found"
+    return
+  fi
+  while true; do
+    OBJECTS=$(aws s3api list-object-versions --bucket "$BUCKET" --region "$REGION" --output json 2>/dev/null \
+      | jq -c '[(.Versions // [])[], (.DeleteMarkers // [])[]] | map({Key: .Key, VersionId: .VersionId})')
+    COUNT=$(echo "$OBJECTS" | jq 'length' 2>/dev/null || echo 0)
+    if [ -z "$COUNT" ] || [ "$COUNT" -eq 0 ]; then
+      break
+    fi
+    for ((i = 0; i < COUNT; i += 1000)); do
+      BATCH=$(echo "$OBJECTS" | jq -c --argjson off "$i" '.[$off:$off+1000]')
+      PAYLOAD=$(jq -nc --argjson objs "$BATCH" '{Objects: $objs, Quiet: true}')
+      aws s3api delete-objects --bucket "$BUCKET" --delete "$PAYLOAD" --region "$REGION" >/dev/null 2>&1 || true
+    done
   done
-else
-  echo "  no matching S3 buckets found"
-fi
+  aws s3api delete-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1 \
+    && echo "  deleted bucket $BUCKET" || echo "  bucket $BUCKET not found or already deleted"
+}
+
+for BUCKET in "${PROJECT}-terraform-state-${ACCOUNT_ID}" "${PROJECT}-build-artifacts-${ACCOUNT_ID}" "${PROJECT}-cloudtrail-${ACCOUNT_ID}"; do
+  purge_bucket "$BUCKET"
+done
 
 # ------------------------------------------------------------------------------
 # Verification
@@ -387,6 +408,12 @@ check "ECR repos" "$(aws ecr describe-repositories --query "repositories[?contai
 check "Secrets" "$(aws secretsmanager list-secrets --query "SecretList[?contains(Name,'${PROJECT}')].Name" --output text --region "$REGION" 2>/dev/null)"
 check "IAM roles" "$(aws iam list-roles --query "Roles[?starts_with(RoleName,'${PROJECT}-')].RoleName" --output text 2>/dev/null)"
 check "Log groups" "$(aws logs describe-log-groups --query "logGroups[?starts_with(logGroupName,'/ecs/${PROJECT}') || starts_with(logGroupName,'/aws/codebuild/${PROJECT}')].logGroupName" --output text --region "$REGION" 2>/dev/null)"
+
+for BUCKET in "${PROJECT}-terraform-state-${ACCOUNT_ID}" "${PROJECT}-build-artifacts-${ACCOUNT_ID}" "${PROJECT}-cloudtrail-${ACCOUNT_ID}"; do
+  if aws s3api head-bucket --bucket "$BUCKET" --region "$REGION" 2>/dev/null; then
+    check "S3 bucket" "$BUCKET"
+  fi
+done
 
 echo ""
 if [ "$REMAINING" -eq 0 ]; then
