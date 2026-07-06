@@ -64,7 +64,7 @@ fi
 # ------------------------------------------------------------------------------
 
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-DETECTED_REGION=$(aws configure get region)
+DETECTED_REGION=$(aws configure get region 2>/dev/null || echo "")
 AWS_REGION="${AWS_REGION:-$DETECTED_REGION}"
 
 echo "Detected AWS Account: $AWS_ACCOUNT_ID"
