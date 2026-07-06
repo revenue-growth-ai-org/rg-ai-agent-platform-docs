@@ -307,7 +307,7 @@ verify_service() {
 
 find_repo() {
   local REPO_PATTERN=$1
-  local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${REPO_PATTERN}*" | grep -v "docs" | head -1)
+  local REPO_DIR=$(find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*${REPO_PATTERN}*" | grep -vE '/[^/]*docs[^/]*$' | head -1)
   if [ -z "$REPO_DIR" ]; then
     echo ""
     echo "ERROR: Cannot find repo matching *${REPO_PATTERN}* in $PARENT_DIR"
@@ -442,18 +442,6 @@ fi
 # ------------------------------------------------------------------------------
 # Step 0 — Bootstrap
 # ------------------------------------------------------------------------------
-
-echo "DEBUG: PARENT_DIR=$PARENT_DIR"
-echo "DEBUG: contents of PARENT_DIR (cat -A to reveal hidden chars):"
-ls -la "$PARENT_DIR" | cat -A
-echo "DEBUG: exact-name match test:"
-find "$PARENT_DIR" -maxdepth 1 -type d -name "0-rg-ai-agent-platform-bootstrap" || echo "DEBUG: exact match failed"
-echo "DEBUG: wildcard match test:"
-find "$PARENT_DIR" -maxdepth 1 -type d -name "*bootstrap*" || echo "DEBUG: wildcard match failed"
-echo "DEBUG: locale settings:"
-locale
-echo "DEBUG: find version:"
-find --version | head -1
 
 print_progress "1" "4" "Bootstrap" "Creating state bucket, certificates, and secret placeholders (~10 minutes)"
 

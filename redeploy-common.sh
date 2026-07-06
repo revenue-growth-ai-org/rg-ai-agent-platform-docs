@@ -47,7 +47,7 @@ find_platform_repo() {
   local REPO_PATTERN=$1
   local EXCLUDE_PATTERN=$2
   local MATCHES
-  MATCHES=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*${REPO_PATTERN}*" 2>/dev/null | grep -v "docs" || true)
+  MATCHES=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*${REPO_PATTERN}*" 2>/dev/null | grep -vE '/[^/]*docs[^/]*$' || true)
   if [ -n "$EXCLUDE_PATTERN" ]; then
     MATCHES=$(echo "$MATCHES" | grep -v "$EXCLUDE_PATTERN" || true)
   fi
