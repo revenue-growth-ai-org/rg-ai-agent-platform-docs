@@ -444,10 +444,16 @@ fi
 # ------------------------------------------------------------------------------
 
 echo "DEBUG: PARENT_DIR=$PARENT_DIR"
-echo "DEBUG: contents of PARENT_DIR:"
-ls -la "$PARENT_DIR"
-echo "DEBUG: find_repo bootstrap would match:"
-find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*bootstrap*" | grep -v "docs" || echo "DEBUG: no match found"
+echo "DEBUG: contents of PARENT_DIR (cat -A to reveal hidden chars):"
+ls -la "$PARENT_DIR" | cat -A
+echo "DEBUG: exact-name match test:"
+find "$PARENT_DIR" -maxdepth 1 -type d -name "0-rg-ai-agent-platform-bootstrap" || echo "DEBUG: exact match failed"
+echo "DEBUG: wildcard match test:"
+find "$PARENT_DIR" -maxdepth 1 -type d -name "*bootstrap*" || echo "DEBUG: wildcard match failed"
+echo "DEBUG: locale settings:"
+locale
+echo "DEBUG: find version:"
+find --version | head -1
 
 print_progress "1" "4" "Bootstrap" "Creating state bucket, certificates, and secret placeholders (~10 minutes)"
 
