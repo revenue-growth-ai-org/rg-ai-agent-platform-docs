@@ -443,6 +443,12 @@ fi
 # Step 0 — Bootstrap
 # ------------------------------------------------------------------------------
 
+echo "DEBUG: PARENT_DIR=$PARENT_DIR"
+echo "DEBUG: contents of PARENT_DIR:"
+ls -la "$PARENT_DIR"
+echo "DEBUG: find_repo bootstrap would match:"
+find "$PARENT_DIR" -maxdepth 1 -type d -name "[0-9]*bootstrap*" | grep -v "docs" || echo "DEBUG: no match found"
+
 print_progress "1" "4" "Bootstrap" "Creating state bucket, certificates, and secret placeholders (~10 minutes)"
 
 BOOTSTRAP_DIR=$(find_repo "bootstrap")
