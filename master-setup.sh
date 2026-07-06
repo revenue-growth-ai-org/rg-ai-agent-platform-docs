@@ -467,16 +467,6 @@ default_tags = {
 domain_name = "$DOMAIN_NAME"
 EOF
 
-echo "DEBUG: AWS_REGION=$AWS_REGION"
-echo "DEBUG: AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION"
-echo "DEBUG: AWS_ACCESS_KEY_ID is set: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo yes || echo no)"
-echo "DEBUG: direct sts call:"
-aws sts get-caller-identity
-echo "DEBUG: direct region call:"
-aws configure get region
-echo "DEBUG: env | grep AWS (redacted):"
-env | grep AWS | sed -E 's/=.*/=<redacted>/'
-
 make doctor
 echo ""
 echo "Running Step 0 terraform apply..."
