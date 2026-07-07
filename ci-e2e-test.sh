@@ -168,6 +168,11 @@ for S in "${SCENARIOS[@]}"; do
   set +e
   bash "$SCRIPT_DIR/test-webhook.sh" --scenario "$S"
   S_EXIT=$?
+
+  echo ""
+  echo "===== Orchestrator logs after scenario: $S ====="
+  aws logs tail "/ecs/${CI_PROJECT_NAME:-citest}-prod/orchestrator" --since 10m --region "$AWS_REGION" 2>&1 || true
+
   set -e
   if [ "$S_EXIT" -eq 0 ]; then
     RESULTS[$S]="PASS"
