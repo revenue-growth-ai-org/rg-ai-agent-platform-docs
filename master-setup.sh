@@ -284,19 +284,20 @@ verify_service() {
   local CLUSTER_NAME=$2
   local FRIENDLY_NAME=$3
 
-  RUNNING=$(aws ecs describe-services \
+  local RESULT
+  RESULT=$(aws ecs describe-services \
     --cluster "$CLUSTER_NAME" \
     --services "$SERVICE_NAME" \
-    --query 'services[0].runningCount' \
+    --query 'services[0].[runningCount,desiredCount]' \
     --output text \
-    --region "$AWS_REGION" 2>/dev/null)
+    --region "$AWS_REGION" 2>/dev/null) || RESULT=""
+  read -r RUNNING DESIRED <<< "$RESULT"
 
-  if [ "$RUNNING" = "1" ] || [ "$RUNNING" -gt "0" ] 2>/dev/null; then
-    echo "  ✓ $FRIENDLY_NAME is running ($RUNNING task(s))"
+  if [[ "$RUNNING" =~ ^[0-9]+$ ]] && [[ "$DESIRED" =~ ^[0-9]+$ ]] \
+     && [ "$RUNNING" -ge "$DESIRED" ] && [ "$RUNNING" -gt 0 ]; then
+    echo "  ✓ $FRIENDLY_NAME is healthy ($RUNNING/$DESIRED running)"
     return 0
   else
-    echo "  ✗ $FRIENDLY_NAME is not running yet"
-    echo "    Check logs: aws logs tail /ecs/${PROJECT_NAME}-${ENVIRONMENT}/${SERVICE_NAME} --follow"
     return 1
   fi
 }
@@ -1091,33 +1092,67 @@ echo "=================================================="
 echo ""
 
 CLUSTER_NAME="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
-VERIFY_PASS=0
-VERIFY_FAIL=0
 
-# Verify orchestrator
-if verify_service "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" "$CLUSTER_NAME" "Master Orchestrator"; then
-  VERIFY_PASS=$((VERIFY_PASS+1))
-else
-  VERIFY_FAIL=$((VERIFY_FAIL+1))
-fi
-
-# Verify each agent
+# service-name|log-group-suffix|friendly-name for orchestrator + every agent
+SERVICE_DEFS=("${PROJECT_NAME}-${ENVIRONMENT}-orchestrator|orchestrator|Master Orchestrator")
 for NAME in "${AGENT_NAMES[@]}"; do
-  if verify_service "${PROJECT_NAME}-${ENVIRONMENT}-${NAME}" "$CLUSTER_NAME" "Agent: $NAME"; then
-    VERIFY_PASS=$((VERIFY_PASS+1))
-  else
-    VERIFY_FAIL=$((VERIFY_FAIL+1))
+  SERVICE_DEFS+=("${PROJECT_NAME}-${ENVIRONMENT}-${NAME}|${NAME}|Agent: $NAME")
+done
+
+declare -A SERVICE_OK
+MAX_ATTEMPTS=18   # 18 x 10s = 3 minutes
+for ((ATTEMPT=1; ATTEMPT<=MAX_ATTEMPTS; ATTEMPT++)); do
+  ALL_HEALTHY=true
+  for DEF in "${SERVICE_DEFS[@]}"; do
+    IFS='|' read -r SVC_NAME LOG_SUFFIX FRIENDLY <<< "$DEF"
+    if [ "${SERVICE_OK[$SVC_NAME]:-false}" = "true" ]; then
+      continue
+    fi
+    if verify_service "$SVC_NAME" "$CLUSTER_NAME" "$FRIENDLY"; then
+      SERVICE_OK[$SVC_NAME]=true
+    else
+      ALL_HEALTHY=false
+    fi
+  done
+  if [ "$ALL_HEALTHY" = "true" ]; then
+    break
+  fi
+  if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+    echo "  Waiting for services to become healthy (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
+    sleep 10
   fi
 done
 
 echo ""
+VERIFY_PASS=0
+VERIFY_FAIL=0
+FAILED_SERVICES=()
+for DEF in "${SERVICE_DEFS[@]}"; do
+  IFS='|' read -r SVC_NAME LOG_SUFFIX FRIENDLY <<< "$DEF"
+  if [ "${SERVICE_OK[$SVC_NAME]:-false}" = "true" ]; then
+    VERIFY_PASS=$((VERIFY_PASS+1))
+  else
+    VERIFY_FAIL=$((VERIFY_FAIL+1))
+    FAILED_SERVICES+=("$FRIENDLY")
+    echo "  ✗ $FRIENDLY never became healthy after 3 minutes"
+    echo "    Check logs: aws logs tail /ecs/${PROJECT_NAME}-${ENVIRONMENT}/${LOG_SUFFIX} --follow"
+  fi
+done
+
 if [ "$VERIFY_FAIL" -gt 0 ]; then
-  echo "  $VERIFY_PASS service(s) healthy, $VERIFY_FAIL service(s) not yet running."
-  echo "  Services may still be starting up. Wait 2-3 minutes and check:"
-  echo "  aws ecs describe-services --cluster $CLUSTER_NAME --services <service-name>"
-else
-  echo "  All $VERIFY_PASS service(s) healthy and running."
+  echo ""
+  echo "=================================================="
+  echo " Deployment health check FAILED"
+  echo "=================================================="
+  echo ""
+  echo "  $VERIFY_PASS service(s) healthy, $VERIFY_FAIL service(s) never became healthy: ${FAILED_SERVICES[*]}"
+  echo "  This is not a working deployment — refusing to report success."
+  echo "  Investigate the logs above, then re-run once the service(s) are healthy."
+  echo ""
+  exit 1
 fi
+
+echo "  All $VERIFY_PASS service(s) healthy and running."
 
 # ------------------------------------------------------------------------------
 # Deployment summary
