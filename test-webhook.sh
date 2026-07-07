@@ -122,7 +122,7 @@ fetch_log_messages() {
   local FILTER="$1"
   local ARGS=(--log-group-name "$LOG_GROUP" --start-time "$START_TIME" --region "$AWS_REGION" --output json)
   if [ -n "$FILTER" ]; then
-    ARGS+=(--filter-pattern "$FILTER")
+    ARGS+=(--filter-pattern "\"$FILTER\"")
   fi
   aws logs filter-log-events "${ARGS[@]}" 2>/dev/null | python3 -c "
 import json, sys
