@@ -1077,6 +1077,12 @@ aws ecs update-service \
 
 echo "✓ Routing config pushed to SSM using agent name(s): ${AGENT_NAMES[*]}"
 echo "✓ Orchestrator restarting to pick up new routing config"
+echo "Waiting for orchestrator restart to complete (this takes 2-4 minutes)..."
+aws ecs wait services-stable \
+  --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+  --services "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
+  --region "$AWS_REGION"
+echo "✓ Orchestrator restart complete"
 
 # ------------------------------------------------------------------------------
 # Post-install verification
