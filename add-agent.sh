@@ -312,17 +312,13 @@ enable_external_egress = $ENABLE_EXTERNAL
 external_secrets_arns  = $EXTERNAL_SECRETS
 EOF
 
-  # Write backend.tf
-  cat > backend.tf << EOF
-terraform {
-  backend "s3" {
-    bucket         = "$STATE_BUCKET"
-    key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
-    region         = "$AWS_REGION"
-    use_lockfile   = true
-    encrypt        = true
-  }
-}
+  # Write backend.hcl (backend.tf stays an empty tracked stub)
+  cat > backend.hcl << EOF
+bucket         = "$STATE_BUCKET"
+key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+region         = "$AWS_REGION"
+dynamodb_table = "$LOCK_TABLE"
+encrypt        = true
 EOF
 
   # Build and push image (via CodeBuild — no local Docker required)
@@ -334,7 +330,7 @@ EOF
   # Deploy
   echo ""
   echo "Deploying agent $AGENT_NAME..."
-  terraform init -reconfigure -input=false
+  terraform init -backend-config=backend.hcl -reconfigure -input=false
   terraform apply -var-file="prod.tfvars" -auto-approve
 
   # Verify
@@ -446,22 +442,18 @@ enable_external_egress = false
 external_secrets_arns  = []
 EOF
 
-  # Write backend.tf pointing to this agent's state
-  cat > backend.tf << EOF
-terraform {
-  backend "s3" {
-    bucket         = "$STATE_BUCKET"
-    key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
-    region         = "$AWS_REGION"
-    use_lockfile   = true
-    encrypt        = true
-  }
-}
+  # Write backend.hcl pointing to this agent's state (backend.tf stays an empty tracked stub)
+  cat > backend.hcl << EOF
+bucket         = "$STATE_BUCKET"
+key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+region         = "$AWS_REGION"
+dynamodb_table = "$LOCK_TABLE"
+encrypt        = true
 EOF
 
   echo ""
   echo "Destroying agent $AGENT_NAME..."
-  terraform init -reconfigure -input=false
+  terraform init -backend-config=backend.hcl -reconfigure -input=false
   terraform destroy -var-file="prod.tfvars" -auto-approve
 
   echo "Waiting for ECS service to fully deregister..."

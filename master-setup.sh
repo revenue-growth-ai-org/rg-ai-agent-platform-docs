@@ -324,22 +324,18 @@ find_repo() {
 }
 
 # ------------------------------------------------------------------------------
-# Helper — write shared backend.tf
+# Helper — write per-install backend.hcl (backend.tf stays an empty tracked stub)
 # ------------------------------------------------------------------------------
 
 write_backend() {
   local REPO_DIR=$1
   local STATE_KEY=$2
-  cat > "$REPO_DIR/backend.tf" << EOF
-terraform {
-  backend "s3" {
-    bucket         = "$STATE_BUCKET"
-    key            = "$STATE_KEY"
-    region         = "$AWS_REGION"
-    use_lockfile   = true
-    encrypt        = true
-  }
-}
+  cat > "$REPO_DIR/backend.hcl" << EOF
+bucket         = "$STATE_BUCKET"
+key            = "$STATE_KEY"
+region         = "$AWS_REGION"
+dynamodb_table = "$LOCK_TABLE"
+encrypt        = true
 EOF
 }
 
@@ -839,7 +835,7 @@ write_backend "$BASE_DIR" "1-rg-ai-agent-platform-base/terraform.tfstate"
 make doctor
 echo ""
 echo "Running Step 1 terraform apply..."
-terraform init
+terraform init -backend-config=backend.hcl -reconfigure
 apply_with_retry "prod.tfvars"
 
 echo ""
@@ -918,7 +914,7 @@ build_tag_push_and_verify "$ORCH_DIR/app" "${PROJECT_NAME}-orchestrator" \
 echo "  ✓ Orchestrator image pushed to ECR"
 echo ""
 echo "Running Step 2 terraform apply..."
-terraform init
+terraform init -backend-config=backend.hcl -reconfigure
 apply_with_retry "prod.tfvars"
 
 echo ""
@@ -1019,7 +1015,7 @@ EOF
   echo "  ✓ Image pushed to ECR"
   echo ""
   echo "Running terraform apply for agent $AGENT_NAME..."
-  terraform init -reconfigure
+  terraform init -backend-config=backend.hcl -reconfigure
   apply_with_retry "prod.tfvars"
 
   echo ""

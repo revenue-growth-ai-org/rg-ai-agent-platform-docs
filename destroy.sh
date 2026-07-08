@@ -349,6 +349,10 @@ STATE_BUCKET=$(aws ssm get-parameter \
   --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
   aws s3 ls | grep "${PROJECT_NAME}" | grep "terraform-state" | awk '{print $3}' | head -1)
 
+LOCK_TABLE=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
 for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
   if [ -z "$DIR" ]; then
     continue
@@ -370,11 +374,17 @@ for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
     STATE_KEY="1-rg-ai-agent-platform-base/terraform.tfstate"
   fi
 
-  terraform init -reconfigure \
-    -backend-config="bucket=${STATE_BUCKET}" \
-    -backend-config="key=${STATE_KEY}" \
-    -backend-config="region=${AWS_REGION}" \
-    > /dev/null 2>&1
+  cat > backend.hcl << EOF
+bucket         = "$STATE_BUCKET"
+key            = "$STATE_KEY"
+region         = "$AWS_REGION"
+encrypt        = true
+EOF
+  if [ -n "$LOCK_TABLE" ]; then
+    echo "dynamodb_table = \"$LOCK_TABLE\"" >> backend.hcl
+  fi
+
+  terraform init -backend-config=backend.hcl -reconfigure > /dev/null 2>&1
 
   if [ "$DIR" = "$BASE_DIR" ]; then
     # Delete CloudTrail trails
