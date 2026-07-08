@@ -135,6 +135,28 @@ for e in data.get('events', []):
 " 2>/dev/null || echo ""
 }
 
+# Same as fetch_log_messages, but prefixes each line with the event's
+# CloudWatch timestamp (epoch ms) so a caller can discard events that
+# predate a specific moment — used when no request_id is available to
+# correlate on, so a broad, unfiltered query doesn't pick up events left
+# behind by an earlier scenario in the same run.
+fetch_log_events_with_ts() {
+  local FILTER="$1"
+  local ARGS=(--log-group-name "$LOG_GROUP" --start-time "$START_TIME" --region "$AWS_REGION" --output json)
+  if [ -n "$FILTER" ]; then
+    ARGS+=(--filter-pattern "\"$FILTER\"")
+  fi
+  aws logs filter-log-events "${ARGS[@]}" 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+for e in data.get('events', []):
+    print(f\"{e.get('timestamp', 0)}\t{e.get('message', '')}\")
+" 2>/dev/null || echo ""
+}
+
 # Shared 30-seconds-ago lookback used to seed CloudWatch log queries, in epoch
 # milliseconds. macOS/BSD date and GNU date take this differently.
 now_minus_30s() {
@@ -832,19 +854,32 @@ unauthorized)
     BAD_SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "wrong-secret-for-webhook-test" | awk '{print $NF}')
 
     START_TIME=$(now_minus_30s)
+    SENT_TIME_MS=$(date -u +%s000)
 
     echo "  Note: spoofing X-Forwarded-For to a non-admin IP so this exercises real"
     echo "  signature validation even when CRM_TYPE=hubspot and ADMIN_IP would"
     echo "  otherwise skip validation for requests from this machine."
-    RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+    HTTP_RESULT=$(curl -s -w "\n%{http_code}" \
       -X POST "https://${ALB_DNS_NAME}/webhook" \
       -H "Content-Type: application/json" \
       -H "X-Hub-Signature-256: sha256=${BAD_SIGNATURE}" \
       -H "X-Forwarded-For: 203.0.113.1" \
       -d "$PAYLOAD" \
-      --insecure --max-time 15 || echo "000")
+      --insecure --max-time 15 || printf '\n000\n')
+
+    RESPONSE=$(echo "$HTTP_RESULT" | tail -n1)
+    RESPONSE_BODY=$(echo "$HTTP_RESULT" | sed '$d')
+    REQUEST_ID=$(echo "$RESPONSE_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('request_id',''))" 2>/dev/null || echo "")
 
     echo "  HTTP status: $RESPONSE"
+    if [ -n "$REQUEST_ID" ]; then
+      echo "  Request ID:  $REQUEST_ID"
+    else
+      echo "  WARNING: Could not extract request_id from the 401 response body — log"
+      echo "  correlation will fall back to a strict time window (events logged after"
+      echo "  this request was sent), so an earlier scenario's events in this same run"
+      echo "  aren't mistaken for orchestration triggered by this rejected request."
+    fi
     echo ""
 
     echo "Checking CloudWatch logs to confirm no orchestration was attempted..."
@@ -853,13 +888,56 @@ unauthorized)
     for i in $(seq 1 3); do
       echo "  Waiting 10s for logs to appear (attempt $i/3)..."
       sleep 10
-      LOG_EVENTS=$(fetch_log_messages "")
-      if echo "$LOG_EVENTS" | grep -q '"status_code": 401' && echo "$LOG_EVENTS" | grep -q '"path": "/webhook"'; then
-        REJECTED_LOGGED=true
+
+      if [ -n "$REQUEST_ID" ]; then
+        # Scoped to this exact request_id — any match is unambiguously
+        # about this rejected request, not an earlier scenario's.
+        LOG_EVENTS=$(fetch_log_messages "$REQUEST_ID")
+        if echo "$LOG_EVENTS" | grep -q '"status_code": 401' && echo "$LOG_EVENTS" | grep -q '"path": "/webhook"'; then
+          REJECTED_LOGGED=true
+        fi
+        if echo "$LOG_EVENTS" | grep -qE '"event": "(intake_complete|route_complete|route_complete_deterministic|agent_success|agent_error|orchestration_complete)"'; then
+          ORCHESTRATION_ATTEMPTED=true
+        fi
+      else
+        # No request_id to correlate on — only trust events timestamped
+        # strictly after this request was sent, so we don't misattribute
+        # an earlier scenario's intake/routing/agent events to this one.
+        LOG_EVENTS_TS=$(fetch_log_events_with_ts "")
+        RESULT=$(echo "$LOG_EVENTS_TS" | python3 -c "
+import json, sys
+sent_time = $SENT_TIME_MS
+rejected = False
+attempted = False
+for line in sys.stdin:
+    line = line.rstrip('\n')
+    if not line or '\t' not in line:
+        continue
+    ts_str, message = line.split('\t', 1)
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        continue
+    if ts <= sent_time:
+        continue
+    try:
+        obj = json.loads(message)
+    except Exception:
+        continue
+    if not isinstance(obj, dict):
+        continue
+    if obj.get('status_code') == 401 and obj.get('path') == '/webhook':
+        rejected = True
+    if obj.get('event') in ('intake_complete', 'route_complete', 'route_complete_deterministic', 'agent_success', 'agent_error', 'orchestration_complete'):
+        attempted = True
+print(f\"{rejected}|{attempted}\")
+" || echo "false|false")
+        REJECTED_THIS_ROUND=$(echo "$RESULT" | cut -d'|' -f1 | tr '[:upper:]' '[:lower:]')
+        ATTEMPTED_THIS_ROUND=$(echo "$RESULT" | cut -d'|' -f2 | tr '[:upper:]' '[:lower:]')
+        [ "$REJECTED_THIS_ROUND" = "true" ] && REJECTED_LOGGED=true
+        [ "$ATTEMPTED_THIS_ROUND" = "true" ] && ORCHESTRATION_ATTEMPTED=true
       fi
-      if echo "$LOG_EVENTS" | grep -qE '"event": "(intake_complete|route_complete|route_complete_deterministic|agent_success|agent_error|orchestration_complete)"'; then
-        ORCHESTRATION_ATTEMPTED=true
-      fi
+
       if [ "$REJECTED_LOGGED" = "true" ]; then
         break
       fi
