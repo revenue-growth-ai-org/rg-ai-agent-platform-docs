@@ -1028,6 +1028,26 @@ EOF
 done
 
 # ------------------------------------------------------------------------------
+# Wait for every agent service to reach steady state before the orchestrator
+# ever sees the routing config that references them. terraform apply above
+# returns as soon as ECS accepts the service update, not once tasks are
+# RUNNING — if the orchestrator restarts (below) before that happens, its
+# one-shot startup validation (config.py:_validate_agent_routing_against_ecs)
+# sees runningCount == 0 and permanently drops the route for that agent
+# (routing_agent_not_deployed -> routing_rule_dropped -> routing_no_valid_rules),
+# with no automatic recovery short of another restart.
+# ------------------------------------------------------------------------------
+
+echo "Waiting for agent service(s) to reach steady state before configuring routing..."
+for NAME in "${AGENT_NAMES[@]}"; do
+  aws ecs wait services-stable \
+    --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+    --services "${PROJECT_NAME}-${ENVIRONMENT}-${NAME}" \
+    --region "$AWS_REGION"
+  echo "  ✓ ${NAME} is stable"
+done
+
+# ------------------------------------------------------------------------------
 # Build and push routing config to SSM from deployed agent names
 # ------------------------------------------------------------------------------
 
@@ -1061,6 +1081,8 @@ print(json.dumps(rules))
 done
 
 ROUTING_CONFIG="{\"rules\": $RULES}"
+
+echo "Confirmed stable before routing push: ${AGENT_NAMES[*]}"
 
 aws ssm put-parameter \
   --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/agent_routing" \
