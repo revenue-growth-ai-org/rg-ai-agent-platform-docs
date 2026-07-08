@@ -552,6 +552,29 @@ if [ "$SCENARIO" = "agent-timeout" ]; then
     fi
     sleep 5
   done
+
+  # runningCount == 0 only means ECS no longer counts the task as RUNNING —
+  # during its SIGTERM grace period (stopTimeout, default 30s) the process is
+  # still alive and listening, and its Cloud Map DNS record hasn't been
+  # deregistered yet. A webhook sent now can still reach the draining task via
+  # a stale record. Wait until list-tasks (RUNNING+PENDING) is empty, then
+  # sleep past the Cloud Map TTL so the DNS record is actually gone.
+  echo "  Waiting for $SERVICE_NAME to have no RUNNING/PENDING tasks..."
+  for i in $(seq 1 18); do
+    TASK_COUNT=$(aws ecs list-tasks \
+      --cluster "$CLUSTER_NAME" \
+      --service-name "$SERVICE_NAME" \
+      --query 'length(taskArns)' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "1")
+    if [ "$TASK_COUNT" = "0" ]; then
+      echo "  ✓ $SERVICE_NAME has no RUNNING/PENDING tasks"
+      break
+    fi
+    sleep 5
+  done
+
+  echo "  Waiting 20s for Cloud Map DNS record (10s TTL) to deregister..."
+  sleep 20
   echo ""
 fi
 
