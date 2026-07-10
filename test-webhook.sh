@@ -481,25 +481,37 @@ print(json.dumps(config))
     --force-new-deployment \
     --region "$AWS_REGION" > /dev/null
 
-  for i in $(seq 1 12); do
-    sleep 5
-    RUNNING_COUNT=$(aws ecs describe-services \
+  # runningCount==desiredCount is not a reliable "new task is up" signal under
+  # a rolling deployment (deployment_minimum_healthy_percent=100/maximum_percent=200):
+  # the OLD task alone already satisfies that check the instant force-new-deployment
+  # is called, well before the NEW task is even scheduled. Poll the PRIMARY
+  # deployment's rolloutState instead, so we only proceed once the new task has
+  # actually passed its health check and run its one-shot startup route
+  # validation (config.py:_validate_agent_routing_against_ecs) — otherwise the
+  # agent-timeout scenario below can scale the agent down before that validation
+  # sees it as running, permanently dropping its route for this container.
+  echo "  Waiting for orchestrator deployment to complete (up to 120s)..."
+  ORCH_ROLLOUT_STATE=""
+  for i in $(seq 1 24); do
+    ORCH_ROLLOUT_STATE=$(aws ecs describe-services \
       --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
       --services "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
-      --query 'services[0].runningCount' \
+      --query "services[0].deployments[?status=='PRIMARY'] | [0].rolloutState" \
       --output text \
-      --region "$AWS_REGION" 2>/dev/null || echo "0")
-    DESIRED_COUNT=$(aws ecs describe-services \
-      --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
-      --services "${PROJECT_NAME}-${ENVIRONMENT}-orchestrator" \
-      --query 'services[0].desiredCount' \
-      --output text \
-      --region "$AWS_REGION" 2>/dev/null || echo "1")
-
-    if [ "$RUNNING_COUNT" = "$DESIRED_COUNT" ]; then
+      --region "$AWS_REGION" 2>/dev/null || echo "")
+    if [ "$ORCH_ROLLOUT_STATE" = "COMPLETED" ]; then
       break
     fi
+    sleep 5
   done
+
+  if [ "$ORCH_ROLLOUT_STATE" = "COMPLETED" ]; then
+    echo "  ✓ Orchestrator deployment complete (rolloutState: COMPLETED)"
+  else
+    echo "  ✗ Orchestrator deployment did not reach rolloutState COMPLETED after 120s"
+    echo "    (last seen: ${ORCH_ROLLOUT_STATE:-unknown}) — continuing anyway, but the new"
+    echo "    task's startup route validation may race with the steps that follow"
+  fi
 
   echo "  ✓ Routing temporarily set to: $OVERRIDE_AGENT"
   echo ""
