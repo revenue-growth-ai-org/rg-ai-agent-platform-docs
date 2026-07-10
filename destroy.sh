@@ -15,14 +15,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
 
-if [ ! -f "$DEFAULTS_FILE" ]; then
-  echo "ERROR: defaults.env not found. Nothing to destroy."
+CI_MODE="${CI_MODE:-false}"
+
+if [ -f "$DEFAULTS_FILE" ]; then
+  source "$DEFAULTS_FILE"
+elif [ -n "$PROJECT_NAME" ]; then
+  echo "WARNING: defaults.env not found. Proceeding using PROJECT_NAME from the environment."
+  ENVIRONMENT="${ENVIRONMENT:-prod}"
+else
+  echo "ERROR: defaults.env not found and PROJECT_NAME is not set. Nothing to destroy."
   exit 1
 fi
 
-CI_MODE="${CI_MODE:-false}"
-
-source "$DEFAULTS_FILE"
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AWS_REGION="${AWS_REGION:-us-east-2}"
 NAME_PREFIX="${PROJECT_NAME}-${ENVIRONMENT}"
@@ -519,3 +523,25 @@ echo ""
 echo "  If anything remains above go to AWS Console and"
 echo "  manually delete remaining resources."
 echo ""
+
+# ------------------------------------------------------------------------------
+# Step 8 — Verify destroy (authoritative check)
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 8 ] Running verify-destroy.sh..."
+echo ""
+
+if PROJECT_NAME="$PROJECT_NAME" ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/verify-destroy.sh"; then
+  echo ""
+  echo "  ✓ verify-destroy.sh: clean"
+else
+  if [ "$CI_MODE" = "true" ]; then
+    echo ""
+    echo "  ✗ verify-destroy.sh found leftover resources. Failing (CI_MODE=true)."
+    exit 1
+  else
+    echo ""
+    echo "  ⚠ verify-destroy.sh found leftover resources. Review above; not failing (CI_MODE=false)."
+  fi
+fi
