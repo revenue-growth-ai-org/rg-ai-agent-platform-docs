@@ -362,7 +362,9 @@ for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
     continue
   fi
   if [ ! -f "$DIR/prod.tfvars" ]; then
-    echo "  Skipping $(basename $DIR) — no prod.tfvars found"
+    echo ""
+    echo "  ⚠ WARNING: $(basename $DIR) has no prod.tfvars — skipping Terraform destroy for this repo."
+    echo "  ⚠ Its resources may survive and will be caught by the bootstrap-teardown guard below."
     continue
   fi
   echo ""
@@ -428,6 +430,72 @@ EOF
     done
   fi
 done
+
+# Guard: destroying bootstrap (state bucket, lock table, SSM params) while platform
+# resources for this project still exist would strand their Terraform state — there
+# would be no backend left to read or write it. Check before proceeding.
+echo ""
+echo "  Checking for surviving platform resources before bootstrap teardown..."
+
+REMAINING_RESOURCES=""
+
+REMAINING_RDS=$(aws rds describe-db-instances \
+  --query "DBInstances[?contains(DBInstanceIdentifier,'${PROJECT_NAME}')].DBInstanceIdentifier" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$REMAINING_RDS" ]; then
+  REMAINING_RESOURCES="${REMAINING_RESOURCES}  RDS instances: ${REMAINING_RDS}\n"
+fi
+
+REMAINING_VPCS=$(aws ec2 describe-vpcs \
+  --filters "Name=tag:Project,Values=${PROJECT_NAME}" \
+  --query "Vpcs[].VpcId" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$REMAINING_VPCS" ]; then
+  REMAINING_RESOURCES="${REMAINING_RESOURCES}  VPCs: ${REMAINING_VPCS}\n"
+fi
+
+REMAINING_ECS_CANDIDATES=$(aws ecs list-clusters \
+  --query "clusterArns[?contains(@,'${PROJECT_NAME}')]" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+REMAINING_ECS_ACTIVE=""
+for ECS_ARN in $REMAINING_ECS_CANDIDATES; do
+  ECS_STATUS=$(aws ecs describe-clusters --clusters "$ECS_ARN" \
+    --query "clusters[0].status" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ "$ECS_STATUS" = "ACTIVE" ]; then
+    REMAINING_ECS_ACTIVE="${REMAINING_ECS_ACTIVE} ${ECS_ARN}"
+  fi
+done
+if [ -n "$REMAINING_ECS_ACTIVE" ]; then
+  REMAINING_RESOURCES="${REMAINING_RESOURCES}  ECS clusters (ACTIVE): ${REMAINING_ECS_ACTIVE}\n"
+fi
+
+REMAINING_ALBS=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?contains(LoadBalancerName,'${PROJECT_NAME}')].LoadBalancerName" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$REMAINING_ALBS" ]; then
+  REMAINING_RESOURCES="${REMAINING_RESOURCES}  ALBs: ${REMAINING_ALBS}\n"
+fi
+
+REMAINING_NAT=$(aws ec2 describe-nat-gateways \
+  --filter "Name=tag:Project,Values=${PROJECT_NAME}" "Name=state,Values=available,pending" \
+  --query "NatGateways[].NatGatewayId" \
+  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$REMAINING_NAT" ]; then
+  REMAINING_RESOURCES="${REMAINING_RESOURCES}  NAT gateways: ${REMAINING_NAT}\n"
+fi
+
+if [ -n "$REMAINING_RESOURCES" ]; then
+  echo "  Platform resources still exist for ${PROJECT_NAME}:"
+  echo -e "$REMAINING_RESOURCES"
+  echo "  Platform resources still exist — destroying bootstrap now would strand their Terraform state. Fix the platform destroy first, or set FORCE_BOOTSTRAP_DESTROY=true to override."
+  # FORCE_BOOTSTRAP_DESTROY must be explicitly set in the environment — CI_MODE=true
+  # never implies or defaults this override on.
+  if [ "${FORCE_BOOTSTRAP_DESTROY:-false}" = "true" ]; then
+    echo "  ⚠ FORCE_BOOTSTRAP_DESTROY=true — proceeding with bootstrap teardown despite surviving platform resources."
+  else
+    exit 1
+  fi
+fi
 
 # Empty state bucket before destroying bootstrap
 if [ -n "$BOOTSTRAP_DIR" ] && [ -f "$BOOTSTRAP_DIR/prod.tfvars" ]; then
