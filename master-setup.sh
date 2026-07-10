@@ -817,6 +817,18 @@ crm_type = "$CRM_TYPE"
 EOF
 fi
 
+# CI runs skip the final RDS snapshot on destroy; customer installs keep the
+# Terraform default of false.
+if [ "$CI_MODE" = "true" ]; then
+  echo "  CI_MODE: setting rds_skip_final_snapshot = true"
+  if grep -q "^rds_skip_final_snapshot" "$BASE_DIR/prod.tfvars"; then
+    sed -i.bak "s|rds_skip_final_snapshot.*=.*|rds_skip_final_snapshot = true|" "$BASE_DIR/prod.tfvars"
+  else
+    printf '\nrds_skip_final_snapshot = true\n' >> "$BASE_DIR/prod.tfvars"
+  fi
+  rm -f "$BASE_DIR/prod.tfvars.bak"
+fi
+
 # Always update the ACM certificate ARN from the latest bootstrap output
 if [ -f "$BASE_DIR/prod.tfvars" ]; then
   echo "  Updating alb_certificate_arn with latest bootstrap value..."

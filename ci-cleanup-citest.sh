@@ -65,4 +65,20 @@ for ARN in $(aws acm list-certificates --region "$REGION" --query 'CertificateSu
   fi
 done
 
+# Manual DB snapshots left behind by CI runs
+for SNAP in $(aws rds describe-db-snapshots --snapshot-type manual --region "$REGION" --query "DBSnapshots[?contains(DBSnapshotIdentifier, 'citest')].DBSnapshotIdentifier" --output text 2>/dev/null); do
+  aws rds delete-db-snapshot --db-snapshot-identifier "$SNAP" --region "$REGION" >/dev/null 2>&1 && echo "deleted manual snapshot $SNAP" || true
+done
+
+# Retained automated backups — survive instance deletion, billed until removed
+for RESID in $(aws rds describe-db-instance-automated-backups --region "$REGION" --query "DBInstanceAutomatedBackups[?contains(DBInstanceIdentifier, 'citest') && Status=='retained'].DbiResourceId" --output text 2>/dev/null); do
+  aws rds delete-db-instance-automated-backup --dbi-resource-id "$RESID" --region "$REGION" >/dev/null 2>&1 && echo "deleted retained automated backup $RESID" || true
+done
+
+aws logs delete-log-group --log-group-name "/aws/ecs/containerinsights/${PROJECT}-ecs/performance" --region "$REGION" 2>/dev/null && echo "deleted log group /aws/ecs/containerinsights/${PROJECT}-ecs/performance" || true
+
+for LG in $(aws logs describe-log-groups --region "$REGION" --query "logGroups[?(starts_with(logGroupName, '/aws/ecs/') || starts_with(logGroupName, '/aws/rds/instance/')) && contains(logGroupName, 'citest')].logGroupName" --output text 2>/dev/null); do
+  aws logs delete-log-group --log-group-name "$LG" --region "$REGION" 2>/dev/null && echo "deleted log group $LG" || true
+done
+
 echo "Sweep complete."
