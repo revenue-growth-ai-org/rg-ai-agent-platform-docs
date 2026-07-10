@@ -402,6 +402,14 @@ EOF
 
   terraform destroy -var-file="prod.tfvars" -auto-approve
 
+  if [ "$DIR" = "$ORCH_DIR" ]; then
+    # webhook_secret is seeded by install.sh/master-setup.sh outside Terraform
+    # (bootstrap.tf no longer creates it) — delete it explicitly here.
+    aws ssm delete-parameter \
+      --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
+  fi
+
   if [ "$DIR" = "$BASE_DIR" ]; then
     # Clean up any remaining RDS subnet groups
     echo "  Cleaning up RDS subnet groups..."

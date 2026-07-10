@@ -339,6 +339,9 @@ encrypt        = true
 EOF
 }
 
+# Note: the orchestrator_webhook_secret ParameterAlreadyExists/import case this
+# function used to paper over no longer occurs — bootstrap.tf stopped creating
+# that resource; the secret is owned solely by the scripts now.
 apply_with_retry() {
   local TFVARS_FILE=$1
   local APPLY_LOG APPLY_EXIT APPLY_RETRY APPLY_FIXED SRV_IDS SRV_ID INSTANCE_IDS INSTANCE_ID
