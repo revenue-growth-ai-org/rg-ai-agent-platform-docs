@@ -57,11 +57,14 @@ fi
 aws logs delete-log-group --log-group-name "/aws/codebuild/${PROJECT}-image-builder" --region "$REGION" 2>/dev/null && echo "deleted log group" || true
 aws codebuild delete-project --name "${PROJECT}-image-builder" --region "$REGION" >/dev/null 2>&1 && echo "deleted codebuild project" || true
 
-# Delete unused ACM certs only (InUseBy empty) — never touches certs attached to prod ALBs
+# Tag-scoped: only CI-minted certs. Never rely on InUseBy alone — production certs show empty InUseBy between deployments.
 for ARN in $(aws acm list-certificates --region "$REGION" --query 'CertificateSummaryList[].CertificateArn' --output text 2>/dev/null); do
-  INUSE=$(aws acm describe-certificate --certificate-arn "$ARN" --region "$REGION" --query 'length(Certificate.InUseBy)' --output text 2>/dev/null)
-  if [ "$INUSE" = "0" ]; then
-    aws acm delete-certificate --certificate-arn "$ARN" --region "$REGION" 2>/dev/null && echo "deleted unused cert $ARN" || true
+  PROJECT_TAG=$(aws acm list-tags-for-certificate --certificate-arn "$ARN" --region "$REGION" --query "Tags[?Key=='Project'].Value" --output text 2>/dev/null)
+  if [ "$PROJECT_TAG" = "citest" ]; then
+    INUSE=$(aws acm describe-certificate --certificate-arn "$ARN" --region "$REGION" --query 'length(Certificate.InUseBy)' --output text 2>/dev/null)
+    if [ "$INUSE" = "0" ]; then
+      aws acm delete-certificate --certificate-arn "$ARN" --region "$REGION" 2>/dev/null && echo "deleted unused cert $ARN" || true
+    fi
   fi
 done
 
