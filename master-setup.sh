@@ -827,6 +827,14 @@ if [ "$CI_MODE" = "true" ]; then
     printf '\nrds_skip_final_snapshot = true\n' >> "$BASE_DIR/prod.tfvars"
   fi
   rm -f "$BASE_DIR/prod.tfvars.bak"
+
+  echo "  CI_MODE: setting rds_delete_automated_backups = true"
+  if grep -q "^rds_delete_automated_backups" "$BASE_DIR/prod.tfvars"; then
+    sed -i.bak "s|rds_delete_automated_backups.*=.*|rds_delete_automated_backups = true|" "$BASE_DIR/prod.tfvars"
+  else
+    printf '\nrds_delete_automated_backups = true\n' >> "$BASE_DIR/prod.tfvars"
+  fi
+  rm -f "$BASE_DIR/prod.tfvars.bak"
 fi
 
 # Always update the ACM certificate ARN from the latest bootstrap output

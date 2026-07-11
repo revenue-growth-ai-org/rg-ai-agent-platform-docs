@@ -84,4 +84,11 @@ for LG in $(aws logs describe-log-groups --region "$REGION" --query "logGroups[?
   aws logs delete-log-group --log-group-name "$LG" --region "$REGION" 2>/dev/null && echo "deleted log group $LG" || true
 done
 
+# Container Insights log group can be recreated by ECS's final metrics flush
+# minutes after cluster deletion — re-sweep with waits to catch it.
+for i in 1 2 3; do
+  sleep 60
+  aws logs delete-log-group --log-group-name "/aws/ecs/containerinsights/${PROJECT}-ecs/performance" --region "$REGION" 2>/dev/null && echo "deleted recreated log group (pass $i)" || true
+done
+
 echo "Sweep complete."
