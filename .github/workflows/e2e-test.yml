@@ -23,33 +23,33 @@ jobs:
 
     steps:
       - name: Checkout docs repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           path: rg-ai-agent-platform-docs
 
       - name: Checkout bootstrap repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: revenue-growth-ai-org/0-rg-ai-agent-platform-bootstrap
           token: ${{ secrets.CI_REPO_READ_TOKEN }}
           path: 0-rg-ai-agent-platform-bootstrap
 
       - name: Checkout base repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: revenue-growth-ai-org/1-rg-ai-agent-platform-base
           token: ${{ secrets.CI_REPO_READ_TOKEN }}
           path: 1-rg-ai-agent-platform-base
 
       - name: Checkout orchestrator repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: revenue-growth-ai-org/2-rg-ai-agent-platform-orchestrator
           token: ${{ secrets.CI_REPO_READ_TOKEN }}
           path: 2-rg-ai-agent-platform-orchestrator
 
       - name: Checkout agent repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: revenue-growth-ai-org/3-rg-ai-agent-platform-agent
           token: ${{ secrets.CI_REPO_READ_TOKEN }}
