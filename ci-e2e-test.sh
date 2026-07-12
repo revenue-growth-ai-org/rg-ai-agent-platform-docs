@@ -101,6 +101,7 @@ echo ""
 INSTALL_STARTED=false
 
 teardown() {
+  PENDING_EXIT=$?
   set +e
   DESTROY_EXIT=0
   if [ "$INSTALL_STARTED" = "true" ]; then
@@ -125,6 +126,12 @@ teardown() {
   else
     echo ""
     echo "::warning::destroy.sh FAILED — skipping final cleanup sweep so terraform state is preserved for manual retry. Live infra likely still exists in account $AWS_ACCOUNT_ID — investigate before re-running (see nuke-citest-stack.sh if state is unrecoverable)."
+  fi
+  # Scenarios all passed but destroy.sh still failed — override the pending
+  # zero exit so the job fails. If scenarios already failed, leave their
+  # nonzero status in place (don't call exit; the shell resumes it as-is).
+  if [ "$DESTROY_EXIT" -ne 0 ] && [ "$PENDING_EXIT" -eq 0 ]; then
+    exit "$DESTROY_EXIT"
   fi
 }
 trap teardown EXIT

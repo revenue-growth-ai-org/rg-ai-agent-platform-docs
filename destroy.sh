@@ -593,6 +593,21 @@ echo "  manually delete remaining resources."
 echo ""
 
 # ------------------------------------------------------------------------------
+# Step 7.5 — Sweep flush-recreated Container Insights log group
+# ------------------------------------------------------------------------------
+
+# ECS Container Insights flushes final metrics after cluster deletion,
+# recreating the performance log group. Sweep it with bounded retries
+# before verification so Step 8 doesn't false-fail on it.
+echo "[ Step 7.5 ] Sweeping flush-recreated Container Insights log group..."
+for i in 1 2 3; do
+  aws logs delete-log-group \
+    --log-group-name "/aws/ecs/containerinsights/${CLUSTER}/performance" \
+    --region "$AWS_REGION" 2>/dev/null && echo "  ✓ deleted (pass $i)" && break
+  sleep 45
+done
+
+# ------------------------------------------------------------------------------
 # Step 8 — Verify destroy (authoritative check)
 # ------------------------------------------------------------------------------
 

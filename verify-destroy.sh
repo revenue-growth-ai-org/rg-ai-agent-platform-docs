@@ -52,16 +52,28 @@ check() {
 }
 
 # RDS instances
-check "RDS instances" "$(aws rds describe-db-instances \
+RDS_INSTANCE_IDS="$(aws rds describe-db-instances \
   --query "DBInstances[?contains(DBInstanceIdentifier,'${PROJECT_NAME}')].DBInstanceIdentifier" \
   --output text --region "$AWS_REGION" 2>/dev/null)"
+check "RDS instances" "$RDS_INSTANCE_IDS"
 
 # RDS snapshots (manual and automated)
 MANUAL_SNAPS="$(aws rds describe-db-snapshots --snapshot-type manual \
   --query "DBSnapshots[?contains(DBInstanceIdentifier,'${PROJECT_NAME}') || contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].DBSnapshotIdentifier" \
   --output text --region "$AWS_REGION" 2>/dev/null)"
-AUTO_SNAPS="$(aws rds describe-db-snapshots --snapshot-type automated \
-  --query "DBSnapshots[?contains(DBInstanceIdentifier,'${PROJECT_NAME}') || contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].DBSnapshotIdentifier" \
+# Automated snapshots are deletion-in-progress artifacts once their parent DB
+# instance is gone, not survivors — only report ones whose instance still exists.
+AUTO_SNAPS=""
+while read -r SNAP_ID INSTANCE_ID; do
+  [ -z "$SNAP_ID" ] && continue
+  for EXISTING_ID in $RDS_INSTANCE_IDS; do
+    if [ "$EXISTING_ID" = "$INSTANCE_ID" ]; then
+      AUTO_SNAPS="${AUTO_SNAPS} ${SNAP_ID}"
+      break
+    fi
+  done
+done <<< "$(aws rds describe-db-snapshots --snapshot-type automated \
+  --query "DBSnapshots[?contains(DBInstanceIdentifier,'${PROJECT_NAME}') || contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].[DBSnapshotIdentifier,DBInstanceIdentifier]" \
   --output text --region "$AWS_REGION" 2>/dev/null)"
 check "RDS snapshots (manual and automated)" "$MANUAL_SNAPS $AUTO_SNAPS"
 
