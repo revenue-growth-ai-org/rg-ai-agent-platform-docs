@@ -30,3 +30,5 @@ These items are known and tracked; they are not presented as closed.
 - **Dormant PR-plan workflow role wiring.** A dormant PR-plan workflow in the base repo uses separate role wiring from the scoped CI role described above. This wiring is under review and has not yet been brought into the same evidence-derived scoping process.
 - **Repository cleanup automation coverage.** Cleanup automation is being extended to cover additional known orphan resource classes, including RDS snapshots and log groups, that are not yet fully handled by existing cleanup scripts.
 - **Production certificate deletion incident.** The previous production certificate (`d830f3a3-a29b-40a7-aee7-db0fc10192ca`) was deleted by a cleanup run under the deployment role, which the CI-scoped IAM Deny did not cover. This incident motivated the tag-scoping fix to cleanup logic described above. Re-issuance of the production certificate, along with an equivalent IAM Deny applied to the deployment role, is scheduled for the next production install in this account.
+
+Stage 4 (container SBOM + image scanning): see [stage-4-container-scanning.md](stage-4-container-scanning.md).
