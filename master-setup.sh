@@ -835,6 +835,14 @@ if [ "$CI_MODE" = "true" ]; then
     printf '\nrds_delete_automated_backups = true\n' >> "$BASE_DIR/prod.tfvars"
   fi
   rm -f "$BASE_DIR/prod.tfvars.bak"
+
+  echo "  CI_MODE: setting ecs_container_insights_enabled = false"
+  if grep -q "^ecs_container_insights_enabled" "$BASE_DIR/prod.tfvars"; then
+    sed -i.bak "s|ecs_container_insights_enabled.*=.*|ecs_container_insights_enabled = false|" "$BASE_DIR/prod.tfvars"
+  else
+    printf '\necs_container_insights_enabled = false\n' >> "$BASE_DIR/prod.tfvars"
+  fi
+  rm -f "$BASE_DIR/prod.tfvars.bak"
 fi
 
 # Always update the ACM certificate ARN from the latest bootstrap output

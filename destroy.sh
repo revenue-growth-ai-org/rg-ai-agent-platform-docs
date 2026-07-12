@@ -600,12 +600,18 @@ echo ""
 # recreating the performance log group. Sweep it with bounded retries
 # before verification so Step 8 doesn't false-fail on it.
 echo "[ Step 7.5 ] Sweeping flush-recreated Container Insights log group..."
-for i in 1 2 3; do
-  aws logs delete-log-group \
-    --log-group-name "/aws/ecs/containerinsights/${CLUSTER}/performance" \
-    --region "$AWS_REGION" 2>/dev/null && echo "  ✓ deleted (pass $i)" && break
-  sleep 45
-done
+if aws logs describe-log-groups \
+    --log-group-name-prefix "/aws/ecs/containerinsights/${CLUSTER}/performance" \
+    --region "$AWS_REGION" --query 'logGroups[0].logGroupName' --output text 2>/dev/null | grep -q "performance"; then
+  for i in 1 2 3; do
+    aws logs delete-log-group \
+      --log-group-name "/aws/ecs/containerinsights/${CLUSTER}/performance" \
+      --region "$AWS_REGION" 2>/dev/null && echo "  ✓ deleted (pass $i)" && break
+    sleep 45
+  done
+else
+  echo "  (not present — skipping sweep)"
+fi
 
 # ------------------------------------------------------------------------------
 # Step 8 — Verify destroy (authoritative check)
