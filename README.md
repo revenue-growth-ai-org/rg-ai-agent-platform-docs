@@ -55,4 +55,5 @@ The platform is split across four infrastructure repositories deployed in sequen
 - **Architecture overview:** Read [ARCHITECTURE.md](ARCHITECTURE.md)
 - **Adding or removing agents:** Read [DEPLOYING.md](DEPLOYING.md) — Managing agents section
 - **Security review:** Read [SECURITY.md](SECURITY.md)
+- **Security & architecture:** see the [Customer Isolation Statement](docs/security/customer-isolation.md) — single-tenant, deployed entirely in your AWS account.
 - **Troubleshooting:** Read [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
