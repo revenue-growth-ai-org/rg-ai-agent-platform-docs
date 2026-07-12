@@ -353,8 +353,6 @@ done
 ENVIRONMENT="prod"
 read -p "Domain name for SSL certificate (e.g. revenue-growth.ai): " DOMAIN_NAME < /dev/tty
 
-ADMIN_IP="${MY_IP}"
-
 echo "Which CRM will be sending webhooks to this platform?"
 echo "  1. HubSpot"
 echo "  2. Salesforce"
@@ -443,7 +441,6 @@ AWS_REGION="$AWS_REGION"
 COST_CENTER="unallocated"
 OWNER="platform-engineering"
 CRM_TYPE="$CRM_TYPE"
-ADMIN_IP="$ADMIN_IP"
 EOF
 
 echo ""
@@ -462,6 +459,21 @@ echo "  NOTE: A random webhook secret has been generated and stored in SSM."
 echo "  If your CRM webhook sender supports HMAC signature verification,"
 echo "  configure it with this secret. Retrieve it at any time with:"
 echo "  aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret --with-decryption --query Parameter.Value --output text"
+
+aws ssm put-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/admin_bypass_token" \
+  --value "" \
+  --type SecureString \
+  --overwrite \
+  --region "$AWS_REGION" > /dev/null 2>&1
+
+echo ""
+echo "  NOTE: An admin webhook-signature bypass exists for testing but is"
+echo "  DISABLED by default (empty token). To enable it temporarily:"
+echo "  aws ssm put-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/admin_bypass_token \\"
+echo "    --value \"\$(openssl rand -hex 32)\" --type SecureString --overwrite --region ${AWS_REGION}"
+echo "  Then send that value in an X-Admin-Token header. Set it back to an"
+echo "  empty string to disable when done testing."
 
 echo ""
 echo "=================================================="
