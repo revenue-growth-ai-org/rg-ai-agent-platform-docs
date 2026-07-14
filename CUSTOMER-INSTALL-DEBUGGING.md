@@ -347,6 +347,25 @@ No Terraform state exists for these runs (the failure happened before `master-se
 
 ---
 
+## Issue 11 — `make doctor` reports "AWS credentials not configured" for customers who set region via `aws configure`
+
+**Symptom**:
+
+```
+[ Checking AWS credentials... ]
+  ✗ AWS credentials not configured. Run: aws configure
+```
+
+...even though credentials are fully valid — the IAM/S3/Secrets Manager checks in the same `doctor` run pass, and the customer just ran the exact `aws configure` command the message told them to run.
+
+**Cause**: The credentials check ran `aws sts get-caller-identity --region "${AWS_REGION:-$AWS_DEFAULT_REGION}"`. Any customer who set their region via `aws configure` (the config file) rather than exporting `AWS_REGION`/`AWS_DEFAULT_REGION` hit an empty `--region ""`, which the AWS CLI turns into `Invalid endpoint: https://sts..amazonaws.com` instead of falling back to the config file. CI never caught this because CI exports `AWS_REGION`.
+
+**Fix** (2026-07-13): The credentials check in all three repos (`0-rg-ai-agent-platform-bootstrap`, `2-rg-ai-agent-platform-orchestrator`, `3-rg-ai-agent-platform-agent`) now omits `--region` entirely and lets the AWS CLI's normal resolution chain (env vars → config file → instance profile) run, matching how the IAM/S3/Secrets Manager checks already worked. The failure message now distinguishes a region-resolution failure from an actual credentials failure by inspecting the error text, instead of sending a correctly-configured customer in a circle.
+
+**Open item, not yet implemented**: `2-rg-ai-agent-platform-orchestrator` and `3-rg-ai-agent-platform-agent`'s `setup`/`deploy` targets (not `doctor`) still resolve their top-level `AWS_REGION` Make variable via `AWS_REGION` env → `aws configure get region`, with no fallback to `AWS_DEFAULT_REGION`. A customer who exports only `AWS_DEFAULT_REGION` (no `aws configure`, no `AWS_REGION`) would still hit an empty `--region` in `make setup`'s ECR calls. Deliberately left untouched in the `doctor` fix above — build/deploy is a riskier surface than a read-only check. Same category of gap as the missing CI coverage for the interactive install path noted in Issue 10 — nothing exercises this env-var-only configuration in CI or in testing, so it stays silent until a real customer hits it.
+
+---
+
 ## Quick reference — resume commands by step
 
 | Situation | Command |
