@@ -404,6 +404,18 @@ with the two loops that read/write `SERVICE_OK` switched from `for DEF in "${SER
 
 ---
 
+## Issue 13 — `destroy.sh` Step 6 deletes local repo clones without checking for unpushed or uncommitted work
+
+**Symptom**: Running `destroy.sh` silently deletes the local `0-`/`1-`/`2-`/`3-` repo directories in Step 6, with no check for whether any of them contain work that only exists on disk.
+
+**Cause**: Step 6 loops over every `[0-9]*` directory under the parent directory and unconditionally runs `rm -rf "$REPO"` to give the customer a clean slate for redeployment. It never checks `git status` or compares the local branch against its remote first. Tonight this destroyed three unpushed fix commits (the Issue 11 fix, before it was reapplied) on the platform developer's own machine, mid-session, with no warning. For a customer who has customized their deployment — edited a Makefile, committed a local fix, tweaked `prod.tfvars` under version control — the same code path would silently destroy that work the moment they ran `destroy.sh` for a fresh start.
+
+**Fix (interim)** (2026-07-13): Before deleting each repo in Step 6, `destroy.sh` now runs `git status --porcelain` and `git log origin/main..main` against that repo. If either is non-empty — uncommitted changes or commits that never made it to `origin/main` — the script skips deletion of that repo and prints a loud warning telling the customer to review it manually, instead of deleting it.
+
+**Open item, not yet implemented**: this is an interim guard, not a full fix. It only checks the `main` branch against `origin/main` — a repo on a different local branch, or with no `origin` remote configured at all (e.g. a customer who never pushed anywhere), will have `git log origin/main..main` fail and be treated as clean by the `|| true` fallback, which is the wrong default for a destructive path. A more complete fix would treat "can't determine remote state" as unsafe-to-delete rather than safe-to-delete, and/or prompt for explicit confirmation per repo rather than only warning after the fact.
+
+---
+
 ## Quick reference — resume commands by step
 
 | Situation | Command |

@@ -545,6 +545,17 @@ echo "[ Step 6 ] Removing local repos..."
 
 for REPO in "$PARENT_DIR"/[0-9]*; do
   if [ -d "$REPO" ]; then
+    DIRTY=""
+    UNPUSHED=""
+    if [ -d "$REPO/.git" ]; then
+      DIRTY=$(git -C "$REPO" status --porcelain 2>/dev/null || true)
+      UNPUSHED=$(git -C "$REPO" log origin/main..main 2>/dev/null || true)
+    fi
+    if [ -n "$DIRTY" ] || [ -n "$UNPUSHED" ]; then
+      echo "  ⚠️  WARNING: $(basename "$REPO") has unpushed commits or uncommitted changes — SKIPPING deletion to avoid data loss."
+      echo "      Review with: git -C \"$REPO\" status   and   git -C \"$REPO\" log origin/main..main"
+      continue
+    fi
     rm -rf "$REPO"
     echo "  ✓ Deleted $(basename $REPO)"
   fi
