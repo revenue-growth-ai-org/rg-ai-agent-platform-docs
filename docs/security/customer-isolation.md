@@ -53,6 +53,6 @@ The only components Revenue-Growth.AI operates are the source repositories and D
 
 In keeping with the evidence-based style of this documentation set:
 
-- Isolation between customers is absolute at the infrastructure layer, but all customers run the **same code** from the same repositories. A vulnerability in the platform code would be present in every deployment (though exploitable only within each account's boundary). Supply-chain controls on that shared code are documented in the Stage 3 summary (branch protection, secret scanning, SHA-pinned actions, Dependabot).
+- Isolation between customers is absolute at the infrastructure layer, but all customers run the **same code** from the same repositories. A vulnerability in the platform code would be present in every deployment (though exploitable only within each account's boundary). Supply-chain controls on that shared code — branch protection, secret scanning coverage (stated precisely), SHA-pinned actions, Dependabot — are documented in Supply-Chain Controls.
 - Traffic between services *inside* a deployment's VPC (ALB → orchestrator, orchestrator → agents) is HTTP within private subnets, restricted by paired security-group rules; TLS terminates at the ALB. There is no cross-tenant exposure from this — no other tenant exists on the network — but it is stated here for completeness. See the [Encryption Matrix](./encryption-matrix.md).
 - The Anthropic API is a shared external dependency across all deployments; each deployment authenticates with its own customer-resident API key.

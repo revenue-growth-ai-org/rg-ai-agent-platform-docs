@@ -16,12 +16,15 @@ Every claim in this set is derived from the platform's actual Terraform and appl
 - **[Data Flow & Trust Boundaries](./data-flow.md)** — how a webhook event moves through the platform, hop by hop, with a diagram and an explicit list of known gaps.
 - **[Encryption Matrix](./encryption-matrix.md)** — every data store and network channel, what's encrypted, and with which keys.
 - **[Secrets Access Map](./secrets-access-map.md)** — which principal can read which secret, and why; includes the platform's no-wildcard-access and grants-follow-code properties.
+- **[Supply-Chain Controls](./supply-chain-controls.md)** — source, build, and artifact controls on the shared platform code, with verified coverage
 
 ## Policies
 
 - **[Subprocessor List](./subprocessors.md)** — the (short) list of third parties involved in delivering the platform.
 - **[Retention & Deletion Policy](./retention-deletion.md)** — what data the platform stores by default, and how a customer deletes it.
 - **[Incident Response](./incident-response.md)** — how security reports are handled, response commitments, and what a solo-operated company can realistically commit to.
+- **[Continuity Posture](./continuity-posture.md)** — disruption scenarios and why running deployments don't depend on vendor availability
+- **[Operator Endpoint Posture](./operator-endpoint-posture.md)** — the one operator workstation, verified controls, honest boundaries
 
 ## Prior security work
 
@@ -37,3 +40,5 @@ This set is evidence-based and kept current deliberately, not automatically. Whe
 
 - An unused RDS secret grant was removed from two IAM roles after a source audit confirmed no consuming code existed; the [Secrets Access Map](./secrets-access-map.md) reflects the result, not the prior state.
 - A security review of this documentation effort itself surfaced a real authentication bypass in the webhook signature validation path; it was fixed, validated through the platform's CI pipeline, and this pack was held until the fix shipped — described honestly in [Incident Response](./incident-response.md) without technical specifics that would aid exploitation.
+
+**Review cadence:** every document in this set is updated as part of the same change that alters the control it describes — documentation ships with the change, not after it. In addition, the full set receives a scheduled review each July, re-verifying claims against live settings and Terraform source. Documents carry a "Status: Current as of" line reflecting their last verification.

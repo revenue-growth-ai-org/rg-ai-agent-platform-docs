@@ -15,11 +15,13 @@ This document provides a complete accounting of the machine credentials, tokens,
 | `CI_ANTHROPIC_API_KEY` | Anthropic API key | CI test project | Docs repo secrets | Used by agents under test during e2e scenarios | Not a production key |
 | `Revenue-Growth-AI-Deployment` (IAM role) | AWS IAM role | Deployment permissions (pre-dates evidence-derived scoping) | AWS account (IAM) | Used by install/destroy scripts for customer-style installs | Scheduled for scoped-policy migration (deployment-role/Option-2 work); flagged in cert-deletion incident as not covered by CI-scoped IAM Deny |
 | `AWS_ROLE_ARN` (repo 1) | GitHub Actions secret (ARN reference) | Unknown/legacy | Repo 1 secrets | Referenced by a dormant PR-plan job that runs only on `pull_request` | Disposition pending: job is dormant; wiring to be either removed or migrated to a read-only plan role |
+| Operator CLI IAM user | AWS IAM user, static access key | AdministratorAccess | Local AWS CLI config, console sign-in disabled | Founder's terminal-based AWS operations (installs, audits) | Single active key, rotated 2026-07-12 on exposure (burn-on-exposure applied). AdministratorAccess attached — least-privilege scoping / IAM Identity Center migration is a tracked follow-up. Legacy artifacts from a prior project (an EC2 deployment policy and an unused assumable role) were identified and removed during the 2026-07-13 live-account audit. |
 
 ## 3. Eliminated Credentials
 
 - **Embedded PATs in git remote URLs.** Personal access tokens were formerly embedded directly in git remote URLs on a developer machine. These have been removed from all remotes; the previously exposed token was revoked. Authentication now goes through `gh auth setup-git`.
 - **Broad-scope dispatch token.** A dispatch token with broader-than-necessary scope has been replaced by `CI_DISPATCH_TOKEN`, a single-repo fine-grained token limited to the docs repo.
+- **Stale operator access key and prior-project IAM artifacts.** A second access key from initial account setup (April 2026, used once) was deleted during a live-account audit (2026-07-13), along with an EC2 deployment policy and an unused assumable role left over from a prior project. The audit also triggered same-day rotation of the active key after both key IDs appeared in diagnostic output.
 
 ## 4. Storage and Handling Practices
 
@@ -32,4 +34,4 @@ This document provides a complete accounting of the machine credentials, tokens,
 
 - This inventory is reviewed whenever a new credential is added to the platform.
 - Fine-grained token expirations are tracked by the owning individual.
-- IAM roles use OIDC federation; there are no static AWS keys to rotate.
+- CI and platform roles use OIDC federation with no static keys. One static access key exists outside the CI path — the operator's CLI user (above) — rotated on exposure and slated for replacement by IAM Identity Center.
