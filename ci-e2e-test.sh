@@ -164,6 +164,14 @@ echo " Phase 2/3 — Test scenarios"
 echo "=================================================="
 
 SCENARIOS=(happy malformed wrong-event-type unauthorized agent-timeout)
+
+# test-webhook.sh requires TEST_RECORD_ID (Issue 14). CI's agent path has no
+# real CRM credentials configured (CI_MODE skips secret storage — see Issue
+# 14 follow-up), so the actual value is inert today; CI_TEST_RECORD_ID lets
+# a real record ID be plumbed through later without changing this script.
+export TEST_RECORD_ID="${CI_TEST_RECORD_ID:-ci-inert-no-crm-lookup}"
+echo "  Test record ID: $TEST_RECORD_ID"
+
 declare -A RESULTS
 OVERALL_EXIT=0
 

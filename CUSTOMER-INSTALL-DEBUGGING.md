@@ -433,6 +433,16 @@ There is no fallback to any hardcoded ID at any point. The resolved ID is echoed
 
 **Open question**: what did CI's `happy` scenario actually resolve `"test-contact-001"` against prior to this fix? That string is not a valid HubSpot object ID, so either (a) CI's `happy` scenario was already failing/not actually asserting a successful CRM-backed lookup, or (b) the orchestrator's success path in the CI test portal doesn't perform a real lookup against this ID the way a customer portal does. Needs investigation before wiring up `TEST_RECORD_ID` in CI, so CI is validated against a real record and not just made to pass the same way it may have been passing (or silently not-really-passing) before.
 
+**Update (2026-07-14) — open question resolved, CI now supplies `TEST_RECORD_ID`**:
+
+Traced via code inspection (no live check needed): `CI_MODE=true` forces `master-setup.sh` to skip external-key storage (`STORE_EXTERNAL_KEYS="no"`, master-setup.sh:702-703), so CI never overwrites the Terraform-seeded placeholder at `.../agents/<agent>/external_api_secret_arn` (`REPLACE_WITH_SECRETS_MANAGER_ARN`, set in `3-rg-ai-agent-platform-agent/bootstrap.tf:50-53`), and never sets an `AGENT_SECRET_ARN` env var either. In the agent (`3-rg-ai-agent-platform-agent/app/agent.py`), `_has_real_secret_arn()` therefore returns `false`, and `execute()` takes the `no_credentials_mode` branch (lines 140-175) — it extracts `deal_id` from the payload and returns `status="success"` **without ever calling HubSpot**. `fetch_hubspot_deal()`, the only code path that hits `api.hubapi.com`, is never reached in CI.
+
+So `"test-contact-001"` was never actually looked up against any CRM in CI — it passed straight through an unused, no-op success response. The 404 this issue describes only occurs on a real customer install, where a real secret is stored, `_has_real_secret_arn()` is true, and the agent actually calls the live HubSpot API.
+
+`ci-e2e-test.sh` now exports `TEST_RECORD_ID="${CI_TEST_RECORD_ID:-ci-inert-no-crm-lookup}"` immediately after the `SCENARIOS=(...)` line, and echoes the resolved value into the CI log. The default is deliberately self-describing so anyone reading a CI log sees in plain text that no real CRM lookup happens today. `.github/workflows/e2e-test.yml` now passes `CI_TEST_RECORD_ID: ${{ vars.CI_TEST_RECORD_ID }}` through to the job so a real record ID could be supplied later without touching either script.
+
+**Known gap, not closed by this change**: the e2e `happy` scenario does not assert a real CRM round trip — it only proves the orchestrator→agent path returns success when there are no credentials configured, which is not the same as verifying a live HubSpot lookup succeeds. Closing that gap requires CI to hold real CRM credentials (a live or sandbox HubSpot API key in Secrets Manager, wired the way a customer install does) and is tracked as a separate follow-up, not part of this fix.
+
 ---
 
 ## Quick reference — resume commands by step

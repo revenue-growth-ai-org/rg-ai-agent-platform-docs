@@ -75,5 +75,6 @@ jobs:
           CI_DOMAIN_NAME: revenue-growth.ai
           CI_PROJECT_NAME: citest
           CI_AGENT_NAME: testagent
+          CI_TEST_RECORD_ID: ${{ vars.CI_TEST_RECORD_ID }}
           AWS_REGION: us-east-2
         run: bash ci-e2e-test.sh
