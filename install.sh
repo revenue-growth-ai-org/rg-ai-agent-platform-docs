@@ -460,20 +460,24 @@ echo "  If your CRM webhook sender supports HMAC signature verification,"
 echo "  configure it with this secret. Retrieve it at any time with:"
 echo "  aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret --with-decryption --query Parameter.Value --output text"
 
-aws ssm put-parameter \
-  --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/admin_bypass_token" \
-  --value "" \
-  --type SecureString \
-  --overwrite \
-  --region "$AWS_REGION" > /dev/null 2>&1
-
+# SSM SecureString parameters reject empty values ("Member must have length
+# greater than or equal to 1"), so there is no way to store "" here. The
+# orchestrator (2-rg-ai-agent-platform-orchestrator/app/config.py) already
+# treats a missing parameter the same as an empty one — it catches
+# ParameterNotFound on this specific path and sets admin_bypass_token = "",
+# which webhook.py's truthy check treats as disabled. So on a fresh install,
+# where the bypass is off by default, we skip creating the parameter at all:
+# absence *is* "disabled" here, not a placeholder value. Deliberately do not
+# put-parameter with a dummy/placeholder string — that would make the
+# bypass path live with a guessable-looking value instead of off.
 echo ""
 echo "  NOTE: An admin webhook-signature bypass exists for testing but is"
-echo "  DISABLED by default (empty token). To enable it temporarily:"
+echo "  DISABLED by default (no token parameter set). To enable it temporarily:"
 echo "  aws ssm put-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/admin_bypass_token \\"
 echo "    --value \"\$(openssl rand -hex 32)\" --type SecureString --overwrite --region ${AWS_REGION}"
-echo "  Then send that value in an X-Admin-Token header. Set it back to an"
-echo "  empty string to disable when done testing."
+echo "  Then send that value in an X-Admin-Token header. Delete the parameter"
+echo "  to disable when done testing:"
+echo "  aws ssm delete-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/admin_bypass_token --region ${AWS_REGION}"
 
 echo ""
 echo "=================================================="

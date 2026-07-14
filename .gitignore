@@ -1,5 +1,6 @@
 # Never commit these
 defaults.env
+defaults.env.backup
 routing_config.json
 system_prompt.txt
 .DS_Store

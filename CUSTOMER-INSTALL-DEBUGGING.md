@@ -310,6 +310,43 @@ Then re-run `bash test-webhook.sh` — the leftover-SG branch will find nothing 
 
 ---
 
+## Issue 10 — Install exits silently right after "Webhook secret stored in SSM"
+
+**Symptom**: `install.sh` prints `✓ Webhook secret stored in SSM: ...` and then the shell just returns to the prompt — no error, no "Ready to deploy" banner, nothing.
+
+**Cause**: This was a bug in `install.sh` (fixed 2026-07-13). The script immediately followed the webhook secret with a second `aws ssm put-parameter` call for `admin_bypass_token`, using `--value ""` to represent "disabled." SSM rejects empty `SecureString` values (`ValidationException: Member must have length greater than or equal to 1`), and with `set -e` and the command's stderr redirected to `/dev/null`, the script exited on the spot with no visible error.
+
+Every affected install run left a `webhook_secret` SSM parameter behind under `/<project>/prod/orchestrator/webhook_secret` with no matching `admin_bypass_token` parameter (that call never succeeds, so it never partially writes anything) and no completed deployment.
+
+**Fix**: `install.sh` now skips the `admin_bypass_token` put-parameter call entirely when the bypass is disabled — parameter *absence* means disabled, which is exactly what `2-rg-ai-agent-platform-orchestrator/app/config.py`'s `load_ssm_values()` already expects (it catches `ParameterNotFound` on this specific parameter and treats it the same as an empty value). If you're on an older `install.sh`, pull the latest before re-running.
+
+**Cleanup for runs that hit this bug**: each affected project name has an orphaned `webhook_secret` parameter and a stale local `defaults.env`/`defaults.env.backup`. Sweep both:
+
+```shell
+# Delete the orphaned webhook_secret (and admin_bypass_token, if somehow present)
+# for each abandoned project name:
+for PROJECT in prod-test test-prod-2 test-prod-3 test-4; do
+  for NAME in webhook_secret admin_bypass_token; do
+    aws ssm delete-parameter \
+      --name "/${PROJECT}/prod/orchestrator/${NAME}" \
+      --region us-east-2 2>/dev/null \
+      && echo "deleted /${PROJECT}/prod/orchestrator/${NAME}" \
+      || echo "not found: /${PROJECT}/prod/orchestrator/${NAME}"
+  done
+done
+
+# Remove local defaults.env backups left in the docs repo root
+rm -f defaults.env defaults.env.backup
+```
+
+No Terraform state exists for these runs (the failure happened before `master-setup.sh` ever ran), so there's no `terraform destroy` or state import needed — just the SSM parameters and the local files.
+
+> The `prod-test` / `test-prod-2` / `test-prod-3` / `test-4` runs that surfaced this bug were cleaned up on 2026-07-13 (three orphaned `webhook_secret` parameters deleted — `test-prod-3` never got that far — plus the local `defaults.env`/`defaults.env.backup`). The commands above are left in place for the next time this pattern shows up.
+
+**Follow-up — no CI coverage for the interactive install path**: `ci-e2e-test.sh` does not call `install.sh`. It hand-writes `defaults.env` and creates only the `webhook_secret` SSM parameter, then invokes `master-setup.sh` directly — so it never executes `install.sh`'s Step 3 configuration block, which is where this bug lived. That's why CI stayed green through every failed customer install. The durable fix is a non-interactive mode for `install.sh` (e.g. reading `PROJECT_NAME`/`DOMAIN_NAME`/`CRM_TYPE`/etc. from env vars instead of `read -p ... < /dev/tty`, gated behind something like `INSTALL_NONINTERACTIVE=1`) that CI can drive, so the actual customer-facing entrypoint gets exercised instead of a hand-rolled substitute. **Open item, not yet implemented.**
+
+---
+
 ## Quick reference — resume commands by step
 
 | Situation | Command |
