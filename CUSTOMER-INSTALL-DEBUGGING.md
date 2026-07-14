@@ -416,6 +416,25 @@ with the two loops that read/write `SERVICE_OK` switched from `for DEF in "${SER
 
 ---
 
+## Issue 14 — `test-webhook.sh` happy-path scenario hardcoded a fixture contact ID, causing false FAIL on fresh installs
+
+**Symptom**: The `happy` scenario in `test-webhook.sh` returns a 404 from the orchestrator (or fails downstream CRM lookup) on any customer portal, even though install and routing are otherwise correct.
+
+**Cause**: `test-webhook.sh` hardcoded `"contact_id":"test-contact-001"` in the happy-path webhook payload. That ID only exists as a fixture in the original dev HubSpot portal — it is not a valid record ID in any other customer's CRM portal, so the orchestrator's live lookup 404s. Verified live on 2026-07-14: substituting a real customer deal ID let the full pipeline pass.
+
+**Fix**: `test-webhook.sh` now resolves the record ID via a `TEST_RECORD_ID` variable instead of a hardcoded literal, following the same "absence means loud failure, not a silent default" principle as the `admin_bypass_token` fix ([[Issue 10]]):
+1. If `TEST_RECORD_ID` is set (non-empty) in the environment, use it.
+2. Else, if running interactively, prompt for it (up to 3 attempts, rejecting empty input).
+3. Else (non-interactive, unset), exit 1 with `ERROR: TEST_RECORD_ID is not set. Set TEST_RECORD_ID to the ID of an existing record in the target CRM portal and re-run.`
+
+There is no fallback to any hardcoded ID at any point. The resolved ID is echoed in the script's configuration banner (`Record ID: ...`) alongside Project/Environment/Account/Region/Scenario so the operator can see which record the test targets. Naming and prompt wording are CRM-neutral (`TEST_RECORD_ID`, "record in your CRM") — no HubSpot-specific assumptions baked into the mechanism. All three resolution branches (env var, interactive prompt, non-interactive unset) were validated live on 2026-07-14.
+
+**Follow-up — `ci-e2e-test.sh` needs `TEST_RECORD_ID` before the next platform-repo push**: `ci-e2e-test.sh` invokes `test-webhook.sh --scenario "$S"` for all five scenarios (line 176) on a non-interactive GitHub Actions runner with no TTY. With the fix above, every scenario now hits branch 3 of the resolution ladder and exits 1 immediately unless `TEST_RECORD_ID` is exported into that environment first. This is a separate, already-identified change to `ci-e2e-test.sh` (e.g. adding a `CI_TEST_RECORD_ID` input and exporting it as `TEST_RECORD_ID` before the scenario loop) — not yet made.
+
+**Open question**: what did CI's `happy` scenario actually resolve `"test-contact-001"` against prior to this fix? That string is not a valid HubSpot object ID, so either (a) CI's `happy` scenario was already failing/not actually asserting a successful CRM-backed lookup, or (b) the orchestrator's success path in the CI test portal doesn't perform a real lookup against this ID the way a customer portal does. Needs investigation before wiring up `TEST_RECORD_ID` in CI, so CI is validated against a real record and not just made to pass the same way it may have been passing (or silently not-really-passing) before.
+
+---
+
 ## Quick reference — resume commands by step
 
 | Situation | Command |

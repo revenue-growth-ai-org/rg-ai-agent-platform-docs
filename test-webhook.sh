@@ -28,6 +28,12 @@ set -e
 #                      where a failed agent call still reports success).
 #
 # Requires defaults.env in the same directory (created by install.sh).
+#
+# The webhook payload's record ID is read from TEST_RECORD_ID (env var). If
+# unset and running interactively, you'll be prompted for it. It must be the
+# ID of an existing record in the target CRM portal (e.g. a HubSpot deal ID
+# from the deal page URL) — there is no built-in fallback ID, since a fixture
+# ID from one portal is meaningless (404) in any other customer's portal.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,6 +87,33 @@ case "$SCENARIO" in
     ;;
 esac
 
+# ------------------------------------------------------------------------------
+# Resolve TEST_RECORD_ID — the record ID used in the webhook payload. Never
+# falls back to a hardcoded ID: a fixture ID from one CRM portal is
+# meaningless (404) in any other customer's portal, so absence of
+# configuration must fail loudly rather than silently use a stale default.
+# ------------------------------------------------------------------------------
+
+if [ -z "${TEST_RECORD_ID:-}" ]; then
+  if [ -t 0 ]; then
+    ATTEMPTS=0
+    while [ -z "${TEST_RECORD_ID:-}" ] && [ "$ATTEMPTS" -lt 3 ]; do
+      ATTEMPTS=$((ATTEMPTS + 1))
+      read -r -p "Enter the ID of an existing test record in your CRM (e.g., a HubSpot deal ID from the deal page URL): " TEST_RECORD_ID
+      if [ -z "$TEST_RECORD_ID" ]; then
+        echo "ERROR: record ID cannot be empty."
+      fi
+    done
+    if [ -z "${TEST_RECORD_ID:-}" ]; then
+      echo "ERROR: no record ID provided after 3 attempts."
+      exit 1
+    fi
+  else
+    echo "ERROR: TEST_RECORD_ID is not set. Set TEST_RECORD_ID to the ID of an existing record in the target CRM portal and re-run."
+    exit 1
+  fi
+fi
+
 AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
@@ -91,6 +124,7 @@ echo "=================================================="
 echo ""
 echo "  Project:     $PROJECT_NAME"
 echo "  Environment: $ENVIRONMENT"
+echo "  Record ID:   $TEST_RECORD_ID"
 echo "  Account:     $AWS_ACCOUNT_ID"
 echo "  Region:      $AWS_REGION"
 echo "  Scenario:    $SCENARIO"
@@ -595,7 +629,7 @@ TEST_EXIT=1
 case "$SCENARIO" in
 
 happy)
-  PAYLOAD="{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-contact-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
+  PAYLOAD="{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"${TEST_RECORD_ID}\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
   SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
