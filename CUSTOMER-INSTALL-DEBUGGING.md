@@ -343,7 +343,9 @@ No Terraform state exists for these runs (the failure happened before `master-se
 
 > The `prod-test` / `test-prod-2` / `test-prod-3` / `test-4` runs that surfaced this bug were cleaned up on 2026-07-13 (three orphaned `webhook_secret` parameters deleted — `test-prod-3` never got that far — plus the local `defaults.env`/`defaults.env.backup`). The commands above are left in place for the next time this pattern shows up.
 
-**Follow-up — no CI coverage for the interactive install path**: `ci-e2e-test.sh` does not call `install.sh`. It hand-writes `defaults.env` and creates only the `webhook_secret` SSM parameter, then invokes `master-setup.sh` directly — so it never executes `install.sh`'s Step 3 configuration block, which is where this bug lived. That's why CI stayed green through every failed customer install. The durable fix is a non-interactive mode for `install.sh` (e.g. reading `PROJECT_NAME`/`DOMAIN_NAME`/`CRM_TYPE`/etc. from env vars instead of `read -p ... < /dev/tty`, gated behind something like `INSTALL_NONINTERACTIVE=1`) that CI can drive, so the actual customer-facing entrypoint gets exercised instead of a hand-rolled substitute. **Open item, not yet implemented.**
+**Follow-up — no CI coverage for the interactive install path**: `ci-e2e-test.sh` does not call `install.sh`. It hand-writes `defaults.env` and creates only the `webhook_secret` SSM parameter, then invokes `master-setup.sh` directly — so it never executes `install.sh`'s Step 3 configuration block, which is where this bug lived. That's why CI stayed green through every failed customer install. The durable fix is a non-interactive mode for `install.sh` (e.g. reading `PROJECT_NAME`/`DOMAIN_NAME`/`CRM_TYPE`/etc. from env vars instead of `read -p ... < /dev/tty`, gated behind something like `INSTALL_NONINTERACTIVE=1`) that CI can drive, so the actual customer-facing entrypoint gets exercised instead of a hand-rolled substitute.
+
+**Update (2026-07-13, after Issue 12)**: a non-interactive mode alone does not close this gap. CI's e2e job runs on an Ubuntu GitHub Actions runner with bash 5 (Issue 12: `master-setup.sh` used `declare -A`, invisible on Ubuntu/bash 5, fatal on every macOS customer's `/bin/bash` 3.2). A non-interactive `install.sh` driven from an Ubuntu runner would still never exercise bash-3.2 compatibility — it would have run Issue 12's broken `declare -A` line without ever failing. The eventual CI job needs **both** fixes, and neither alone is sufficient: a non-interactive mode for `install.sh`, **and** that mode running on a macOS runner (e.g. GitHub Actions' `macos-latest`, which ships the same stock bash 3.2 as customer machines) so the actual interpreter customers hit is the one CI exercises. Three separate bugs (Issue 10, Issue 11, Issue 12) have now shipped through this same blind spot. **Open item, not yet implemented.**
 
 ---
 
@@ -363,6 +365,42 @@ No Terraform state exists for these runs (the failure happened before `master-se
 **Fix** (2026-07-13): The credentials check in all three repos (`0-rg-ai-agent-platform-bootstrap`, `2-rg-ai-agent-platform-orchestrator`, `3-rg-ai-agent-platform-agent`) now omits `--region` entirely and lets the AWS CLI's normal resolution chain (env vars → config file → instance profile) run, matching how the IAM/S3/Secrets Manager checks already worked. The failure message now distinguishes a region-resolution failure from an actual credentials failure by inspecting the error text, instead of sending a correctly-configured customer in a circle.
 
 **Open item, not yet implemented**: `2-rg-ai-agent-platform-orchestrator` and `3-rg-ai-agent-platform-agent`'s `setup`/`deploy` targets (not `doctor`) still resolve their top-level `AWS_REGION` Make variable via `AWS_REGION` env → `aws configure get region`, with no fallback to `AWS_DEFAULT_REGION`. A customer who exports only `AWS_DEFAULT_REGION` (no `aws configure`, no `AWS_REGION`) would still hit an empty `--region` in `make setup`'s ECR calls. Deliberately left untouched in the `doctor` fix above — build/deploy is a riskier surface than a read-only check. Same category of gap as the missing CI coverage for the interactive install path noted in Issue 10 — nothing exercises this env-var-only configuration in CI or in testing, so it stays silent until a real customer hits it.
+
+---
+
+## Issue 12 — `master-setup.sh` crashes at "Verifying deployment health" on macOS: `declare: -A: invalid option`
+
+**Symptom**:
+
+```
+==================================================
+ Verifying deployment health
+==================================================
+
+master-setup.sh: line 1157: declare: -A: invalid option
+```
+
+This fires after agent deployment, the service-stability checks, the routing config push, and the orchestrator restart have **all already completed successfully** — it's the very last step of the install, right before the "Deployment Complete" banner.
+
+**Cause**: The health-verification block used `declare -A SERVICE_OK` — an associative array, keyed by ECS service name — to remember which services had already passed their health check across polling attempts, so already-healthy services weren't re-checked on every 10-second poll. Associative arrays are a bash 4.0+ feature. macOS ships `/bin/bash` 3.2.57 as `/bin/bash` and has not shipped a newer bash since (Apple stopped tracking bash after GPLv2, and 3.2 is the last GPLv2 release) — so `declare -A` fails immediately on every macOS customer's install, at the last step, after everything else has already deployed and stabilized.
+
+CI never caught this because the CI e2e job runs on an Ubuntu GitHub Actions runner with bash 5, where `declare -A` works fine. See the strengthened open item below.
+
+**Fix** (2026-07-13): `SERVICE_OK` is now a plain indexed array (bash 3.2-compatible), addressed by the same integer loop index already used to walk `SERVICE_DEFS`, instead of an associative array keyed by service name:
+
+```shell
+NUM_SERVICES=${#SERVICE_DEFS[@]}
+SERVICE_OK=()
+for ((i=0; i<NUM_SERVICES; i++)); do
+  SERVICE_OK[$i]=false
+done
+```
+
+with the two loops that read/write `SERVICE_OK` switched from `for DEF in "${SERVICE_DEFS[@]}"` + `${SERVICE_OK[$SVC_NAME]}` to `for ((i=0; i<NUM_SERVICES; i++))` + `${SERVICE_OK[$i]}`. Indexed arrays and C-style `for ((...))` loops both work on bash 3.2. No shebang change and no `brew install bash` requirement for customers — the fix works with the bash Apple actually ships.
+
+**No cleanup needed for affected runs**: this bug fires *after* Terraform has already applied everything and *after* `aws ecs wait services-stable` has already returned for the orchestrator restart — the deployment itself is complete and healthy, it's only the final confirmation step that never ran. Re-running just the health-verification block (see the fix above) reports success without redoing any infrastructure work; there's no orphaned SSM parameter or Terraform state drift like Issue 10 or Issue 9 leave behind.
+
+**Cross-reference**: this is the **third** instance of the same underlying gap — see the open item under Issue 10, which is strengthened below to account for it.
 
 ---
 

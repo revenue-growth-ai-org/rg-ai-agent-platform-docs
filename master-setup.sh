@@ -1154,17 +1154,25 @@ for NAME in "${AGENT_NAMES[@]}"; do
   SERVICE_DEFS+=("${PROJECT_NAME}-${ENVIRONMENT}-${NAME}|${NAME}|Agent: $NAME")
 done
 
-declare -A SERVICE_OK
+# Bash 3.2 (stock macOS) has no associative arrays, so service health is
+# tracked in SERVICE_OK using the same integer index as SERVICE_DEFS rather
+# than keying by service name.
+NUM_SERVICES=${#SERVICE_DEFS[@]}
+SERVICE_OK=()
+for ((i=0; i<NUM_SERVICES; i++)); do
+  SERVICE_OK[$i]=false
+done
+
 MAX_ATTEMPTS=18   # 18 x 10s = 3 minutes
 for ((ATTEMPT=1; ATTEMPT<=MAX_ATTEMPTS; ATTEMPT++)); do
   ALL_HEALTHY=true
-  for DEF in "${SERVICE_DEFS[@]}"; do
-    IFS='|' read -r SVC_NAME LOG_SUFFIX FRIENDLY <<< "$DEF"
-    if [ "${SERVICE_OK[$SVC_NAME]:-false}" = "true" ]; then
+  for ((i=0; i<NUM_SERVICES; i++)); do
+    IFS='|' read -r SVC_NAME LOG_SUFFIX FRIENDLY <<< "${SERVICE_DEFS[$i]}"
+    if [ "${SERVICE_OK[$i]}" = "true" ]; then
       continue
     fi
     if verify_service "$SVC_NAME" "$CLUSTER_NAME" "$FRIENDLY"; then
-      SERVICE_OK[$SVC_NAME]=true
+      SERVICE_OK[$i]=true
     else
       ALL_HEALTHY=false
     fi
@@ -1182,9 +1190,9 @@ echo ""
 VERIFY_PASS=0
 VERIFY_FAIL=0
 FAILED_SERVICES=()
-for DEF in "${SERVICE_DEFS[@]}"; do
-  IFS='|' read -r SVC_NAME LOG_SUFFIX FRIENDLY <<< "$DEF"
-  if [ "${SERVICE_OK[$SVC_NAME]:-false}" = "true" ]; then
+for ((i=0; i<NUM_SERVICES; i++)); do
+  IFS='|' read -r SVC_NAME LOG_SUFFIX FRIENDLY <<< "${SERVICE_DEFS[$i]}"
+  if [ "${SERVICE_OK[$i]}" = "true" ]; then
     VERIFY_PASS=$((VERIFY_PASS+1))
   else
     VERIFY_FAIL=$((VERIFY_FAIL+1))
