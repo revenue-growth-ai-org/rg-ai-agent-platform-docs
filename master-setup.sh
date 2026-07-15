@@ -644,7 +644,12 @@ fi
 AGENT_NAMES=()
 AGENT_DESCRIPTIONS=()
 AGENT_EXTERNAL=()
-AGENT_SECRETS=()
+# One entry per agent: a pre-built HCL map literal, e.g.
+#   hubspot = "arn:aws:secretsmanager:...:secret:asknicely-prod-arr-hubspot-abc123"
+#   zoom    = "arn:aws:secretsmanager:...:secret:asknicely-prod-arr-zoom-def456"
+# Built during the external-API prompt below; empty string means no
+# credentials for that agent (valid — external_secrets defaults to {}).
+AGENT_SECRETS_HCL=()
 
 for i in $(seq 1 "$AGENT_COUNT"); do
   echo ""
@@ -659,8 +664,84 @@ for i in $(seq 1 "$AGENT_COUNT"); do
     read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
   fi
   AGENT_DESC="Isolated agent node"
-  AGENT_EXTERNAL+=("true")
-  AGENT_SECRETS+=("")
+
+  AGENT_SECRETS_MAP=""
+  SECRET_COUNT=0
+  if [ "$CI_MODE" = "true" ]; then
+    EXTERNAL="no"
+  else
+    echo ""
+    read -p "Does agent '$AGENT_NAME' call external APIs? (y/n): " EXTERNAL < /dev/tty
+  fi
+
+  if [ "$EXTERNAL" = "y" ]; then
+    ENABLE_EXTERNAL="true"
+    echo ""
+    echo "Add one credential per external service this agent calls."
+    echo "Names are how the agent code looks each credential up, e.g."
+    echo "get_secret(\"hubspot\") — use short lowercase names."
+    echo ""
+    while true; do
+      read -p "Credential name (e.g. hubspot, zoom) (or press enter to finish): " SECRET_NAME < /dev/tty
+      [ -z "$SECRET_NAME" ] && break
+
+      if ! echo "$SECRET_NAME" | grep -Eq '^[a-z0-9_-]+$'; then
+        echo "  ✗ Use lowercase letters, digits, hyphens, underscores only."
+        continue
+      fi
+
+      echo "  Single API tokens: paste the token as-is."
+      echo "  Multi-field credentials: paste a JSON object, e.g."
+      echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
+      read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
+      echo ""
+      if [ -z "$SECRET_VALUE" ]; then
+        echo "  ✗ Empty value — skipped."
+        continue
+      fi
+
+      # Namespace by project/agent so two agents never collide on a bare
+      # name like "hubspot" and silently overwrite each other's credentials.
+      FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
+
+      if aws secretsmanager create-secret \
+          --name "$FULL_SECRET_NAME" \
+          --secret-string "$SECRET_VALUE" \
+          --region "$AWS_REGION" > /dev/null 2>&1; then
+        echo "  ✓ Stored: $FULL_SECRET_NAME"
+      else
+        aws secretsmanager update-secret \
+          --secret-id "$FULL_SECRET_NAME" \
+          --secret-string "$SECRET_VALUE" \
+          --region "$AWS_REGION" > /dev/null
+        echo "  ✓ Updated existing: $FULL_SECRET_NAME"
+      fi
+
+      SECRET_ARN=$(aws secretsmanager describe-secret \
+        --secret-id "$FULL_SECRET_NAME" \
+        --query ARN \
+        --output text \
+        --region "$AWS_REGION")
+
+      if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
+        echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
+        exit 1
+      fi
+
+      AGENT_SECRETS_MAP="${AGENT_SECRETS_MAP}  ${SECRET_NAME} = \"${SECRET_ARN}\"
+"
+      SECRET_COUNT=$((SECRET_COUNT + 1))
+      echo ""
+    done
+    if [ "$SECRET_COUNT" -eq 0 ]; then
+      echo "  (no credentials added — agent will run in no-credentials mode)"
+    fi
+  else
+    ENABLE_EXTERNAL="false"
+  fi
+
+  AGENT_EXTERNAL+=("$ENABLE_EXTERNAL")
+  AGENT_SECRETS_HCL+=("$AGENT_SECRETS_MAP")
 
   AGENT_NAMES+=("$AGENT_NAME")
   AGENT_DESCRIPTIONS+=("$AGENT_DESC")
@@ -691,82 +772,31 @@ if [ "$CONFIRM" != "yes" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# External API Keys
+# External API endpoint (informational metadata, separate from credentials)
+#
+# This is NOT a secret — it's just which system's base URL this deployment
+# primarily talks to, based on CRM_TYPE. Every agent gets this value
+# regardless of whether it has any external credentials configured;
+# individual credentials (per agent, per named service) are collected above.
 # ------------------------------------------------------------------------------
 
-echo ""
-echo "=================================================="
-echo " External API Keys"
-echo "=================================================="
-echo ""
-if [ "$CI_MODE" = "true" ]; then
-  STORE_EXTERNAL_KEYS="no"
+if [ "$CRM_TYPE" = "hubspot" ]; then
+  EXTERNAL_API_ENDPOINT="https://api.hubapi.com"
+elif [ "$CRM_TYPE" = "salesforce" ]; then
+  EXTERNAL_API_ENDPOINT="https://api.salesforce.com"
 else
-  read -p "Do you need to store any external API keys? (yes/no): " STORE_EXTERNAL_KEYS < /dev/tty
+  EXTERNAL_API_ENDPOINT="https://api.hubapi.com"
 fi
 
-if [ "$STORE_EXTERNAL_KEYS" = "yes" ]; then
-  while true; do
-    echo ""
-    read -p "Enter the secret name (e.g. HUBSPOT_API_KEY): " SECRET_NAME < /dev/tty
-    read -s -p "Enter the secret value: " SECRET_VALUE < /dev/tty
-    echo ""
-
-    if aws secretsmanager create-secret \
-        --name "$SECRET_NAME" \
-        --secret-string "$SECRET_VALUE" \
-        --region "$AWS_REGION" > /dev/null 2>&1; then
-      echo "  ✓ $SECRET_NAME stored successfully"
-    else
-      aws secretsmanager update-secret \
-        --secret-id "$SECRET_NAME" \
-        --secret-string "$SECRET_VALUE" \
-        --region "$AWS_REGION" > /dev/null
-      echo "  ✓ $SECRET_NAME stored successfully"
-    fi
-
-    SECRET_ARN=$(aws secretsmanager describe-secret \
-      --secret-id "$SECRET_NAME" \
-      --query ARN \
-      --output text \
-      --region "$AWS_REGION")
-
-    for idx in "${!AGENT_NAMES[@]}"; do
-      AGENT_SECRETS[$idx]="$SECRET_ARN"
-    done
-
-    if [ "$CRM_TYPE" = "hubspot" ]; then
-      EXTERNAL_API_ENDPOINT="https://api.hubapi.com"
-    elif [ "$CRM_TYPE" = "salesforce" ]; then
-      EXTERNAL_API_ENDPOINT="https://api.salesforce.com"
-    else
-      EXTERNAL_API_ENDPOINT="https://api.hubapi.com"
-    fi
-
-    for AGENT_NAME in "${AGENT_NAMES[@]}"; do
-      aws ssm put-parameter \
-        --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_secret_arn" \
-        --value "$SECRET_ARN" \
-        --type String \
-        --overwrite \
-        --region "$AWS_REGION" > /dev/null
-      echo "  ✓ Updated SSM external_api_secret_arn for agent: $AGENT_NAME"
-
-      aws ssm put-parameter \
-        --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_endpoint" \
-        --value "$EXTERNAL_API_ENDPOINT" \
-        --type String \
-        --overwrite \
-        --region "$AWS_REGION" > /dev/null
-      echo "  ✓ Updated SSM external_api_endpoint for agent: $AGENT_NAME"
-    done
-
-    read -p "Do you have another API key to store? (yes/no): " ANOTHER_KEY < /dev/tty
-    if [ "$ANOTHER_KEY" != "yes" ]; then
-      break
-    fi
-  done
-fi
+for AGENT_NAME in "${AGENT_NAMES[@]}"; do
+  aws ssm put-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_endpoint" \
+    --value "$EXTERNAL_API_ENDPOINT" \
+    --type String \
+    --overwrite \
+    --region "$AWS_REGION" > /dev/null
+  echo "  ✓ Updated SSM external_api_endpoint for agent: $AGENT_NAME"
+done
 
 echo ""
 
@@ -984,19 +1014,13 @@ for i in $(seq 0 $((AGENT_COUNT-1))); do
   AGENT_NAME="${AGENT_NAMES[$i]}"
   AGENT_DESC="${AGENT_DESCRIPTIONS[$i]}"
   ENABLE_EXTERNAL="${AGENT_EXTERNAL[$i]}"
-  SECRET_ARN="${AGENT_SECRETS[$i]}"
+  AGENT_SECRETS_MAP="${AGENT_SECRETS_HCL[$i]}"
 
   print_progress "4" "4" "Agent: $AGENT_NAME ($((i+1)) of $AGENT_COUNT)" "Building container image and deploying agent service (~10 minutes)"
 
   cd "$AGENT_DIR"
 
   ECR_AGENT_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
-
-  if [ -n "$SECRET_ARN" ]; then
-    EXTERNAL_SECRETS_VALUE="[\"$SECRET_ARN\"]"
-  else
-    EXTERNAL_SECRETS_VALUE="[]"
-  fi
 
   echo "  Writing prod.tfvars..."
   cat > prod.tfvars << EOF
@@ -1019,7 +1043,8 @@ rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "$ECR_AGENT_IMAGE"
 deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
-external_secrets_arns  = $EXTERNAL_SECRETS_VALUE
+external_secrets = {
+$AGENT_SECRETS_MAP}
 EOF
 
   # Always update RDS security group ID — it changes on every redeploy
