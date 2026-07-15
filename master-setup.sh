@@ -1064,7 +1064,16 @@ EOF
     echo "Contents of parent: $(ls $PARENT_DIR)"
     exit 1
   fi
-
+# Select this agent's real logic if it exists, otherwise fall back to the
+  # empty shell. business_logic.py is a build-time staging file, regenerated
+  # fresh before every build — it should never be hand-edited or committed.
+  if [ -f "$AGENT_DIR/app/agents/${AGENT_NAME}.py" ]; then
+    cp "$AGENT_DIR/app/agents/${AGENT_NAME}.py" "$AGENT_DIR/app/business_logic.py"
+    echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
+  else
+    cp "$AGENT_DIR/app/agents/_shell.py" "$AGENT_DIR/app/business_logic.py"
+    echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
+  fi
   build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" \
     "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}"
 
