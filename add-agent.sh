@@ -265,52 +265,73 @@ add_agent() {
 
   echo ""
   read -p "Does this agent call external APIs? (y/n): " EXTERNAL < /dev/tty
+  EXTERNAL_SECRETS_MAP=""
+  SECRET_COUNT=0
   if [ "$EXTERNAL" = "y" ]; then
     ENABLE_EXTERNAL="true"
-    read -p "Enter the secret name (e.g. HUBSPOT_API_KEY) (or press enter to skip and add later): " SECRET_NAME < /dev/tty
-    if [ -n "$SECRET_NAME" ]; then
-      read -s -p "Enter the secret value: " SECRET_VALUE < /dev/tty
+    echo ""
+    echo "Add one credential per external service this agent calls."
+    echo "Names are how the agent code looks each credential up, e.g."
+    echo "get_secret(\"hubspot\") — use short lowercase names."
+    echo ""
+    while true; do
+      read -p "Credential name (e.g. hubspot, zoom) (or press enter to finish): " SECRET_NAME < /dev/tty
+      [ -z "$SECRET_NAME" ] && break
+
+      if ! echo "$SECRET_NAME" | grep -Eq '^[a-z0-9_-]+$'; then
+        echo "  ✗ Use lowercase letters, digits, hyphens, underscores only."
+        continue
+      fi
+
+      echo "  Single API tokens: paste the token as-is."
+      echo "  Multi-field credentials: paste a JSON object, e.g."
+      echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
+      read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
       echo ""
+      if [ -z "$SECRET_VALUE" ]; then
+        echo "  ✗ Empty value — skipped."
+        continue
+      fi
+
+      # Namespace the Secrets Manager secret by project/agent so two agents
+      # can never collide on a bare name like "hubspot" and silently
+      # overwrite each other's credentials.
+      FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
 
       if aws secretsmanager create-secret \
-          --name "$SECRET_NAME" \
+          --name "$FULL_SECRET_NAME" \
           --secret-string "$SECRET_VALUE" \
           --region "$AWS_REGION" > /dev/null 2>&1; then
-        echo "  ✓ $SECRET_NAME stored successfully"
+        echo "  ✓ Stored: $FULL_SECRET_NAME"
       else
         aws secretsmanager update-secret \
-          --secret-id "$SECRET_NAME" \
+          --secret-id "$FULL_SECRET_NAME" \
           --secret-string "$SECRET_VALUE" \
           --region "$AWS_REGION" > /dev/null
-        echo "  ✓ $SECRET_NAME stored successfully"
+        echo "  ✓ Updated existing: $FULL_SECRET_NAME"
       fi
 
       SECRET_ARN=$(aws secretsmanager describe-secret \
-        --secret-id "$SECRET_NAME" \
+        --secret-id "$FULL_SECRET_NAME" \
         --query ARN \
         --output text \
         --region "$AWS_REGION")
 
       if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
-        echo "ERROR: Could not determine secret ARN for $SECRET_NAME."
+        echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
         exit 1
       fi
 
-      EXTERNAL_SECRETS="[\"$SECRET_ARN\"]"
-
-      aws ssm put-parameter \
-        --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT_NAME}/external_api_secret_arn" \
-        --value "$SECRET_ARN" \
-        --type String \
-        --overwrite \
-        --region "$AWS_REGION" > /dev/null
-      echo "  ✓ Updated SSM external_api_secret_arn for agent: $AGENT_NAME"
-    else
-      EXTERNAL_SECRETS="[]"
+      EXTERNAL_SECRETS_MAP="${EXTERNAL_SECRETS_MAP}  ${SECRET_NAME} = \"${SECRET_ARN}\"
+"
+      SECRET_COUNT=$((SECRET_COUNT + 1))
+      echo ""
+    done
+    if [ "$SECRET_COUNT" -eq 0 ]; then
+      echo "  (no credentials added — agent will run in no-credentials mode)"
     fi
   else
     ENABLE_EXTERNAL="false"
-    EXTERNAL_SECRETS="[]"
   fi
 
   # Read values from SSM
@@ -407,7 +428,8 @@ rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "${ECR_IMAGE}:latest"
 deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
-external_secrets_arns  = $EXTERNAL_SECRETS
+external_secrets = {
+$EXTERNAL_SECRETS_MAP}
 EOF
 
   # Write backend.hcl (backend.tf stays an empty tracked stub)
@@ -537,7 +559,7 @@ rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "$ECR_IMAGE"
 deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = false
-external_secrets_arns  = []
+external_secrets = {}
 EOF
 
   # Write backend.hcl pointing to this agent's state (backend.tf stays an empty tracked stub)
