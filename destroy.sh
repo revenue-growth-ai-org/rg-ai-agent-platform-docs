@@ -650,6 +650,45 @@ for LG in $LOG_GROUPS; do
 done
 
 # ------------------------------------------------------------------------------
+# Step 6.5 — Clean up RDS final snapshots and retained automated backups
+#
+# terraform destroy on the RDS instance creates a final snapshot on every
+# cycle (skip_final_snapshot is not set to true), and RDS separately retains
+# an automated backup after instance deletion. Left alone, these accumulate
+# indefinitely across install/destroy cycles and incur ongoing storage cost
+# with no code ever consuming the database. Delete both here so a full
+# destroy is actually a full, cost-clean teardown.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 6.5 ] Cleaning up RDS snapshots and retained automated backups..."
+
+SNAPSHOT_IDS=$(aws rds describe-db-snapshots \
+  --snapshot-type manual \
+  --query "DBSnapshots[?contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].DBSnapshotIdentifier" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+
+for SNAP in $SNAPSHOT_IDS; do
+  [ -z "$SNAP" ] && continue
+  aws rds delete-db-snapshot \
+    --db-snapshot-identifier "$SNAP" \
+    --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted RDS snapshot: $SNAP" || true
+done
+
+AUTO_BACKUP_IDS=$(aws rds describe-db-instance-automated-backups \
+  --query "DBInstanceAutomatedBackups[?contains(DBInstanceIdentifier,'${PROJECT_NAME}')].DbiResourceId" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+
+for DBI_ID in $AUTO_BACKUP_IDS; do
+  [ -z "$DBI_ID" ] && continue
+  aws rds delete-db-instance-automated-backup \
+    --dbi-resource-id "$DBI_ID" \
+    --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted retained automated backup: $DBI_ID" || true
+done
+
+# ------------------------------------------------------------------------------
 # Step 7 — Verify
 # ------------------------------------------------------------------------------
 
