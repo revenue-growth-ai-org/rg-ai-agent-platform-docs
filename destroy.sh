@@ -357,7 +357,80 @@ LOCK_TABLE=$(aws ssm get-parameter \
   --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
   --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
-for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
+# ------------------------------------------------------------------------------
+# Destroy EVERY agent's Terraform state, not just the last one touched.
+#
+# add-agent.sh overwrites the single shared prod.tfvars in the agent repo on
+# every run, so reading agent_name from that file (the previous behavior) only
+# ever destroyed the most recently added/removed agent. Any other agent's
+# Terraform-managed resources (e.g. its security group) were orphaned, which
+# blocked VPC deletion with a DependencyViolation.
+#
+# The authoritative record of deployed agents is the state bucket itself:
+# every agent has a state file at 3-rg-ai-agent-platform-agent/<NAME>/.
+# Enumerate those and destroy each one. Already-destroyed agents leave empty
+# state files behind; destroying an empty state is a harmless no-op.
+# ------------------------------------------------------------------------------
+
+if [ -n "$AGENT_DIR" ] && [ -n "$STATE_BUCKET" ]; then
+  # NOTE: aws --output text joins list results with tabs on one line, not
+  # newlines — convert before iterating (same issue previously fixed in
+  # add-agent.sh list_deployed_agents).
+  AGENT_NAMES=$(aws s3api list-objects-v2 \
+    --bucket "$STATE_BUCKET" \
+    --prefix "3-rg-ai-agent-platform-agent/" \
+    --query "Contents[?ends_with(Key, 'terraform.tfstate')].Key" \
+    --output text --region "$AWS_REGION" 2>/dev/null \
+    | tr '\t' '\n' | awk -F'/' 'NF >= 3 {print $2}' | sort -u)
+
+  DEPLOY_ROLE_ARN_FOR_DESTROY="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
+
+  for AGENT_NAME in $AGENT_NAMES; do
+    [ -z "$AGENT_NAME" ] && continue
+    echo ""
+    echo "  Destroying agent: $AGENT_NAME ..."
+    cd "$AGENT_DIR"
+
+    cat > prod.tfvars << EOF
+aws_region   = "$AWS_REGION"
+project_name = "$PROJECT_NAME"
+environment  = "$ENVIRONMENT"
+
+default_tags = {
+  Owner      = "${OWNER:-platform-engineering}"
+  CostCenter = "${COST_CENTER:-unallocated}"
+}
+
+agent_name        = "$AGENT_NAME"
+agent_description = "destroying"
+
+step1_ssm_prefix = ""
+step2_ssm_prefix = ""
+
+rds_security_group_id  = "sg-000000000000destroy"
+agent_image            = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
+deployment_role_arn    = "$DEPLOY_ROLE_ARN_FOR_DESTROY"
+enable_external_egress = false
+external_secrets_arns  = []
+EOF
+
+    cat > backend.hcl << EOF
+bucket         = "$STATE_BUCKET"
+key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+region         = "$AWS_REGION"
+encrypt        = true
+EOF
+    if [ -n "$LOCK_TABLE" ]; then
+      echo "dynamodb_table = \"$LOCK_TABLE\"" >> backend.hcl
+    fi
+
+    terraform init -backend-config=backend.hcl -reconfigure > /dev/null 2>&1
+    terraform destroy -var-file="prod.tfvars" -auto-approve
+    echo "  ✓ Agent $AGENT_NAME destroyed"
+  done
+fi
+
+for DIR in "$ORCH_DIR" "$BASE_DIR"; do
   if [ -z "$DIR" ]; then
     continue
   fi
@@ -371,10 +444,7 @@ for DIR in "$AGENT_DIR" "$ORCH_DIR" "$BASE_DIR"; do
   echo "  Destroying $(basename $DIR)..."
   cd "$DIR"
 
-  if [ "$DIR" = "$AGENT_DIR" ]; then
-    AGENT_NAME=$(sed -n 's/^agent_name[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' prod.tfvars)
-    STATE_KEY="3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
-  elif [ "$DIR" = "$ORCH_DIR" ]; then
+  if [ "$DIR" = "$ORCH_DIR" ]; then
     STATE_KEY="2-rg-ai-agent-platform-orchestrator/terraform.tfstate"
   else
     STATE_KEY="1-rg-ai-agent-platform-base/terraform.tfstate"
