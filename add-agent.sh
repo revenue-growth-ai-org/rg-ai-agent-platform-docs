@@ -106,6 +106,97 @@ find_agent_repo() {
 AGENT_DIR=$(find_agent_repo)
 
 # ------------------------------------------------------------------------------
+# Apply with retry
+#
+# Ported from master-setup.sh so add-agent.sh handles apply exactly the way
+# the initial install does. Two known, self-healing failure modes:
+#
+#   1. ParameterAlreadyExists on aws_ssm_parameter.* — happens when an SSM
+#      parameter (e.g. external_api_secret_arn) was written or left behind
+#      outside Terraform's state (a prior partial apply, or a CLI
+#      put-parameter step that ran before Terraform created the resource).
+#      Detected, imported into state, and retried automatically.
+#   2. ResourceInUse / "Service contains registered instances" — Cloud Map
+#      service-discovery instances blocking a service delete/replace.
+#      Deregistered automatically, then retried.
+#
+# See CUSTOMER-INSTALL-DEBUGGING.md for the incident this was ported to fix.
+# ------------------------------------------------------------------------------
+
+apply_with_retry() {
+  local TFVARS_FILE=$1
+  local APPLY_LOG APPLY_EXIT APPLY_RETRY APPLY_FIXED SRV_IDS SRV_ID INSTANCE_IDS INSTANCE_ID
+  APPLY_LOG=$(mktemp)
+  APPLY_RETRY=0
+  set +e
+  terraform apply -var-file="$TFVARS_FILE" -auto-approve 2>&1 | tee "$APPLY_LOG"
+  APPLY_EXIT=${PIPESTATUS[0]}
+  set -e
+
+  while [ $APPLY_EXIT -ne 0 ] && [ $APPLY_RETRY -lt 2 ]; do
+    APPLY_FIXED=false
+
+    if grep -q "ParameterAlreadyExists" "$APPLY_LOG"; then
+      echo ""
+      echo "Detected orphaned SSM parameter(s) from a previous attempt — importing into state and retrying..."
+      while IFS=' ' read -r SSM_RESOURCE SSM_PATH; do
+        [ -z "$SSM_RESOURCE" ] && continue
+        echo "  Importing $SSM_RESOURCE <- $SSM_PATH"
+        terraform import -var-file="$TFVARS_FILE" "$SSM_RESOURCE" "$SSM_PATH"
+      done < <(awk '
+        /ParameterAlreadyExists/ {
+          if (match($0, /\([^)]+\)/))
+            pending = substr($0, RSTART+1, RLENGTH-2)
+        }
+        /with aws_ssm_parameter\./ && pending != "" {
+          if (match($0, /aws_ssm_parameter\.[A-Za-z0-9_]+/)) {
+            print substr($0, RSTART, RLENGTH) " " pending
+            pending = ""
+          }
+        }
+      ' "$APPLY_LOG")
+      APPLY_FIXED=true
+    fi
+
+    if grep -q "ResourceInUse" "$APPLY_LOG" && grep -q "Service contains registered instances" "$APPLY_LOG"; then
+      echo ""
+      echo "Detected registered Cloud Map instances blocking service deletion — deregistering and retrying..."
+      SRV_IDS=$(grep -oE "srv-[a-z0-9]+" "$APPLY_LOG" | sort -u)
+      for SRV_ID in $SRV_IDS; do
+        INSTANCE_IDS=$(aws servicediscovery list-instances \
+          --service-id "$SRV_ID" \
+          --query 'Instances[].Id' \
+          --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+        for INSTANCE_ID in $INSTANCE_IDS; do
+          aws servicediscovery deregister-instance \
+            --service-id "$SRV_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$AWS_REGION" > /dev/null 2>&1 && \
+            echo "  ✓ Deregistered instance $INSTANCE_ID from $SRV_ID" || true
+        done
+      done
+      APPLY_FIXED=true
+    fi
+
+    if [ "$APPLY_FIXED" = "false" ]; then
+      rm -f "$APPLY_LOG"
+      exit $APPLY_EXIT
+    fi
+
+    APPLY_RETRY=$((APPLY_RETRY + 1))
+    set +e
+    terraform apply -var-file="$TFVARS_FILE" -auto-approve 2>&1 | tee "$APPLY_LOG"
+    APPLY_EXIT=${PIPESTATUS[0]}
+    set -e
+  done
+
+  rm -f "$APPLY_LOG"
+  if [ $APPLY_EXIT -ne 0 ]; then
+    exit $APPLY_EXIT
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # List currently deployed agents
 # ------------------------------------------------------------------------------
 
@@ -124,6 +215,13 @@ list_deployed_agents() {
     echo "  No agents found in cluster $CLUSTER_NAME"
     return
   fi
+
+  # aws --output text joins multiple values with tabs on a single line, not
+  # newlines. Convert to one ARN per line so the while-read loop below
+  # actually iterates over every service instead of treating the whole
+  # tab-joined blob as a single line (previously caused only the last-listed
+  # service to be recognized).
+  SERVICES=$(echo "$SERVICES" | tr '\t' '\n')
 
   # Filter out orchestrator, show only agents
   AGENT_COUNT=0
@@ -331,7 +429,7 @@ EOF
   echo ""
   echo "Deploying agent $AGENT_NAME..."
   terraform init -backend-config=backend.hcl -reconfigure -input=false
-  terraform apply -var-file="prod.tfvars" -auto-approve
+  apply_with_retry "prod.tfvars"
 
   # Verify
   echo ""
