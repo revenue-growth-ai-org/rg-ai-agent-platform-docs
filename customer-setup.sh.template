@@ -14,10 +14,13 @@ set -e
 #   - Platform deployed via bash master-setup.sh
 #   - This repo cloned to your local machine
 #   - rg-ai-agent-platform-docs repo in the same parent directory
+#   - 3-rg-ai-agent-platform-agent repo in the same parent directory
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 DOCS_DIR=""
+AGENT_REPO_DIR=""
 
 # Find the rg-ai-agent-platform-docs repo
 for DIR in "$SCRIPT_DIR/../rg-ai-agent-platform-docs" "$HOME/aws-agent-platform/rg-ai-agent-platform-docs"; do
@@ -33,12 +36,24 @@ if [ -z "$DOCS_DIR" ]; then
   exit 1
 fi
 
+# Find the agent platform repo (3-rg-ai-agent-platform-agent) — this is
+# where agents/<name>.py actually gets deployed FROM, not this repo.
+AGENT_REPO_DIR=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*agent*" | \
+  grep -vE '/[^/]*orchestrator[^/]*$' | grep -vE '/[^/]*docs[^/]*$' | head -1)
+
+if [ -z "$AGENT_REPO_DIR" ]; then
+  echo "ERROR: Cannot find 3-rg-ai-agent-platform-agent repo."
+  echo "Make sure it is cloned in the same parent directory as this repo."
+  exit 1
+fi
+
 echo ""
 echo "=================================================="
 echo " Customer Platform Configuration"
 echo "=================================================="
 echo ""
-echo "Docs repo: $DOCS_DIR"
+echo "Docs repo:  $DOCS_DIR"
+echo "Agent repo: $AGENT_REPO_DIR"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -67,6 +82,22 @@ bash "$DOCS_DIR/configure-orchestrator.sh" \
 # ------------------------------------------------------------------------------
 # Step 2 — Deploy agent implementations
 # ------------------------------------------------------------------------------
+#
+# Each agents/<name>/agent.py is copied into
+# $AGENT_REPO_DIR/app/agents/<name>.py (exposing async def run(request,
+# logger) -> dict — NOT the old execute() contract), then that one agent
+# is rebuilt and redeployed via redeploy-agent.sh. Credentials are NOT
+# handled here — attach them separately, once, with:
+#   bash "$DOCS_DIR/manage-agent.sh" secret <name> add
+#
+# NOTE — shared requirements.txt: all agents in this platform build from
+# the SAME app/ directory, so app/requirements.txt is shared across every
+# agent's image, not private to one agent. If more than one agent under
+# agents/ ships its own requirements.txt, only the LAST one copied wins —
+# earlier agents' dependencies may silently break on their next rebuild.
+# If your agents need different dependencies, reconcile them into one
+# combined requirements.txt yourself before running this script.
+# ------------------------------------------------------------------------------
 
 echo ""
 echo "Step 2 — Deploying agent implementations..."
@@ -76,6 +107,17 @@ if [ ! -d "$SCRIPT_DIR/agents" ]; then
   echo "No agents directory found — skipping agent deployment."
   echo "Add agent implementations to agents/{agent_name}/agent.py to deploy them."
 else
+  REQUIREMENTS_COUNT=$(find "$SCRIPT_DIR/agents" -mindepth 2 -maxdepth 2 -name "requirements.txt" | wc -l | tr -d ' ')
+  if [ "$REQUIREMENTS_COUNT" -gt 1 ]; then
+    echo "  WARNING: $REQUIREMENTS_COUNT agents each provide their own requirements.txt."
+    echo "  requirements.txt is shared across all agent images — only the LAST one"
+    echo "  applied will take effect for every agent's next build. Reconcile these"
+    echo "  into one file if your agents need different dependencies."
+    echo ""
+  fi
+
+  mkdir -p "$AGENT_REPO_DIR/app/agents"
+
   for AGENT_DIR in "$SCRIPT_DIR/agents"/*/; do
     AGENT_NAME=$(basename "$AGENT_DIR")
     AGENT_FILE="$AGENT_DIR/agent.py"
@@ -86,18 +128,24 @@ else
       continue
     fi
 
+    if ! grep -q "async def run" "$AGENT_FILE"; then
+      echo "  ERROR: $AGENT_FILE does not define 'async def run(request, logger)'."
+      echo "  The current platform expects run(), not execute() — update this"
+      echo "  file before deploying. Skipping $AGENT_NAME."
+      continue
+    fi
+
     echo "  Deploying agent: $AGENT_NAME"
 
+    cp "$AGENT_FILE" "$AGENT_REPO_DIR/app/agents/${AGENT_NAME}.py"
+    echo "    ✓ Copied to app/agents/${AGENT_NAME}.py"
+
     if [ -f "$REQUIREMENTS_FILE" ]; then
-      bash "$DOCS_DIR/deploy-agent.sh" \
-        --agent "$AGENT_NAME" \
-        --file "$AGENT_FILE" \
-        --requirements "$REQUIREMENTS_FILE"
-    else
-      bash "$DOCS_DIR/deploy-agent.sh" \
-        --agent "$AGENT_NAME" \
-        --file "$AGENT_FILE"
+      cp "$REQUIREMENTS_FILE" "$AGENT_REPO_DIR/app/requirements.txt"
+      echo "    ✓ requirements.txt applied (shared across all agents — see warning above)"
     fi
+
+    bash "$DOCS_DIR/redeploy-agent.sh" --agent "$AGENT_NAME"
   done
 fi
 
@@ -116,6 +164,10 @@ echo ""
 echo "  To update orchestrator configuration:"
 echo "  bash $DOCS_DIR/configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json"
 echo ""
-echo "  To update a specific agent:"
-echo "  bash $DOCS_DIR/deploy-agent.sh --agent <name> --file agents/<name>/agent.py"
+echo "  To update a specific agent: edit agents/<name>/agent.py, then run:"
+echo "  cp agents/<name>/agent.py $AGENT_REPO_DIR/app/agents/<name>.py"
+echo "  bash $DOCS_DIR/redeploy-agent.sh --agent <name>"
+echo ""
+echo "  To add a credential to an agent:"
+echo "  bash $DOCS_DIR/manage-agent.sh secret <name> add"
 echo ""
