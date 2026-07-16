@@ -481,9 +481,21 @@ EOF
   if [ "$DIR" = "$ORCH_DIR" ]; then
     # webhook_secret is seeded by install.sh/master-setup.sh outside Terraform
     # (bootstrap.tf no longer creates it) — delete it explicitly here.
-    aws ssm delete-parameter \
-      --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    WEBHOOK_SECRET_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
+    DELETE_OUTPUT=$(aws ssm delete-parameter \
+      --name "$WEBHOOK_SECRET_PATH" \
+      --region "$AWS_REGION" 2>&1)
+    DELETE_STATUS=$?
+
+    if [ $DELETE_STATUS -eq 0 ]; then
+      echo "  ✓ Deleted SSM parameter: $WEBHOOK_SECRET_PATH"
+    elif echo "$DELETE_OUTPUT" | grep -q "ParameterNotFound"; then
+      echo "  ✓ SSM parameter already absent: $WEBHOOK_SECRET_PATH"
+    else
+      echo "  ⚠ WARNING: Failed to delete $WEBHOOK_SECRET_PATH — verify-destroy.sh"
+      echo "    will flag this as a leftover. Real error:"
+      echo "    $DELETE_OUTPUT"
+    fi
   fi
 
   if [ "$DIR" = "$BASE_DIR" ]; then
