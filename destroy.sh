@@ -360,7 +360,7 @@ LOCK_TABLE=$(aws ssm get-parameter \
 # ------------------------------------------------------------------------------
 # Destroy EVERY agent's Terraform state, not just the last one touched.
 #
-# add-agent.sh overwrites the single shared prod.tfvars in the agent repo on
+# manage-agent.sh overwrites the single shared prod.tfvars in the agent repo on
 # every run, so reading agent_name from that file (the previous behavior) only
 # ever destroyed the most recently added/removed agent. Any other agent's
 # Terraform-managed resources (e.g. its security group) were orphaned, which
@@ -375,7 +375,7 @@ LOCK_TABLE=$(aws ssm get-parameter \
 if [ -n "$AGENT_DIR" ] && [ -n "$STATE_BUCKET" ]; then
   # NOTE: aws --output text joins list results with tabs on one line, not
   # newlines — convert before iterating (same issue previously fixed in
-  # add-agent.sh list_deployed_agents).
+  # manage-agent.sh list_deployed_agents).
   AGENT_NAMES=$(aws s3api list-objects-v2 \
     --bucket "$STATE_BUCKET" \
     --prefix "3-rg-ai-agent-platform-agent/" \
