@@ -27,7 +27,7 @@ jobs:
             destroy.sh
             generate-routing-config.sh
             configure-orchestrator.sh
-            add-agent.sh
+            manage-agent.sh
           )
 
           failed=0
