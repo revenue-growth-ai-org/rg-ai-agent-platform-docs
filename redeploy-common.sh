@@ -72,7 +72,7 @@ get_ecr_digest() {
 # ------------------------------------------------------------------------------
 # Zip an app directory into a source artifact for CodeBuild, excluding files
 # that should never leave the local machine or aren't needed for the build:
-# local env/secret files, real tfvars, prior deploy-agent.sh backups, any
+# local env/secret files, real tfvars, any leftover timestamped backup files,
 # stray Terraform state/cache, and node_modules (JS tooling, if ever added).
 #
 # Args: APP_DIR DEST_ZIP_PATH
