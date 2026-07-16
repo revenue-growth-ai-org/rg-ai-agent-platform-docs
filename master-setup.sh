@@ -647,7 +647,7 @@ AGENT_EXTERNAL=()
 # Agents are ALWAYS created credential-free (external_secrets = {},
 # enable_external_egress = false). Attach credentials any time after
 # install, without a container rebuild:
-#   bash manage-agent.sh secret <agent_name> add
+#   bash add-agent.sh secret <agent_name> add
 AGENT_SECRETS_HCL=()
 
 for i in $(seq 1 "$AGENT_COUNT"); do
@@ -674,7 +674,7 @@ done
 echo ""
 echo "  NOTE: agents are created without external API credentials."
 echo "  After install completes, attach credentials per agent with:"
-echo "    bash manage-agent.sh secret <agent_name> add"
+echo "    bash add-agent.sh secret <agent_name> add"
 
 echo ""
 echo "=================================================="
@@ -992,6 +992,17 @@ EOF
     echo "ERROR: Agent app directory not found at $AGENT_DIR/app"
     echo "Contents of parent: $(ls $PARENT_DIR)"
     exit 1
+  fi
+
+  # Select this agent's real logic if it exists, otherwise fall back to the
+  # empty shell. business_logic.py is a build-time staging file, regenerated
+  # fresh before every build — it should never be hand-edited or committed.
+  if [ -f "$AGENT_DIR/app/agents/${AGENT_NAME}.py" ]; then
+    cp "$AGENT_DIR/app/agents/${AGENT_NAME}.py" "$AGENT_DIR/app/business_logic.py"
+    echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
+  else
+    cp "$AGENT_DIR/app/agents/_shell.py" "$AGENT_DIR/app/business_logic.py"
+    echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
   fi
 
   build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" \
