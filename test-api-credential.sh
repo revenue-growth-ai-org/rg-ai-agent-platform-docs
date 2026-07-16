@@ -2,7 +2,7 @@
 # test-api-credential.sh
 #
 # Standalone, manual pre-flight check for a 3rd-party API credential —
-# run this BEFORE add-agent.sh/master-setup.sh, before the credential ever
+# run this BEFORE manage-agent.sh/master-setup.sh, before the credential ever
 # touches Secrets Manager. Nothing here writes to AWS; it's read-only
 # against the 3rd-party API itself.
 #
