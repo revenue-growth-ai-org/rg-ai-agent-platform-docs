@@ -23,7 +23,8 @@ echo "  1) Bearer token           (one string, e.g. HubSpot private app token)"
 echo "  2) OAuth2 client-credentials  (account/client id + secret, e.g. Zoom Server-to-Server)"
 echo "  3) Basic auth             (username + password)"
 echo "  4) API key in query param (e.g. ?api_key=...)"
-read -p "Choose (1-4): " AUTH_TYPE < /dev/tty
+echo "  5) Anthropic API key      (custom x-api-key header, POST to Messages API)"
+read -p "Choose (1-5): " AUTH_TYPE < /dev/tty
 echo ""
 
 case "$AUTH_TYPE" in
@@ -96,6 +97,18 @@ case "$AUTH_TYPE" in
     TEST_URL="${BASE_URL}${SEP}${PARAM_NAME}=${API_KEY}"
     echo "Testing..."
     RESPONSE=$(curl -s -w "\n%{http_code}" "$TEST_URL")
+    STATUS=$(echo "$RESPONSE" | tail -1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+    ;;
+
+  5)
+    read -s -p "Anthropic API key (starts with sk-ant-): " ANTHROPIC_KEY < /dev/tty
+    echo ""
+    echo ""
+    echo "Testing against the models list endpoint (no model name needed, no cost)..."
+    RESPONSE=$(curl -s -w "\n%{http_code}" https://api.anthropic.com/v1/models \
+      -H "x-api-key: $ANTHROPIC_KEY" \
+      -H "anthropic-version: 2023-06-01")
     STATUS=$(echo "$RESPONSE" | tail -1)
     BODY=$(echo "$RESPONSE" | sed '$d')
     ;;
