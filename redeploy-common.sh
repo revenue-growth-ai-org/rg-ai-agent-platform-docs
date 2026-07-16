@@ -2,7 +2,7 @@
 # =============================================================================
 # AWS Agent Platform — Shared Redeploy Helpers
 # =============================================================================
-# Sourced by redeploy-orchestrator.sh, redeploy-agent.sh, deploy-agent.sh,
+# Sourced by redeploy-orchestrator.sh, redeploy-agent.sh,
 # and master-setup.sh. Not meant to be run directly — it only defines
 # functions used by those scripts.
 #
