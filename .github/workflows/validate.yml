@@ -22,7 +22,6 @@ jobs:
             master-setup.sh
             redeploy-agent.sh
             install.sh
-            deploy-agent.sh
             test-webhook.sh
             redeploy-common.sh
             destroy.sh
