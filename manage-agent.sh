@@ -8,9 +8,9 @@ set -e
 # Run this after the initial master-setup.sh deployment is complete.
 #
 # Usage:
-#   bash add-agent.sh          — interactive mode (add or remove)
-#   bash add-agent.sh add      — add a new agent
-#   bash add-agent.sh remove   — remove an existing agent
+#   bash manage-agent.sh          — interactive mode (add or remove)
+#   bash manage-agent.sh add      — add a new agent
+#   bash manage-agent.sh remove   — remove an existing agent
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,7 +55,7 @@ BUILD_ARTIFACTS_BUCKET=$(aws ssm get-parameter \
 if [ -z "$CODEBUILD_PROJECT_NAME" ] || [ -z "$BUILD_ARTIFACTS_BUCKET" ]; then
   echo "ERROR: Could not read codebuild_project_name / build_artifacts_bucket_name from SSM."
   echo "Make sure bootstrap (0-rg-ai-agent-platform-bootstrap) has been applied with the"
-  echo "CodeBuild image-builder changes before running add-agent.sh."
+  echo "CodeBuild image-builder changes before running manage-agent.sh."
   exit 1
 fi
 
@@ -108,7 +108,7 @@ AGENT_DIR=$(find_agent_repo)
 # ------------------------------------------------------------------------------
 # Apply with retry
 #
-# Ported from master-setup.sh so add-agent.sh handles apply exactly the way
+# Ported from master-setup.sh so manage-agent.sh handles apply exactly the way
 # the initial install does. Two known, self-healing failure modes:
 #
 #   1. ParameterAlreadyExists on aws_ssm_parameter.* — happens when an SSM
@@ -252,6 +252,252 @@ list_deployed_agents() {
 # Add agent
 # ------------------------------------------------------------------------------
 
+# ------------------------------------------------------------------------------
+# Build the external_secrets HCL map for an agent from its live SSM pointers.
+# Source of truth for "which credentials does this agent currently have" —
+# never the shared prod.tfvars, which reflects whichever agent was last
+# touched. Prints one "  name = \"arn\"" line per credential; empty if none.
+# ------------------------------------------------------------------------------
+
+build_secrets_map_from_ssm() {
+  local AGENT="$1"
+  aws ssm get-parameters-by-path \
+    --path "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT}/secrets" \
+    --query "Parameters[].[Name,Value]" \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null | \
+  while IFS=$'\t' read -r PARAM_NAME PARAM_VALUE; do
+    [ -z "$PARAM_NAME" ] && continue
+    SHORT_NAME="${PARAM_NAME##*/}"
+    printf '  %s = "%s"\n' "$SHORT_NAME" "$PARAM_VALUE"
+  done
+}
+
+# ------------------------------------------------------------------------------
+# Attach or detach a single credential on an EXISTING agent — no container
+# rebuild, no CodeBuild round trip. Terraform + Secrets Manager only.
+#
+#   bash manage-agent.sh secret <agent_name> add
+#   bash manage-agent.sh secret <agent_name> remove
+#
+# The apply creates/removes the SSM pointer and IAM grant and rolls the ECS
+# service to a new task definition revision (same image) — the restart is
+# REQUIRED: agents discover their credentials at container startup, so a
+# new credential is not visible to the running agent until its tasks cycle.
+# ------------------------------------------------------------------------------
+
+secret_agent() {
+  local AGENT_NAME="$1"
+  local SECRET_ACTION="$2"
+
+  if [ -z "$AGENT_NAME" ] || { [ "$SECRET_ACTION" != "add" ] && [ "$SECRET_ACTION" != "remove" ]; }; then
+    echo "Usage: bash manage-agent.sh secret <agent_name> add|remove"
+    exit 1
+  fi
+
+  echo "=================================================="
+  echo " Manage Credentials — agent: $AGENT_NAME ($SECRET_ACTION)"
+  echo "=================================================="
+  echo ""
+
+  # Verify the agent actually exists and is ACTIVE
+  CLUSTER_NAME="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
+  SERVICE_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}"
+  SERVICE_STATUS=$(aws ecs describe-services \
+    --cluster "$CLUSTER_NAME" \
+    --services "$SERVICE_NAME" \
+    --query 'services[0].status' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "MISSING")
+
+  if [ "$SERVICE_STATUS" != "ACTIVE" ]; then
+    echo "ERROR: Agent '$AGENT_NAME' not found or not ACTIVE (status: $SERVICE_STATUS)."
+    echo "Deployed agents:"
+    list_deployed_agents
+    exit 1
+  fi
+
+  # Current credentials, from live SSM (the source of truth)
+  CURRENT_MAP=$(build_secrets_map_from_ssm "$AGENT_NAME")
+  echo "Current credentials for '$AGENT_NAME':"
+  if [ -n "$CURRENT_MAP" ]; then
+    echo "$CURRENT_MAP" | sed 's/ = .*//' | sed 's/^ */  - /'
+  else
+    echo "  (none)"
+  fi
+  echo ""
+
+  if [ "$SECRET_ACTION" = "add" ]; then
+    read -p "Credential name (e.g. hubspot, zoom): " SECRET_NAME < /dev/tty
+    if ! echo "$SECRET_NAME" | grep -Eq '^[a-z0-9_-]+$'; then
+      echo "ERROR: Use lowercase letters, digits, hyphens, underscores only."
+      exit 1
+    fi
+    echo "  Single API tokens: paste the token as-is."
+    echo "  Multi-field credentials: paste a JSON object, e.g."
+    echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
+    echo "  TIP: validate first with: bash test-api-credential.sh"
+    read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
+    echo ""
+    if [ -z "$SECRET_VALUE" ]; then
+      echo "ERROR: Empty value."
+      exit 1
+    fi
+
+    FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
+
+    if aws secretsmanager create-secret \
+        --name "$FULL_SECRET_NAME" \
+        --secret-string "$SECRET_VALUE" \
+        --region "$AWS_REGION" > /dev/null 2>&1; then
+      echo "  ✓ Stored: $FULL_SECRET_NAME"
+    else
+      aws secretsmanager update-secret \
+        --secret-id "$FULL_SECRET_NAME" \
+        --secret-string "$SECRET_VALUE" \
+        --region "$AWS_REGION" > /dev/null
+      echo "  ✓ Updated existing: $FULL_SECRET_NAME"
+    fi
+
+    SECRET_ARN=$(aws secretsmanager describe-secret \
+      --secret-id "$FULL_SECRET_NAME" \
+      --query ARN --output text --region "$AWS_REGION")
+    if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
+      echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
+      exit 1
+    fi
+
+    # New map = current map minus any same-named line, plus the new entry
+    NEW_MAP=$(echo "$CURRENT_MAP" | grep -v "^  ${SECRET_NAME} = " || true)
+    NEW_MAP="${NEW_MAP}
+  ${SECRET_NAME} = \"${SECRET_ARN}\""
+    NEW_MAP=$(echo "$NEW_MAP" | sed '/^$/d')
+
+  else
+    read -p "Credential name to remove: " SECRET_NAME < /dev/tty
+    if ! echo "$CURRENT_MAP" | grep -q "^  ${SECRET_NAME} = "; then
+      echo "ERROR: No credential named '$SECRET_NAME' on agent '$AGENT_NAME'."
+      exit 1
+    fi
+    NEW_MAP=$(echo "$CURRENT_MAP" | grep -v "^  ${SECRET_NAME} = " || true)
+    NEW_MAP=$(echo "$NEW_MAP" | sed '/^$/d')
+
+    FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
+    echo ""
+    echo "The Terraform apply will remove this agent's access (SSM pointer +"
+    echo "IAM grant). The Secrets Manager secret itself ($FULL_SECRET_NAME)"
+    read -p "can ALSO be deleted entirely. Delete the stored secret? (yes/no): " DELETE_SECRET < /dev/tty
+  fi
+
+  # Egress convention: any agent with credentials gets external egress;
+  # zero credentials -> egress off.
+  if [ -n "$NEW_MAP" ]; then
+    ENABLE_EXTERNAL="true"
+  else
+    ENABLE_EXTERNAL="false"
+  fi
+
+  # Pull live values so this apply cannot drift the agent's image or
+  # description (prod.tfvars reflects whichever agent was LAST touched —
+  # never trust it for a different agent).
+  echo ""
+  echo "Reading current task definition (image + description stay unchanged)..."
+  TASK_DEF_ARN=$(aws ecs describe-services \
+    --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" \
+    --query 'services[0].taskDefinition' --output text --region "$AWS_REGION")
+  AGENT_IMAGE=$(aws ecs describe-task-definition \
+    --task-definition "$TASK_DEF_ARN" \
+    --query 'taskDefinition.containerDefinitions[0].image' \
+    --output text --region "$AWS_REGION")
+  AGENT_DESC=$(aws ecs describe-task-definition \
+    --task-definition "$TASK_DEF_ARN" \
+    --query "taskDefinition.containerDefinitions[0].environment[?name=='AGENT_DESCRIPTION'].value | [0]" \
+    --output text --region "$AWS_REGION")
+  if [ -z "$AGENT_DESC" ] || [ "$AGENT_DESC" = "None" ]; then
+    AGENT_DESC="Isolated agent node"
+  fi
+
+  echo "  ✓ Image: $AGENT_IMAGE"
+
+  STATE_BUCKET=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_bucket" \
+    --query Parameter.Value --output text --region "$AWS_REGION")
+  LOCK_TABLE=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
+    --query Parameter.Value --output text --region "$AWS_REGION")
+  RDS_SG_ID=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
+    aws ec2 describe-security-groups \
+      --filters "Name=group-name,Values=${PROJECT_NAME}-${ENVIRONMENT}-postgres*" \
+      --query "SecurityGroups[0].GroupId" --output text --region "$AWS_REGION")
+  DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
+
+  cd "$AGENT_DIR"
+
+  cat > prod.tfvars << EOF
+aws_region   = "$AWS_REGION"
+project_name = "$PROJECT_NAME"
+environment  = "$ENVIRONMENT"
+
+default_tags = {
+  Owner      = "${OWNER:-platform-engineering}"
+  CostCenter = "${COST_CENTER:-unallocated}"
+}
+
+agent_name        = "$AGENT_NAME"
+agent_description = "$AGENT_DESC"
+
+step1_ssm_prefix = ""
+step2_ssm_prefix = ""
+
+rds_security_group_id  = "$RDS_SG_ID"
+agent_image            = "$AGENT_IMAGE"
+deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
+enable_external_egress = $ENABLE_EXTERNAL
+external_secrets = {
+$NEW_MAP
+}
+EOF
+
+  cat > backend.hcl << EOF
+bucket         = "$STATE_BUCKET"
+key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+region         = "$AWS_REGION"
+dynamodb_table = "$LOCK_TABLE"
+encrypt        = true
+EOF
+
+  echo ""
+  echo "Applying credential change (no image rebuild)..."
+  terraform init -backend-config=backend.hcl -reconfigure -input=false
+  apply_with_retry "prod.tfvars"
+
+  if [ "$SECRET_ACTION" = "remove" ] && [ "$DELETE_SECRET" = "yes" ]; then
+    aws secretsmanager delete-secret \
+      --secret-id "$FULL_SECRET_NAME" \
+      --force-delete-without-recovery \
+      --region "$AWS_REGION" > /dev/null && \
+      echo "  ✓ Secret deleted: $FULL_SECRET_NAME"
+  fi
+
+  echo ""
+  echo "=================================================="
+  echo " Done — credentials for '$AGENT_NAME':"
+  echo "=================================================="
+  FINAL_MAP=$(build_secrets_map_from_ssm "$AGENT_NAME")
+  if [ -n "$FINAL_MAP" ]; then
+    echo "$FINAL_MAP" | sed 's/ = .*//' | sed 's/^ */  - /'
+  else
+    echo "  (none)"
+  fi
+  echo ""
+  echo "The ECS service is rolling to pick up the change (agents read"
+  echo "credentials at container startup). Verify with:"
+  echo "  aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME \\"
+  echo "    --query 'services[0].[runningCount,deployments[0].rolloutState]' --output text --region $AWS_REGION"
+}
+
 add_agent() {
   echo "=================================================="
   echo " Add New Agent"
@@ -263,75 +509,26 @@ add_agent() {
   read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
   read -p "Agent description (e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
 
-  echo ""
-  read -p "Does this agent call external APIs? (y/n): " EXTERNAL < /dev/tty
-  EXTERNAL_SECRETS_MAP=""
-  SECRET_COUNT=0
-  if [ "$EXTERNAL" = "y" ]; then
+  # ----------------------------------------------------------------------
+  # Credentials are NOT collected at creation time. Agents are always
+  # created credential-free; attach/detach credentials any time with:
+  #   bash manage-agent.sh secret <agent_name> add
+  #   bash manage-agent.sh secret <agent_name> remove
+  #
+  # For an EXISTING agent being redeployed, rebuild the external_secrets
+  # map from the live SSM pointers so a code redeploy never wipes
+  # already-attached credentials.
+  # ----------------------------------------------------------------------
+  EXTERNAL_SECRETS_MAP=$(build_secrets_map_from_ssm "$AGENT_NAME")
+  if [ -n "$EXTERNAL_SECRETS_MAP" ]; then
     ENABLE_EXTERNAL="true"
     echo ""
-    echo "Add one credential per external service this agent calls."
-    echo "Names are how the agent code looks each credential up, e.g."
-    echo "get_secret(\"hubspot\") — use short lowercase names."
-    echo ""
-    while true; do
-      read -p "Credential name (e.g. hubspot, zoom) (or press enter to finish): " SECRET_NAME < /dev/tty
-      [ -z "$SECRET_NAME" ] && break
-
-      if ! echo "$SECRET_NAME" | grep -Eq '^[a-z0-9_-]+$'; then
-        echo "  ✗ Use lowercase letters, digits, hyphens, underscores only."
-        continue
-      fi
-
-      echo "  Single API tokens: paste the token as-is."
-      echo "  Multi-field credentials: paste a JSON object, e.g."
-      echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
-      read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
-      echo ""
-      if [ -z "$SECRET_VALUE" ]; then
-        echo "  ✗ Empty value — skipped."
-        continue
-      fi
-
-      # Namespace the Secrets Manager secret by project/agent so two agents
-      # can never collide on a bare name like "hubspot" and silently
-      # overwrite each other's credentials.
-      FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
-
-      if aws secretsmanager create-secret \
-          --name "$FULL_SECRET_NAME" \
-          --secret-string "$SECRET_VALUE" \
-          --region "$AWS_REGION" > /dev/null 2>&1; then
-        echo "  ✓ Stored: $FULL_SECRET_NAME"
-      else
-        aws secretsmanager update-secret \
-          --secret-id "$FULL_SECRET_NAME" \
-          --secret-string "$SECRET_VALUE" \
-          --region "$AWS_REGION" > /dev/null
-        echo "  ✓ Updated existing: $FULL_SECRET_NAME"
-      fi
-
-      SECRET_ARN=$(aws secretsmanager describe-secret \
-        --secret-id "$FULL_SECRET_NAME" \
-        --query ARN \
-        --output text \
-        --region "$AWS_REGION")
-
-      if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
-        echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
-        exit 1
-      fi
-
-      EXTERNAL_SECRETS_MAP="${EXTERNAL_SECRETS_MAP}  ${SECRET_NAME} = \"${SECRET_ARN}\"
-"
-      SECRET_COUNT=$((SECRET_COUNT + 1))
-      echo ""
-    done
-    if [ "$SECRET_COUNT" -eq 0 ]; then
-      echo "  (no credentials added — agent will run in no-credentials mode)"
-    fi
+    echo "  Preserving existing credentials for '$AGENT_NAME':"
+    echo "$EXTERNAL_SECRETS_MAP" | sed 's/ = .*//' | sed 's/^ */    - /'
   else
     ENABLE_EXTERNAL="false"
+    echo ""
+    echo "  No credentials configured (attach later with: bash manage-agent.sh secret $AGENT_NAME add)"
   fi
 
   # Read values from SSM
@@ -444,16 +641,6 @@ EOF
   # Build and push image (via CodeBuild — no local Docker required)
   echo ""
   echo "Building and pushing agent image via CodeBuild..."
-  # Select this agent's real logic if it exists, otherwise fall back to the
-  # empty shell. business_logic.py is a build-time staging file, regenerated
-  # fresh before every build — it should never be hand-edited or committed.
-  if [ -f "$AGENT_DIR/app/agents/${AGENT_NAME}.py" ]; then
-    cp "$AGENT_DIR/app/agents/${AGENT_NAME}.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
-  else
-    cp "$AGENT_DIR/app/agents/_shell.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
-  fi
   build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" "$ECR_IMAGE"
   echo "  ✓ Image pushed to ECR"
 
@@ -645,15 +832,29 @@ if [ -z "$ACTION" ]; then
   echo "  1) Add a new agent"
   echo "  2) Remove an existing agent"
   echo "  3) List deployed agents"
-  echo "  4) Exit"
+  echo "  4) Add a credential to an agent"
+  echo "  5) Remove a credential from an agent"
+  echo "  6) Exit"
   echo ""
-  read -p "Choose (1-4): " CHOICE < /dev/tty
+  read -p "Choose (1-6): " CHOICE < /dev/tty
 
   case $CHOICE in
     1) ACTION="add" ;;
     2) ACTION="remove" ;;
     3) list_deployed_agents; exit 0 ;;
-    4) exit 0 ;;
+    4)
+      list_deployed_agents
+      read -p "Agent name: " SECRET_AGENT_NAME < /dev/tty
+      secret_agent "$SECRET_AGENT_NAME" "add"
+      exit 0
+      ;;
+    5)
+      list_deployed_agents
+      read -p "Agent name: " SECRET_AGENT_NAME < /dev/tty
+      secret_agent "$SECRET_AGENT_NAME" "remove"
+      exit 0
+      ;;
+    6) exit 0 ;;
     *) echo "Invalid choice."; exit 1 ;;
   esac
 fi
@@ -662,8 +863,9 @@ case $ACTION in
   add)    add_agent ;;
   remove) remove_agent ;;
   list)   list_deployed_agents ;;
+  secret) secret_agent "${2:-}" "${3:-}" ;;
   *)
-    echo "Usage: bash add-agent.sh [add|remove|list]"
+    echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove]"
     exit 1
     ;;
 esac
