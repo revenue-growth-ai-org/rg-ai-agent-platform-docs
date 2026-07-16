@@ -644,11 +644,10 @@ fi
 AGENT_NAMES=()
 AGENT_DESCRIPTIONS=()
 AGENT_EXTERNAL=()
-# One entry per agent: a pre-built HCL map literal, e.g.
-#   hubspot = "arn:aws:secretsmanager:...:secret:asknicely-prod-arr-hubspot-abc123"
-#   zoom    = "arn:aws:secretsmanager:...:secret:asknicely-prod-arr-zoom-def456"
-# Built during the external-API prompt below; empty string means no
-# credentials for that agent (valid — external_secrets defaults to {}).
+# Agents are ALWAYS created credential-free (external_secrets = {},
+# enable_external_egress = false). Attach credentials any time after
+# install, without a container rebuild:
+#   bash add-agent.sh secret <agent_name> add
 AGENT_SECRETS_HCL=()
 
 for i in $(seq 1 "$AGENT_COUNT"); do
@@ -665,87 +664,17 @@ for i in $(seq 1 "$AGENT_COUNT"); do
   fi
   AGENT_DESC="Isolated agent node"
 
-  AGENT_SECRETS_MAP=""
-  SECRET_COUNT=0
-  if [ "$CI_MODE" = "true" ]; then
-    EXTERNAL="no"
-  else
-    echo ""
-    read -p "Does agent '$AGENT_NAME' call external APIs? (y/n): " EXTERNAL < /dev/tty
-  fi
-
-  if [ "$EXTERNAL" = "y" ]; then
-    ENABLE_EXTERNAL="true"
-    echo ""
-    echo "Add one credential per external service this agent calls."
-    echo "Names are how the agent code looks each credential up, e.g."
-    echo "get_secret(\"hubspot\") — use short lowercase names."
-    echo ""
-    while true; do
-      read -p "Credential name (e.g. hubspot, zoom) (or press enter to finish): " SECRET_NAME < /dev/tty
-      [ -z "$SECRET_NAME" ] && break
-
-      if ! echo "$SECRET_NAME" | grep -Eq '^[a-z0-9_-]+$'; then
-        echo "  ✗ Use lowercase letters, digits, hyphens, underscores only."
-        continue
-      fi
-
-      echo "  Single API tokens: paste the token as-is."
-      echo "  Multi-field credentials: paste a JSON object, e.g."
-      echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
-      read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
-      echo ""
-      if [ -z "$SECRET_VALUE" ]; then
-        echo "  ✗ Empty value — skipped."
-        continue
-      fi
-
-      # Namespace by project/agent so two agents never collide on a bare
-      # name like "hubspot" and silently overwrite each other's credentials.
-      FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
-
-      if aws secretsmanager create-secret \
-          --name "$FULL_SECRET_NAME" \
-          --secret-string "$SECRET_VALUE" \
-          --region "$AWS_REGION" > /dev/null 2>&1; then
-        echo "  ✓ Stored: $FULL_SECRET_NAME"
-      else
-        aws secretsmanager update-secret \
-          --secret-id "$FULL_SECRET_NAME" \
-          --secret-string "$SECRET_VALUE" \
-          --region "$AWS_REGION" > /dev/null
-        echo "  ✓ Updated existing: $FULL_SECRET_NAME"
-      fi
-
-      SECRET_ARN=$(aws secretsmanager describe-secret \
-        --secret-id "$FULL_SECRET_NAME" \
-        --query ARN \
-        --output text \
-        --region "$AWS_REGION")
-
-      if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
-        echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
-        exit 1
-      fi
-
-      AGENT_SECRETS_MAP="${AGENT_SECRETS_MAP}  ${SECRET_NAME} = \"${SECRET_ARN}\"
-"
-      SECRET_COUNT=$((SECRET_COUNT + 1))
-      echo ""
-    done
-    if [ "$SECRET_COUNT" -eq 0 ]; then
-      echo "  (no credentials added — agent will run in no-credentials mode)"
-    fi
-  else
-    ENABLE_EXTERNAL="false"
-  fi
-
-  AGENT_EXTERNAL+=("$ENABLE_EXTERNAL")
-  AGENT_SECRETS_HCL+=("$AGENT_SECRETS_MAP")
+  AGENT_EXTERNAL+=("false")
+  AGENT_SECRETS_HCL+=("")
 
   AGENT_NAMES+=("$AGENT_NAME")
   AGENT_DESCRIPTIONS+=("$AGENT_DESC")
 done
+
+echo ""
+echo "  NOTE: agents are created without external API credentials."
+echo "  After install completes, attach credentials per agent with:"
+echo "    bash add-agent.sh secret <agent_name> add"
 
 echo ""
 echo "=================================================="
@@ -1064,16 +993,7 @@ EOF
     echo "Contents of parent: $(ls $PARENT_DIR)"
     exit 1
   fi
-# Select this agent's real logic if it exists, otherwise fall back to the
-  # empty shell. business_logic.py is a build-time staging file, regenerated
-  # fresh before every build — it should never be hand-edited or committed.
-  if [ -f "$AGENT_DIR/app/agents/${AGENT_NAME}.py" ]; then
-    cp "$AGENT_DIR/app/agents/${AGENT_NAME}.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
-  else
-    cp "$AGENT_DIR/app/agents/_shell.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
-  fi
+
   build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" \
     "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}"
 
