@@ -18,12 +18,21 @@ and deploy agent implementations.
     │                              orchestrator routes directly without calling the LLM)
     ├── agents/
     │   ├── researcher/
-    │   │   ├── agent.py         — researcher agent implementation
+    │   │   ├── agent.py         — researcher agent implementation (exposes
+    │   │   │                      async def run(request, logger) -> dict)
     │   │   └── requirements.txt — Python dependencies
     │   └── scorer/
     │       ├── agent.py         — scorer agent implementation
     │       └── requirements.txt
     └── CUSTOMER-CONFIG-README.md
+
+> **Note on requirements.txt:** all agents build from the same shared
+> `app/` directory in the platform's agent repo, so `requirements.txt` is
+> shared across every agent's image — it is not private to one agent. If
+> more than one agent here ships its own `requirements.txt`,
+> `customer-setup.sh` warns you and only the last one applied takes
+> effect. Reconcile them into one combined file if agents need different
+> dependencies.
 
 ---
 
@@ -33,6 +42,9 @@ Before running this script the platform infrastructure must be deployed:
 
     cd rg-ai-agent-platform-docs
     bash master-setup.sh
+
+This repo, `rg-ai-agent-platform-docs`, and `3-rg-ai-agent-platform-agent`
+must all be cloned into the same parent directory.
 
 ---
 
@@ -60,59 +72,77 @@ Edit system_prompt.txt or routing_config.json then run:
       --prompt system_prompt.txt \
       --routing routing_config.json
 
+configure-orchestrator.sh shows a diff against the currently live routing
+config and requires confirmation before overwriting it.
+
 After pushing updated configuration, run test-webhook.sh to confirm the new
 routing rules work correctly before considering the change complete:
 
     bash ~/aws-agent-platform/rg-ai-agent-platform-docs/test-webhook.sh
 
+test-webhook.sh sends a synthetic, HMAC-signed webhook directly to the ALB
+— it does not go through your real CRM. It confirms the pipeline mechanics
+(routing, dispatch, response) work, not any agent's actual business logic.
+
 ### Update an agent implementation
 
-Edit agents/{agent_name}/agent.py then run:
+Edit agents/{agent_name}/agent.py (must expose
+`async def run(request, logger) -> dict`), copy it into the platform's
+agent repo, then rebuild and redeploy that one agent:
 
-    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/deploy-agent.sh \
-      --agent {agent_name} \
-      --file agents/{agent_name}/agent.py
+    cp agents/{agent_name}/agent.py \
+      ~/aws-agent-platform/3-rg-ai-agent-platform-agent/app/agents/{agent_name}.py
+
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/redeploy-agent.sh \
+      --agent {agent_name}
+
+redeploy-agent.sh rebuilds the image via CodeBuild, pushes it, forces a
+new ECS deployment, waits for the rollout, and tails recent logs.
 
 ---
 
 ## Rolling back changes
 
-Every deploy-agent.sh run creates a timestamped backup of the previous agent.py.
-To roll back:
+Rollback is via git, not a built-in backup mechanism. In the agent repo:
 
-    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/deploy-agent.sh \
-      --agent {agent_name} \
-      --file agents/{agent_name}/agent.py.backup.{timestamp}
+    cd ~/aws-agent-platform/3-rg-ai-agent-platform-agent
+    git log -- app/agents/{agent_name}.py
+    git checkout <previous_commit> -- app/agents/{agent_name}.py
+
+Then redeploy:
+
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/redeploy-agent.sh \
+      --agent {agent_name}
 
 ---
 
 ## Adding API keys after deployment
 
-API keys for agent workflows are stored in AWS Secrets Manager and
-can be added at any time without reinstalling or redeploying
-infrastructure. To add a new key:
+Credentials are managed with `manage-agent.sh`, not directly through
+`aws secretsmanager`. This namespaces credential names per
+project/environment/agent (so two agents can never collide on a bare
+name like "hubspot" and overwrite each other), grants IAM access scoped
+to exactly that credential, and restarts the agent automatically so the
+change takes effect — no container rebuild needed.
 
-    aws secretsmanager create-secret \
-      --name "SECRET_NAME" \
-      --secret-string "your-secret-value-here" \
-      --region <your-region>
+**Validate the credential first**, before storing it:
 
-To update an existing key:
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/test-api-credential.sh
 
-    aws secretsmanager update-secret \
-      --secret-id "SECRET_NAME" \
-      --secret-string "your-new-value-here" \
-      --region <your-region>
+### Add a credential
 
-Replace SECRET_NAME with the exact name used in your agent.py
-(e.g. HUBSPOT_API_KEY, SLACK_BOT_TOKEN, ZOOMINFO_API_KEY).
-The name must match exactly — it is case sensitive.
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/manage-agent.sh \
+      secret {agent_name} add
 
-After adding or updating a key, force-redeploy the agent to pick
-up the new value:
+You'll be asked for a credential name (this is what the agent's own code
+looks up via `get_secret("<name>")` — e.g. `hubspot`, `zoom`) and the
+value: a plain token, or a JSON object for multi-field credentials.
 
-    aws ecs update-service \
-      --cluster <project>-<env>-ecs \
-      --service <project>-<env>-<agent-name> \
-      --force-new-deployment \
-      --region <your-region>
+### Remove a credential
+
+    bash ~/aws-agent-platform/rg-ai-agent-platform-docs/manage-agent.sh \
+      secret {agent_name} remove
+
+Do not create secrets directly with `aws secretsmanager create-secret` —
+a manually-created secret has no corresponding SSM pointer or IAM grant,
+so the agent's code will not be able to discover or read it.
