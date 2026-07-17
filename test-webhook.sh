@@ -99,7 +99,7 @@ if [ -z "${TEST_RECORD_ID:-}" ]; then
     ATTEMPTS=0
     while [ -z "${TEST_RECORD_ID:-}" ] && [ "$ATTEMPTS" -lt 3 ]; do
       ATTEMPTS=$((ATTEMPTS + 1))
-      read -r -p "Enter the ID of an existing test record in your CRM (e.g., a CRM record ID): " TEST_RECORD_ID
+      read -r -p "Enter the ID of an existing test record in your CRM (e.g., a HubSpot deal ID from the deal page URL): " TEST_RECORD_ID
       if [ -z "$TEST_RECORD_ID" ]; then
         echo "ERROR: record ID cannot be empty."
       fi
@@ -339,11 +339,27 @@ if [ "${#AGENT_NAMES[@]}" -eq 0 ]; then
 elif [ "${#AGENT_NAMES[@]}" -eq 1 ]; then
   AGENT_NAME="${AGENT_NAMES[0]}"
   echo "  ✓ Agent detected: $AGENT_NAME"
+elif [ -n "$OVERRIDE_AGENT" ]; then
+  # --agent was passed explicitly on the command line; use it as-is (an
+  # invalid name here still fails loudly later when routing/ECS lookups
+  # for it come up empty).
+  AGENT_NAME="$OVERRIDE_AGENT"
+  echo "  ✓ Multiple agents deployed; using --agent: $AGENT_NAME"
 else
   NAMES_CSV=$(printf '%s, ' "${AGENT_NAMES[@]}")
   NAMES_CSV="${NAMES_CSV%, }"
-  AGENT_NAME="${AGENT_NAMES[0]}"
-  echo "  ✓ Agents detected: $NAMES_CSV — testing with $AGENT_NAME"
+  echo "  Multiple agents deployed: $NAMES_CSV"
+  echo ""
+  echo "Which agent do you want to test?"
+  select CHOSEN_AGENT in "${AGENT_NAMES[@]}"; do
+    if [ -n "$CHOSEN_AGENT" ]; then
+      AGENT_NAME="$CHOSEN_AGENT"
+      OVERRIDE_AGENT="$CHOSEN_AGENT"
+      break
+    fi
+    echo "Invalid choice — enter the number next to one of the agents above."
+  done < /dev/tty
+  echo "  ✓ Testing with: $AGENT_NAME"
 fi
 echo ""
 
