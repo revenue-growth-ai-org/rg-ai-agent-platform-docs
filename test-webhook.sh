@@ -99,7 +99,7 @@ if [ -z "${TEST_RECORD_ID:-}" ]; then
     ATTEMPTS=0
     while [ -z "${TEST_RECORD_ID:-}" ] && [ "$ATTEMPTS" -lt 3 ]; do
       ATTEMPTS=$((ATTEMPTS + 1))
-      read -r -p "Enter the ID of an existing test record in your CRM (e.g., a HubSpot deal ID from the deal page URL): " TEST_RECORD_ID
+      read -r -p "Enter the ID of an existing test record in your CRM (e.g., a CRM record ID): " TEST_RECORD_ID
       if [ -z "$TEST_RECORD_ID" ]; then
         echo "ERROR: record ID cannot be empty."
       fi
