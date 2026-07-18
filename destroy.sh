@@ -17,8 +17,18 @@ DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
 
 CI_MODE="${CI_MODE:-false}"
 
+# Preserve any explicitly-provided PROJECT_NAME/ENVIRONMENT so they can
+# override defaults.env below. Without this, destroy.sh can only ever
+# target whatever project this local clone happens to be configured for —
+# there was no way to run it against a DIFFERENT (e.g. orphaned/stale)
+# project name without first overwriting defaults.env by hand.
+OVERRIDE_PROJECT_NAME="$PROJECT_NAME"
+OVERRIDE_ENVIRONMENT="$ENVIRONMENT"
+
 if [ -f "$DEFAULTS_FILE" ]; then
   source "$DEFAULTS_FILE"
+  [ -n "$OVERRIDE_PROJECT_NAME" ] && PROJECT_NAME="$OVERRIDE_PROJECT_NAME"
+  [ -n "$OVERRIDE_ENVIRONMENT" ] && ENVIRONMENT="$OVERRIDE_ENVIRONMENT"
 elif [ -n "$PROJECT_NAME" ]; then
   echo "WARNING: defaults.env not found. Proceeding using PROJECT_NAME from the environment."
   ENVIRONMENT="${ENVIRONMENT:-prod}"
@@ -481,21 +491,9 @@ EOF
   if [ "$DIR" = "$ORCH_DIR" ]; then
     # webhook_secret is seeded by install.sh/master-setup.sh outside Terraform
     # (bootstrap.tf no longer creates it) — delete it explicitly here.
-    WEBHOOK_SECRET_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
-    DELETE_OUTPUT=$(aws ssm delete-parameter \
-      --name "$WEBHOOK_SECRET_PATH" \
-      --region "$AWS_REGION" 2>&1)
-    DELETE_STATUS=$?
-
-    if [ $DELETE_STATUS -eq 0 ]; then
-      echo "  ✓ Deleted SSM parameter: $WEBHOOK_SECRET_PATH"
-    elif echo "$DELETE_OUTPUT" | grep -q "ParameterNotFound"; then
-      echo "  ✓ SSM parameter already absent: $WEBHOOK_SECRET_PATH"
-    else
-      echo "  ⚠ WARNING: Failed to delete $WEBHOOK_SECRET_PATH — verify-destroy.sh"
-      echo "    will flag this as a leftover. Real error:"
-      echo "    $DELETE_OUTPUT"
-    fi
+    aws ssm delete-parameter \
+      --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret" \
+      --region "$AWS_REGION" > /dev/null 2>&1 || true
   fi
 
   if [ "$DIR" = "$BASE_DIR" ]; then
