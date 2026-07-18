@@ -699,6 +699,36 @@ for DBI_ID in $AUTO_BACKUP_IDS; do
 done
 
 # ------------------------------------------------------------------------------
+# Step 6.6 — Delete every ECR repository belonging to this project
+#
+# ECR repositories are created imperatively by the build script
+# (aws ecr create-repository, in redeploy-common.sh) — never declared in
+# Terraform, so `terraform destroy` has no knowledge of them at all and
+# they survive every destroy indefinitely, each one holding real (billed)
+# image storage. Deletes every repo whose name starts with
+# "${PROJECT_NAME}-" (covers every agent's repo plus the orchestrator's,
+# regardless of how many agents were ever added) — --force removes the
+# repo even with images still inside, correct here since the whole
+# project is being torn down.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 6.6 ] Deleting ECR repositories for this project..."
+
+ECR_REPO_NAMES=$(aws ecr describe-repositories \
+  --query "repositories[?starts_with(repositoryName, '${PROJECT_NAME}-')].repositoryName" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+
+for REPO in $ECR_REPO_NAMES; do
+  [ -z "$REPO" ] && continue
+  aws ecr delete-repository \
+    --repository-name "$REPO" \
+    --force \
+    --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted ECR repository: $REPO" || true
+done
+
+# ------------------------------------------------------------------------------
 # Step 7 — Verify
 # ------------------------------------------------------------------------------
 
