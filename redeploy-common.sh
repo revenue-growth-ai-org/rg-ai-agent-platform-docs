@@ -72,7 +72,7 @@ get_ecr_digest() {
 # ------------------------------------------------------------------------------
 # Zip an app directory into a source artifact for CodeBuild, excluding files
 # that should never leave the local machine or aren't needed for the build:
-# local env/secret files, real tfvars, any leftover timestamped backup files,
+# local env/secret files, real tfvars, prior deploy-agent.sh backups, any
 # stray Terraform state/cache, and node_modules (JS tooling, if ever added).
 #
 # Args: APP_DIR DEST_ZIP_PATH
@@ -236,6 +236,30 @@ build_tag_push_and_verify() {
     --repository-name "$IMAGE_NAME" \
     --region "$AWS_REGION" > /dev/null
   echo "  ✓ ECR repository ready: $IMAGE_NAME"
+
+  # Ensure old images auto-expire instead of accumulating indefinitely.
+  # Applied on every build (idempotent — just resets the same policy) so
+  # both new and pre-existing repositories end up covered, with no
+  # separate one-time setup step required. Keeps the most recent 5 images;
+  # deletes anything beyond that, oldest first.
+  aws ecr put-lifecycle-policy \
+    --repository-name "$IMAGE_NAME" \
+    --lifecycle-policy-text '{
+      "rules": [
+        {
+          "rulePriority": 1,
+          "description": "Keep only the 5 most recent images",
+          "selection": {
+            "tagStatus": "any",
+            "countType": "imageCountMoreThan",
+            "countNumber": 5
+          },
+          "action": { "type": "expire" }
+        }
+      ]
+    }' \
+    --region "$AWS_REGION" > /dev/null
+  echo "  ✓ ECR lifecycle policy applied (keeps 5 most recent images)"
 
   echo "Reading currently-deployed image digest (before build)..."
   local OLD_DIGEST
