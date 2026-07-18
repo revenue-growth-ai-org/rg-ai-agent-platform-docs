@@ -163,11 +163,28 @@ SERVICE_STATUS=$(aws ecs describe-services \
 
 if [ "$SERVICE_STATUS" != "ACTIVE" ]; then
   echo "ERROR: Agent '$AGENT_NAME' is not deployed (service not found or not active: $SERVICE_NAME)."
-  echo "Deploy it first with: bash add-agent.sh add"
+  echo "Deploy it first with: bash manage-agent.sh add"
   exit 1
 fi
 
 echo "  ✓ Agent service found and active"
+
+# ------------------------------------------------------------------------------
+# Stage this agent's real logic, if it exists, into business_logic.py
+# ------------------------------------------------------------------------------
+# business_logic.py is a build-time staging file, regenerated fresh before
+# every build — it should never be hand-edited or committed directly. This
+# is what makes editing app/agents/<agent_name>.py and running this script
+# actually take effect; skipping this step would just rebuild whatever was
+# last staged (commonly still the empty shell).
+
+if [ -f "$APP_DIR/agents/${AGENT_NAME}.py" ]; then
+  cp "$APP_DIR/agents/${AGENT_NAME}.py" "$APP_DIR/business_logic.py"
+  echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
+else
+  cp "$APP_DIR/agents/_shell.py" "$APP_DIR/business_logic.py"
+  echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
+fi
 
 # ------------------------------------------------------------------------------
 # Build, push, and verify the new image
