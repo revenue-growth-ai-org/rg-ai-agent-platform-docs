@@ -109,7 +109,7 @@ for PROJECT in $CANDIDATE_PROJECTS; do
     echo ""
     for ENV in $ENVIRONMENTS; do
       [ -z "$ENV" ] && continue
-      echo "    PROJECT_NAME=$PROJECT ENVIRONMENT=$ENV bash destroy.sh"
+      echo "    DESTROY_TARGET_PROJECT_NAME=$PROJECT DESTROY_TARGET_ENVIRONMENT=$ENV bash destroy.sh"
     done
     echo ""
     echo "  After destroy.sh completes, re-run this script to confirm"
