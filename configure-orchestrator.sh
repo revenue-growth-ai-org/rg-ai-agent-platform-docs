@@ -248,6 +248,75 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# Anthropic key pre-flight check
+#
+# Only runs if this routing config actually needs the LLM — i.e. at least
+# one rule omits match_field/match_value (the same condition
+# orchestrator.py's route() uses to fall through to the LLM path via
+# _find_deterministic_match returning None). Fully deterministic configs
+# never touch Anthropic at all, so there's nothing to check.
+#
+# The orchestrator's own startup only requires the SECRET'S ARN (wired in
+# automatically by Terraform) — it never validates the key's actual value,
+# so a bad key would sit silently unnoticed until the first real LLM
+# routing decision was attempted, possibly against live traffic. This
+# check catches that here instead, before the new config goes live.
+# ------------------------------------------------------------------------------
+
+NEEDS_LLM=$(python3 -c "
+import json
+data = json.load(open('$ROUTING_FILE'))
+for rule in data.get('rules', []):
+    if 'match_field' not in rule or 'match_value' not in rule:
+        print('true')
+        break
+else:
+    print('false')
+")
+
+if [ "$NEEDS_LLM" = "true" ]; then
+  echo ""
+  echo "This routing config includes at least one LLM-routed rule (no"
+  echo "match_field/match_value), so it needs a working Anthropic API key."
+  echo "Checking..."
+
+  ANTHROPIC_SECRET_ARN=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/anthropic_api_key_secret_arn" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -z "$ANTHROPIC_SECRET_ARN" ]; then
+    echo "  WARNING: Could not find the Anthropic secret ARN in SSM — skipping"
+    echo "  this check. If LLM-based routing fails later, verify the key"
+    echo "  manually with: bash test-api-credential.sh"
+  else
+    ANTHROPIC_KEY=$(aws secretsmanager get-secret-value \
+      --secret-id "$ANTHROPIC_SECRET_ARN" \
+      --query SecretString --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+    ANTHROPIC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+      https://api.anthropic.com/v1/models \
+      -H "x-api-key: $ANTHROPIC_KEY" \
+      -H "anthropic-version: 2023-06-01")
+
+    if [[ "$ANTHROPIC_STATUS" =~ ^2 ]]; then
+      echo "  ✓ Anthropic API key is valid"
+    else
+      echo ""
+      echo "  ⚠ WARNING: Anthropic API key check returned HTTP $ANTHROPIC_STATUS —"
+      echo "  it may be invalid, expired, or revoked. LLM-based routing rules"
+      echo "  will fail at runtime until this is fixed."
+      echo ""
+      read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
+      if [ "$LLM_CONFIRM" != "yes" ]; then
+        echo "Cancelled. Nothing has been pushed to SSM."
+        exit 0
+      fi
+    fi
+  fi
+  echo ""
+fi
+
+# ------------------------------------------------------------------------------
 # Push system prompt to SSM
 # ------------------------------------------------------------------------------
 
