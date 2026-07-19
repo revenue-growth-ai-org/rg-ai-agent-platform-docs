@@ -686,16 +686,71 @@ if data.get('Objects'):
       echo "  ⚠ Could not fully delete VPC (dependents may remain — check manually): $FALLBACK_VPC_ID"
   fi
 
-  # --- Every SSM parameter for this project (base/orchestrator outputs,
-  # bootstrap outputs, agent sub-paths — a full sweep is simpler and more
-  # reliable than tracking every individual parameter path by layer) ---
-  echo "  Sweeping all SSM parameters under /${PROJECT_NAME}..."
-  for PARAM in $(aws ssm get-parameters-by-path --path "/${PROJECT_NAME}" --recursive \
-      --query "Parameters[].Name" --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
-    [ -z "$PARAM" ] && continue
-    aws ssm delete-parameter --name "$PARAM" --region "$AWS_REGION" > /dev/null 2>&1 || true
+  # --- KMS alias + key (RDS encryption; also used by the CloudTrail bucket) ---
+  # The alias is what actually blocks a fresh apply (alias name collision) —
+  # delete it immediately. The underlying key can only be SCHEDULED for
+  # deletion (AWS enforces a minimum 7-day window; there is no instant delete),
+  # but that's fine — once the alias is gone, a fresh install can create a new
+  # key/alias pair without conflict regardless of the old key's pending state.
+  FALLBACK_KMS_ALIAS="alias/${NAME_PREFIX_EXACT}-rds"
+  FALLBACK_KMS_KEY_ID=$(aws kms describe-key --key-id "$FALLBACK_KMS_ALIAS" --query "KeyMetadata.KeyId" --output text --region "$AWS_REGION" 2>/dev/null)
+  if [ -n "$FALLBACK_KMS_KEY_ID" ] && [ "$FALLBACK_KMS_KEY_ID" != "None" ]; then
+    aws kms delete-alias --alias-name "$FALLBACK_KMS_ALIAS" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted KMS alias: $FALLBACK_KMS_ALIAS"
+    aws kms schedule-key-deletion --key-id "$FALLBACK_KMS_KEY_ID" --pending-window-in-days 7 --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Scheduled KMS key for deletion (7-day AWS-enforced minimum): $FALLBACK_KMS_KEY_ID" || true
+  fi
+
+  # --- SNS alarm topic (ARN is deterministic — no need to search for it) ---
+  aws sns delete-topic --topic-arn "arn:aws:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${NAME_PREFIX_EXACT}-alarms" --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted SNS topic: ${NAME_PREFIX_EXACT}-alarms" || true
+
+  # --- CloudWatch alarms (broad prefix sweep — matches all 6 named alarms
+  # without needing to track each one individually) ---
+  FALLBACK_ALARM_NAMES=$(aws cloudwatch describe-alarms \
+    --query "MetricAlarms[?starts_with(AlarmName, '${NAME_PREFIX_EXACT}-')].AlarmName" \
+    --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+  if [ -n "$FALLBACK_ALARM_NAMES" ]; then
+    aws cloudwatch delete-alarms --alarm-names $FALLBACK_ALARM_NAMES --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted CloudWatch alarms: $(echo $FALLBACK_ALARM_NAMES | tr '\n' ' ')" || true
+  fi
+
+  # --- IAM roles: broad prefix sweep instead of tracking each one
+  # individually — catches ecs-task-exec, ecs-task, per-agent
+  # ecs-task-<name> (dynamic, varies by how many agents existed), and
+  # anything else created under this project's naming convention. ---
+  for FALLBACK_ROLE in $(aws iam list-roles \
+      --query "Roles[?starts_with(RoleName, '${NAME_PREFIX_EXACT}-')].RoleName" \
+      --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+    [ -z "$FALLBACK_ROLE" ] && continue
+    for POLICY_ARN in $(aws iam list-attached-role-policies --role-name "$FALLBACK_ROLE" --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null); do
+      aws iam detach-role-policy --role-name "$FALLBACK_ROLE" --policy-arn "$POLICY_ARN" > /dev/null 2>&1 || true
+    done
+    for POLICY_NAME in $(aws iam list-role-policies --role-name "$FALLBACK_ROLE" --query "PolicyNames" --output text 2>/dev/null); do
+      aws iam delete-role-policy --role-name "$FALLBACK_ROLE" --policy-name "$POLICY_NAME" > /dev/null 2>&1 || true
+    done
+    aws iam delete-role --role-name "$FALLBACK_ROLE" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted IAM role: $FALLBACK_ROLE" || \
+      echo "  ⚠ Could not fully delete IAM role (may need manual cleanup): $FALLBACK_ROLE"
   done
-  echo "  ✓ SSM parameter sweep complete"
+
+  # --- CloudWatch log groups: broad sweep by exact project-environment
+  # substring (not bare project name, to avoid matching a similarly-named
+  # project like "revg" vs "revg-3") — catches the ECS placeholder log
+  # group, RDS's own postgres log groups, the ECS cluster's container
+  # insights log group, and anything else regardless of which module or
+  # resource created it. ---
+  for FALLBACK_LOG_GROUP in $(aws logs describe-log-groups \
+      --query "logGroups[?contains(logGroupName, '${NAME_PREFIX_EXACT}')].logGroupName" \
+      --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+    [ -z "$FALLBACK_LOG_GROUP" ] && continue
+    aws logs delete-log-group --log-group-name "$FALLBACK_LOG_GROUP" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted log group: $FALLBACK_LOG_GROUP" || true
+  done
+
+  # (SSM parameter sweep moved to run once, unconditionally, after bootstrap
+  # teardown below — running it here would delete the very parameters the
+  # bootstrap fallback still needs to read, like acm_certificate_arn.)
 fi
 
 # Guard: destroying bootstrap (state bucket, lock table, SSM params) while platform
@@ -816,6 +871,7 @@ else
   FALLBACK_ARTIFACTS_BUCKET="${PROJECT_NAME}-${ENVIRONMENT}-build-artifacts-${AWS_ACCOUNT_ID}"
   FALLBACK_LOCK_TABLE="${PROJECT_NAME}-${ENVIRONMENT}-terraform-state-lock"
   FALLBACK_CODEBUILD_ROLE="${PROJECT_NAME}-${ENVIRONMENT}-codebuild-image-builder"
+  FALLBACK_CODEBUILD_PROJECT="${PROJECT_NAME}-${ENVIRONMENT}-image-builder"
   FALLBACK_CODEBUILD_LOG_GROUP="/aws/codebuild/${PROJECT_NAME}-${ENVIRONMENT}-image-builder"
   FALLBACK_ANTHROPIC_SECRET="${PROJECT_NAME}-${ENVIRONMENT}/anthropic-api-key"
 
@@ -850,6 +906,9 @@ if data.get('Objects'):
   aws logs delete-log-group --log-group-name "$FALLBACK_CODEBUILD_LOG_GROUP" --region "$AWS_REGION" > /dev/null 2>&1 && \
     echo "  ✓ Deleted log group: $FALLBACK_CODEBUILD_LOG_GROUP" || true
 
+  aws codebuild delete-project --name "$FALLBACK_CODEBUILD_PROJECT" --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted CodeBuild project: $FALLBACK_CODEBUILD_PROJECT" || true
+
   if aws iam get-role --role-name "$FALLBACK_CODEBUILD_ROLE" > /dev/null 2>&1; then
     for POLICY_ARN in $(aws iam list-attached-role-policies --role-name "$FALLBACK_CODEBUILD_ROLE" --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null); do
       aws iam detach-role-policy --role-name "$FALLBACK_CODEBUILD_ROLE" --policy-arn "$POLICY_ARN" > /dev/null 2>&1 || true
@@ -865,7 +924,33 @@ if data.get('Objects'):
   aws secretsmanager delete-secret --secret-id "$FALLBACK_ANTHROPIC_SECRET" \
     --force-delete-without-recovery --region "$AWS_REGION" > /dev/null 2>&1 && \
     echo "  ✓ Deleted secret: $FALLBACK_ANTHROPIC_SECRET" || true
+
+  FALLBACK_CERT_ARN=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/acm_certificate_arn" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+  if [ -n "$FALLBACK_CERT_ARN" ] && [ "$FALLBACK_CERT_ARN" != "None" ]; then
+    aws acm delete-certificate --certificate-arn "$FALLBACK_CERT_ARN" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted ACM certificate: $FALLBACK_CERT_ARN" || \
+      echo "  ⚠ Could not delete ACM certificate (may still be attached to an ALB listener): $FALLBACK_CERT_ARN"
+  fi
 fi
+
+# ------------------------------------------------------------------------------
+# Sweep every SSM parameter for this project — always runs once, regardless
+# of which layers used a Terraform-based destroy vs. the fallback above.
+# Deleting an already-gone parameter is a harmless no-op, so there's no
+# downside to running this unconditionally; it's simpler and more reliable
+# than tracking every individual parameter path per layer.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "  Sweeping all SSM parameters under /${PROJECT_NAME}..."
+for PARAM in $(aws ssm get-parameters-by-path --path "/${PROJECT_NAME}" --recursive \
+    --query "Parameters[].Name" --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+  [ -z "$PARAM" ] && continue
+  aws ssm delete-parameter --name "$PARAM" --region "$AWS_REGION" > /dev/null 2>&1 || true
+done
+echo "  ✓ SSM parameter sweep complete"
 
 # ------------------------------------------------------------------------------
 # Step 6 — Delete local repos for a completely fresh start
