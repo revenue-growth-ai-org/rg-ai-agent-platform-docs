@@ -632,6 +632,70 @@ if data.get('Objects'):
   echo "  Destroying bootstrap..."
   terraform init -reconfigure > /dev/null 2>&1
   terraform destroy -var-file="prod.tfvars" -auto-approve
+else
+  echo ""
+  echo "  ⚠ WARNING: bootstrap repo not found or has no prod.tfvars — skipping"
+  echo "  Terraform-based bootstrap teardown. Falling back to direct deletion"
+  echo "  of the well-known bootstrap resources by name (state bucket, lock"
+  echo "  table, CodeBuild role/log group, Anthropic secret). This is a"
+  echo "  best-effort fallback, not a substitute for a real terraform destroy —"
+  echo "  if bootstrap ever creates additional resources beyond these, they"
+  echo "  will NOT be caught here."
+  echo ""
+
+  FALLBACK_STATE_BUCKET="${PROJECT_NAME}-${ENVIRONMENT}-terraform-state-${AWS_ACCOUNT_ID}"
+  FALLBACK_ARTIFACTS_BUCKET="${PROJECT_NAME}-${ENVIRONMENT}-build-artifacts-${AWS_ACCOUNT_ID}"
+  FALLBACK_LOCK_TABLE="${PROJECT_NAME}-${ENVIRONMENT}-terraform-state-lock"
+  FALLBACK_CODEBUILD_ROLE="${PROJECT_NAME}-${ENVIRONMENT}-codebuild-image-builder"
+  FALLBACK_CODEBUILD_LOG_GROUP="/aws/codebuild/${PROJECT_NAME}-${ENVIRONMENT}-image-builder"
+  FALLBACK_ANTHROPIC_SECRET="${PROJECT_NAME}-${ENVIRONMENT}/anthropic-api-key"
+
+  for BUCKET in "$FALLBACK_STATE_BUCKET" "$FALLBACK_ARTIFACTS_BUCKET"; do
+    if aws s3api head-bucket --bucket "$BUCKET" --region "$AWS_REGION" 2>/dev/null; then
+      aws s3 rm "s3://$BUCKET" --recursive --region "$AWS_REGION" > /dev/null 2>&1 || true
+      aws s3api list-object-versions --bucket "$BUCKET" --output json \
+        --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
+        python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if data.get('Objects'):
+    print(json.dumps(data))
+" | aws s3api delete-objects --bucket "$BUCKET" --delete file:///dev/stdin --region "$AWS_REGION" > /dev/null 2>&1 || true
+      aws s3api list-object-versions --bucket "$BUCKET" --output json \
+        --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
+        python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if data.get('Objects'):
+    print(json.dumps(data))
+" | aws s3api delete-objects --bucket "$BUCKET" --delete file:///dev/stdin --region "$AWS_REGION" > /dev/null 2>&1 || true
+      aws s3 rb "s3://$BUCKET" --force --region "$AWS_REGION" > /dev/null 2>&1 && \
+        echo "  ✓ Deleted S3 bucket: $BUCKET" || \
+        echo "  ⚠ Could not fully delete S3 bucket (may need manual cleanup): $BUCKET"
+    fi
+  done
+
+  aws dynamodb delete-table --table-name "$FALLBACK_LOCK_TABLE" --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted DynamoDB table: $FALLBACK_LOCK_TABLE" || true
+
+  aws logs delete-log-group --log-group-name "$FALLBACK_CODEBUILD_LOG_GROUP" --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted log group: $FALLBACK_CODEBUILD_LOG_GROUP" || true
+
+  if aws iam get-role --role-name "$FALLBACK_CODEBUILD_ROLE" > /dev/null 2>&1; then
+    for POLICY_ARN in $(aws iam list-attached-role-policies --role-name "$FALLBACK_CODEBUILD_ROLE" --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null); do
+      aws iam detach-role-policy --role-name "$FALLBACK_CODEBUILD_ROLE" --policy-arn "$POLICY_ARN" > /dev/null 2>&1 || true
+    done
+    for POLICY_NAME in $(aws iam list-role-policies --role-name "$FALLBACK_CODEBUILD_ROLE" --query "PolicyNames" --output text 2>/dev/null); do
+      aws iam delete-role-policy --role-name "$FALLBACK_CODEBUILD_ROLE" --policy-name "$POLICY_NAME" > /dev/null 2>&1 || true
+    done
+    aws iam delete-role --role-name "$FALLBACK_CODEBUILD_ROLE" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted IAM role: $FALLBACK_CODEBUILD_ROLE" || \
+      echo "  ⚠ Could not fully delete IAM role (may need manual cleanup): $FALLBACK_CODEBUILD_ROLE"
+  fi
+
+  aws secretsmanager delete-secret --secret-id "$FALLBACK_ANTHROPIC_SECRET" \
+    --force-delete-without-recovery --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted secret: $FALLBACK_ANTHROPIC_SECRET" || true
 fi
 
 # ------------------------------------------------------------------------------
