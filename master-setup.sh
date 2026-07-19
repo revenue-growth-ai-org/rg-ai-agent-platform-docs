@@ -595,29 +595,33 @@ echo "=================================================="
 echo " Anthropic API Key"
 echo "=================================================="
 echo ""
+echo "Only needed if your routing config will use LLM-based routing (as"
+echo "opposed to static/deterministic rules). You can skip this now and"
+echo "set it later — bash configure-orchestrator.sh will prompt for it"
+echo "automatically the first time you push a routing config that needs it."
+echo ""
 
-while true; do
-  if [ "$CI_MODE" = "true" ]; then
-    ANTHROPIC_API_KEY="${CI_ANTHROPIC_API_KEY:-}"
-    if [ -z "$ANTHROPIC_API_KEY" ]; then
-      echo "ERROR: CI_MODE=true but CI_ANTHROPIC_API_KEY is not set."
-      exit 1
-    fi
-  else
-    echo "Enter your Anthropic API key:"
-    read -s ANTHROPIC_API_KEY < /dev/tty
-    echo ""
+if [ "$CI_MODE" = "true" ]; then
+  ANTHROPIC_API_KEY="${CI_ANTHROPIC_API_KEY:-}"
+  if [ -n "$ANTHROPIC_API_KEY" ]; then
+    aws secretsmanager put-secret-value \
+      --secret-id "$ANTHROPIC_SECRET_ARN" \
+      --secret-string "$ANTHROPIC_API_KEY"
+    echo "✓ Anthropic API key stored successfully"
   fi
+else
+  echo "Enter your Anthropic API key (or press enter to skip for now):"
+  read -s ANTHROPIC_API_KEY < /dev/tty
+  echo ""
   if [ -z "$ANTHROPIC_API_KEY" ]; then
-    echo "API key cannot be empty. Please try again."
-    continue
+    echo "  Skipped — no Anthropic API key set yet."
+  else
+    aws secretsmanager put-secret-value \
+      --secret-id "$ANTHROPIC_SECRET_ARN" \
+      --secret-string "$ANTHROPIC_API_KEY"
+    echo "✓ Anthropic API key stored successfully"
   fi
-  aws secretsmanager put-secret-value \
-    --secret-id "$ANTHROPIC_SECRET_ARN" \
-    --secret-string "$ANTHROPIC_API_KEY"
-  echo "✓ Anthropic API key stored successfully"
-  break
-done
+fi
 
 # ------------------------------------------------------------------------------
 # Collect agent configuration
