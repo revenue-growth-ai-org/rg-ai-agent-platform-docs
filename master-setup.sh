@@ -591,36 +591,18 @@ source "$SCRIPT_DIR/redeploy-common.sh"
 echo ""
 echo "Step 0 complete."
 echo ""
-echo "=================================================="
-echo " Anthropic API Key"
-echo "=================================================="
-echo ""
-echo "Only needed if your routing config will use LLM-based routing (as"
-echo "opposed to static/deterministic rules). You can skip this now and"
-echo "set it later — bash configure-orchestrator.sh will prompt for it"
-echo "automatically the first time you push a routing config that needs it."
-echo ""
 
-if [ "$CI_MODE" = "true" ]; then
-  ANTHROPIC_API_KEY="${CI_ANTHROPIC_API_KEY:-}"
-  if [ -n "$ANTHROPIC_API_KEY" ]; then
-    aws secretsmanager put-secret-value \
-      --secret-id "$ANTHROPIC_SECRET_ARN" \
-      --secret-string "$ANTHROPIC_API_KEY"
-    echo "✓ Anthropic API key stored successfully"
-  fi
-else
-  echo "Enter your Anthropic API key (or press enter to skip for now):"
-  read -s ANTHROPIC_API_KEY < /dev/tty
-  echo ""
-  if [ -z "$ANTHROPIC_API_KEY" ]; then
-    echo "  Skipped — no Anthropic API key set yet."
-  else
-    aws secretsmanager put-secret-value \
-      --secret-id "$ANTHROPIC_SECRET_ARN" \
-      --secret-string "$ANTHROPIC_API_KEY"
-    echo "✓ Anthropic API key stored successfully"
-  fi
+# Anthropic API key is NOT collected here. It's only needed if a routing
+# config actually uses LLM-based routing — bash configure-orchestrator.sh
+# prompts for it automatically the first time you push a routing config
+# that needs it, and the orchestrator itself runs fine with none set until
+# then (see app/llm/client.py — the key is fetched lazily, only when an
+# LLM routing decision is actually attempted).
+if [ "$CI_MODE" = "true" ] && [ -n "$CI_ANTHROPIC_API_KEY" ]; then
+  aws secretsmanager put-secret-value \
+    --secret-id "$ANTHROPIC_SECRET_ARN" \
+    --secret-string "$CI_ANTHROPIC_API_KEY" > /dev/null
+  echo "  ✓ Anthropic API key pre-seeded from CI_ANTHROPIC_API_KEY"
 fi
 
 # ------------------------------------------------------------------------------
