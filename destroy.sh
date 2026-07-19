@@ -448,6 +448,9 @@ EOF
   done
 fi
 
+ORCH_SKIPPED="false"
+BASE_SKIPPED="false"
+
 for DIR in "$ORCH_DIR" "$BASE_DIR"; do
   if [ -z "$DIR" ]; then
     continue
@@ -456,6 +459,8 @@ for DIR in "$ORCH_DIR" "$BASE_DIR"; do
     echo ""
     echo "  ⚠ WARNING: $(basename $DIR) has no prod.tfvars — skipping Terraform destroy for this repo."
     echo "  ⚠ Its resources may survive and will be caught by the bootstrap-teardown guard below."
+    [ "$DIR" = "$ORCH_DIR" ] && ORCH_SKIPPED="true"
+    [ "$DIR" = "$BASE_DIR" ] && BASE_SKIPPED="true"
     continue
   fi
   echo ""
@@ -528,6 +533,170 @@ EOF
     done
   fi
 done
+
+if [ "$ORCH_SKIPPED" = "true" ] || [ "$BASE_SKIPPED" = "true" ]; then
+  echo ""
+  echo "  ⚠ WARNING: base and/or orchestrator Terraform destroy was skipped."
+  echo "  Falling back to direct deletion of known resources by name, in"
+  echo "  dependency order. This is a best-effort fallback, not a substitute"
+  echo "  for a real terraform destroy — if these layers ever create"
+  echo "  resources beyond what's covered here, they will NOT be caught."
+  echo ""
+
+  NAME_PREFIX_EXACT="${PROJECT_NAME}-${ENVIRONMENT}"
+
+  # --- ECS cluster and any services still registered on it ---
+  FALLBACK_CLUSTER="${NAME_PREFIX_EXACT}-ecs"
+  if aws ecs describe-clusters --clusters "$FALLBACK_CLUSTER" --query "clusters[0].status" --output text --region "$AWS_REGION" 2>/dev/null | grep -q "ACTIVE"; then
+    for SVC_ARN in $(aws ecs list-services --cluster "$FALLBACK_CLUSTER" --query "serviceArns" --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+      aws ecs update-service --cluster "$FALLBACK_CLUSTER" --service "$SVC_ARN" --desired-count 0 --region "$AWS_REGION" > /dev/null 2>&1 || true
+      aws ecs delete-service --cluster "$FALLBACK_CLUSTER" --service "$SVC_ARN" --force --region "$AWS_REGION" > /dev/null 2>&1 && \
+        echo "  ✓ Deleted ECS service: $SVC_ARN" || true
+    done
+    aws ecs delete-cluster --cluster "$FALLBACK_CLUSTER" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted ECS cluster: $FALLBACK_CLUSTER" || true
+  fi
+
+  # --- ALB and its target groups ---
+  FALLBACK_ALB_ARN=$(aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[?LoadBalancerName=='${NAME_PREFIX_EXACT}-webhook-alb'].LoadBalancerArn" \
+    --output text --region "$AWS_REGION" 2>/dev/null)
+  if [ -n "$FALLBACK_ALB_ARN" ]; then
+    for LISTENER_ARN in $(aws elbv2 describe-listeners --load-balancer-arn "$FALLBACK_ALB_ARN" --query "Listeners[].ListenerArn" --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws elbv2 delete-listener --listener-arn "$LISTENER_ARN" --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+    aws elbv2 delete-load-balancer --load-balancer-arn "$FALLBACK_ALB_ARN" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted ALB: ${NAME_PREFIX_EXACT}-webhook-alb"
+    echo "  Waiting 60s for ALB deletion to fully process before removing target groups..."
+    sleep 60
+  fi
+  for TG_ARN in $(aws elbv2 describe-target-groups \
+      --query "TargetGroups[?starts_with(TargetGroupName, '${NAME_PREFIX_EXACT}-')].TargetGroupArn" \
+      --output text --region "$AWS_REGION" 2>/dev/null); do
+    aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted target group: $TG_ARN" || true
+  done
+
+  # --- RDS instance (final snapshot created normally; Step 6.5 below cleans it up) ---
+  FALLBACK_RDS_ID="${NAME_PREFIX_EXACT}-postgres"
+  if aws rds describe-db-instances --db-instance-identifier "$FALLBACK_RDS_ID" --region "$AWS_REGION" > /dev/null 2>&1; then
+    aws rds delete-db-instance --db-instance-identifier "$FALLBACK_RDS_ID" --region "$AWS_REGION" > /dev/null 2>&1
+    echo "  Waiting for RDS instance to finish deleting (this can take several minutes)..."
+    aws rds wait db-instance-deleted --db-instance-identifier "$FALLBACK_RDS_ID" --region "$AWS_REGION" 2>/dev/null || true
+    echo "  ✓ RDS instance deleted: $FALLBACK_RDS_ID"
+  fi
+
+  # --- CloudTrail trail and its S3 bucket ---
+  FALLBACK_TRAIL="${NAME_PREFIX_EXACT}-trail"
+  aws cloudtrail delete-trail --name "$FALLBACK_TRAIL" --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted CloudTrail trail: $FALLBACK_TRAIL" || true
+
+  FALLBACK_CLOUDTRAIL_BUCKET="${NAME_PREFIX_EXACT}-cloudtrail-${AWS_ACCOUNT_ID}"
+  if aws s3api head-bucket --bucket "$FALLBACK_CLOUDTRAIL_BUCKET" --region "$AWS_REGION" 2>/dev/null; then
+    aws s3 rm "s3://$FALLBACK_CLOUDTRAIL_BUCKET" --recursive --region "$AWS_REGION" > /dev/null 2>&1 || true
+    for KIND in Versions DeleteMarkers; do
+      aws s3api list-object-versions --bucket "$FALLBACK_CLOUDTRAIL_BUCKET" --output json \
+        --query "{Objects: ${KIND}[].{Key:Key,VersionId:VersionId}}" 2>/dev/null | \
+        python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if data.get('Objects'):
+    print(json.dumps(data))
+" | aws s3api delete-objects --bucket "$FALLBACK_CLOUDTRAIL_BUCKET" --delete file:///dev/stdin --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+    aws s3 rb "s3://$FALLBACK_CLOUDTRAIL_BUCKET" --force --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted CloudTrail bucket: $FALLBACK_CLOUDTRAIL_BUCKET" || \
+      echo "  ⚠ Could not fully delete CloudTrail bucket (may need manual cleanup): $FALLBACK_CLOUDTRAIL_BUCKET"
+  fi
+
+  # --- Cloud Map namespace and any services registered inside it ---
+  FALLBACK_NS_ID=$(aws servicediscovery list-namespaces \
+    --query "Namespaces[?Name=='${NAME_PREFIX_EXACT}.internal'].Id" \
+    --output text --region "$AWS_REGION" 2>/dev/null)
+  if [ -n "$FALLBACK_NS_ID" ]; then
+    for SVC_ID in $(aws servicediscovery list-services \
+        --filters "Name=NAMESPACE_ID,Values=${FALLBACK_NS_ID},Condition=EQ" \
+        --query "Services[].Id" --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws servicediscovery delete-service --id "$SVC_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+    aws servicediscovery delete-namespace --id "$FALLBACK_NS_ID" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted Cloud Map namespace: ${NAME_PREFIX_EXACT}.internal" || \
+      echo "  ⚠ Could not delete Cloud Map namespace (may still have services registered): ${NAME_PREFIX_EXACT}.internal"
+  fi
+
+  # --- VPC and every dependent, in the required order ---
+  FALLBACK_VPC_ID=$(aws ec2 describe-vpcs \
+    --filters "Name=tag:Name,Values=${NAME_PREFIX_EXACT}-vpc" \
+    --query "Vpcs[0].VpcId" --output text --region "$AWS_REGION" 2>/dev/null)
+  if [ -n "$FALLBACK_VPC_ID" ] && [ "$FALLBACK_VPC_ID" != "None" ]; then
+    echo "  Found VPC: $FALLBACK_VPC_ID — deleting dependents in order..."
+
+    for NAT_ID in $(aws ec2 describe-nat-gateways \
+        --filter "Name=vpc-id,Values=${FALLBACK_VPC_ID}" "Name=state,Values=available,pending" \
+        --query "NatGateways[].NatGatewayId" --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws ec2 delete-nat-gateway --nat-gateway-id "$NAT_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+      echo "  Waiting for NAT gateway to finish deleting: $NAT_ID (takes a few minutes)..."
+      aws ec2 wait nat-gateway-deleted --nat-gateway-ids "$NAT_ID" --region "$AWS_REGION" 2>/dev/null || true
+    done
+
+    for EIP_ALLOC in $(aws ec2 describe-addresses \
+        --query "Addresses[?AssociationId==null && Tags[?Value=='${NAME_PREFIX_EXACT}']].AllocationId" \
+        --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws ec2 release-address --allocation-id "$EIP_ALLOC" --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+
+    for VPCE_ID in $(aws ec2 describe-vpc-endpoints \
+        --filters "Name=vpc-id,Values=${FALLBACK_VPC_ID}" \
+        --query "VpcEndpoints[].VpcEndpointId" --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws ec2 delete-vpc-endpoints --vpc-endpoint-ids "$VPCE_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+
+    for IGW_ID in $(aws ec2 describe-internet-gateways \
+        --filters "Name=attachment.vpc-id,Values=${FALLBACK_VPC_ID}" \
+        --query "InternetGateways[].InternetGatewayId" --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws ec2 detach-internet-gateway --internet-gateway-id "$IGW_ID" --vpc-id "$FALLBACK_VPC_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+      aws ec2 delete-internet-gateway --internet-gateway-id "$IGW_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+
+    for RT_ID in $(aws ec2 describe-route-tables \
+        --filters "Name=vpc-id,Values=${FALLBACK_VPC_ID}" \
+        --query "RouteTables[?Associations[0].Main!=\`true\`].RouteTableId" \
+        --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws ec2 delete-route-table --route-table-id "$RT_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+
+    for SUBNET_ID in $(aws ec2 describe-subnets \
+        --filters "Name=vpc-id,Values=${FALLBACK_VPC_ID}" \
+        --query "Subnets[].SubnetId" --output text --region "$AWS_REGION" 2>/dev/null); do
+      aws ec2 delete-subnet --subnet-id "$SUBNET_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+
+    # Security groups can cross-reference each other; try twice before giving up.
+    for PASS in 1 2; do
+      for SG_ID in $(aws ec2 describe-security-groups \
+          --filters "Name=vpc-id,Values=${FALLBACK_VPC_ID}" \
+          --query "SecurityGroups[?GroupName!='default'].GroupId" \
+          --output text --region "$AWS_REGION" 2>/dev/null); do
+        aws ec2 delete-security-group --group-id "$SG_ID" --region "$AWS_REGION" > /dev/null 2>&1 || true
+      done
+    done
+
+    aws ec2 delete-vpc --vpc-id "$FALLBACK_VPC_ID" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted VPC: $FALLBACK_VPC_ID" || \
+      echo "  ⚠ Could not fully delete VPC (dependents may remain — check manually): $FALLBACK_VPC_ID"
+  fi
+
+  # --- Every SSM parameter for this project (base/orchestrator outputs,
+  # bootstrap outputs, agent sub-paths — a full sweep is simpler and more
+  # reliable than tracking every individual parameter path by layer) ---
+  echo "  Sweeping all SSM parameters under /${PROJECT_NAME}..."
+  for PARAM in $(aws ssm get-parameters-by-path --path "/${PROJECT_NAME}" --recursive \
+      --query "Parameters[].Name" --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+    [ -z "$PARAM" ] && continue
+    aws ssm delete-parameter --name "$PARAM" --region "$AWS_REGION" > /dev/null 2>&1 || true
+  done
+  echo "  ✓ SSM parameter sweep complete"
+fi
 
 # Guard: destroying bootstrap (state bucket, lock table, SSM params) while platform
 # resources for this project still exist would strand their Terraform state — there
