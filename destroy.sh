@@ -586,6 +586,14 @@ if [ "$ORCH_SKIPPED" = "true" ] || [ "$BASE_SKIPPED" = "true" ]; then
     echo "  ✓ RDS instance deleted: $FALLBACK_RDS_ID"
   fi
 
+  # --- RDS DB subnet group (created by the VPC module itself when
+  # create_database_subnet_group = true; named after the VPC, not the RDS
+  # instance — must be deleted after the instance, since AWS won't allow
+  # deleting a subnet group still referenced by a live instance) ---
+  FALLBACK_DB_SUBNET_GROUP="${NAME_PREFIX_EXACT}-vpc"
+  aws rds delete-db-subnet-group --db-subnet-group-name "$FALLBACK_DB_SUBNET_GROUP" --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted RDS DB subnet group: $FALLBACK_DB_SUBNET_GROUP" || true
+
   # --- CloudTrail trail and its S3 bucket ---
   FALLBACK_TRAIL="${NAME_PREFIX_EXACT}-trail"
   aws cloudtrail delete-trail --name "$FALLBACK_TRAIL" --region "$AWS_REGION" > /dev/null 2>&1 && \
