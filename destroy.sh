@@ -17,18 +17,23 @@ DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
 
 CI_MODE="${CI_MODE:-false}"
 
-# Preserve any explicitly-provided PROJECT_NAME/ENVIRONMENT so they can
-# override defaults.env below. Without this, destroy.sh can only ever
-# target whatever project this local clone happens to be configured for —
-# there was no way to run it against a DIFFERENT (e.g. orphaned/stale)
-# project name without first overwriting defaults.env by hand.
-OVERRIDE_PROJECT_NAME="$PROJECT_NAME"
-OVERRIDE_ENVIRONMENT="$ENVIRONMENT"
-
-if [ -f "$DEFAULTS_FILE" ]; then
+# To target a project OTHER than whatever this local clone's defaults.env is
+# configured for (e.g. cleaning up an old/orphaned project by name), set
+# DESTROY_TARGET_PROJECT_NAME / DESTROY_TARGET_ENVIRONMENT explicitly.
+#
+# This is DELIBERATELY a different variable name than PROJECT_NAME/
+# ENVIRONMENT. Those two get set by many unrelated commands (e.g. `source
+# defaults.env` to check service status) and can easily still be sitting in
+# a shell session from something else entirely. An override that keyed off
+# PROJECT_NAME/ENVIRONMENT directly could silently destroy the WRONG
+# project with no warning at all if either was already set for an
+# unrelated reason — this happened for real once; do not reintroduce it.
+if [ -n "$DESTROY_TARGET_PROJECT_NAME" ]; then
+  PROJECT_NAME="$DESTROY_TARGET_PROJECT_NAME"
+  ENVIRONMENT="${DESTROY_TARGET_ENVIRONMENT:-prod}"
+  echo "Using explicit override: DESTROY_TARGET_PROJECT_NAME=$PROJECT_NAME"
+elif [ -f "$DEFAULTS_FILE" ]; then
   source "$DEFAULTS_FILE"
-  [ -n "$OVERRIDE_PROJECT_NAME" ] && PROJECT_NAME="$OVERRIDE_PROJECT_NAME"
-  [ -n "$OVERRIDE_ENVIRONMENT" ] && ENVIRONMENT="$OVERRIDE_ENVIRONMENT"
 elif [ -n "$PROJECT_NAME" ]; then
   echo "WARNING: defaults.env not found. Proceeding using PROJECT_NAME from the environment."
   ENVIRONMENT="${ENVIRONMENT:-prod}"
@@ -52,13 +57,16 @@ echo "  Env:      $ENVIRONMENT"
 echo "  Account:  $AWS_ACCOUNT_ID"
 echo "  Region:   $AWS_REGION"
 echo ""
+echo "  This will permanently destroy ALL infrastructure for this project"
+echo "  and environment — VPC, database, load balancer, everything."
+echo ""
 if [ "$CI_MODE" = "true" ]; then
-  CONFIRM="yes"
+  CONFIRM="$PROJECT_NAME"
 else
-  read -p "Type 'yes' to destroy ALL platform resources: " CONFIRM < /dev/tty
+  read -p "Type the project name shown above ('$PROJECT_NAME') to confirm: " CONFIRM < /dev/tty
 fi
-if [ "$CONFIRM" != "yes" ]; then
-  echo "Cancelled."
+if [ "$CONFIRM" != "$PROJECT_NAME" ]; then
+  echo "Cancelled — input did not match '$PROJECT_NAME'."
   exit 0
 fi
 
@@ -491,9 +499,19 @@ EOF
   if [ "$DIR" = "$ORCH_DIR" ]; then
     # webhook_secret is seeded by install.sh/master-setup.sh outside Terraform
     # (bootstrap.tf no longer creates it) — delete it explicitly here.
-    aws ssm delete-parameter \
-      --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret" \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
+    WEBHOOK_SECRET_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
+    DELETE_OUTPUT=$(aws ssm delete-parameter \
+      --name "$WEBHOOK_SECRET_PATH" \
+      --region "$AWS_REGION" 2>&1)
+    DELETE_STATUS=$?
+    if [ $DELETE_STATUS -eq 0 ]; then
+      echo "  ✓ Deleted SSM parameter: $WEBHOOK_SECRET_PATH"
+    elif echo "$DELETE_OUTPUT" | grep -q "ParameterNotFound"; then
+      echo "  ✓ SSM parameter already absent: $WEBHOOK_SECRET_PATH"
+    else
+      echo "  ⚠ WARNING: Failed to delete $WEBHOOK_SECRET_PATH — real error:"
+      echo "    $DELETE_OUTPUT"
+    fi
   fi
 
   if [ "$DIR" = "$BASE_DIR" ]; then
