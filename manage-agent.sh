@@ -231,14 +231,28 @@ list_deployed_agents() {
       continue
     fi
     AGENT_NAME=$(echo "$SERVICE_NAME" | sed "s/${PROJECT_NAME}-${ENVIRONMENT}-//")
-    RUNNING=$(aws ecs describe-services \
+    SERVICE_INFO=$(aws ecs describe-services \
       --cluster "$CLUSTER_NAME" \
       --services "$SERVICE_NAME" \
-      --query 'services[0].runningCount' \
+      --query 'services[0].[runningCount,taskDefinition]' \
       --output text \
-      --region "$AWS_REGION" 2>/dev/null || echo "0")
+      --region "$AWS_REGION" 2>/dev/null || echo "")
+    RUNNING=$(echo "$SERVICE_INFO" | awk '{print $1}')
+    TASK_DEF_ARN=$(echo "$SERVICE_INFO" | awk '{print $2}')
+    [ -z "$RUNNING" ] && RUNNING="0"
+    DESCRIPTION=""
+    if [ -n "$TASK_DEF_ARN" ]; then
+      DESCRIPTION=$(aws ecs describe-task-definition \
+        --task-definition "$TASK_DEF_ARN" \
+        --query "taskDefinition.containerDefinitions[0].environment[?name=='AGENT_DESCRIPTION'].value | [0]" \
+        --output text \
+        --region "$AWS_REGION" 2>/dev/null || echo "")
+    fi
+    [ -z "$DESCRIPTION" ] || [ "$DESCRIPTION" = "None" ] && DESCRIPTION="(no description set)"
     INTERNAL_URL="http://${AGENT_NAME}.${PROJECT_NAME}-${ENVIRONMENT}.internal/execute"
-    echo "  • $AGENT_NAME — $RUNNING task(s) running — $INTERNAL_URL"
+    echo "  • $AGENT_NAME — $RUNNING task(s) running"
+    echo "      Description: $DESCRIPTION"
+    echo "      URL: $INTERNAL_URL"
     AGENT_COUNT=$((AGENT_COUNT+1))
   done <<< "$SERVICES"
 
@@ -498,6 +512,131 @@ EOF
   echo "    --query 'services[0].[runningCount,deployments[0].rolloutState]' --output text --region $AWS_REGION"
 }
 
+# ------------------------------------------------------------------------------
+# Update an existing agent's description only — no container rebuild.
+# AGENT_DESCRIPTION feeds into a tag and one environment variable, both of
+# which force a new task definition revision on their own; the ECS service
+# then rolls to it automatically as part of the same terraform apply, the
+# same way secret_agent() rolls credential changes without a CodeBuild run.
+# ------------------------------------------------------------------------------
+
+describe_agent() {
+  local AGENT_NAME="$1"
+
+  if [ -z "$AGENT_NAME" ]; then
+    echo "Usage: bash manage-agent.sh describe <agent_name>"
+    exit 1
+  fi
+
+  echo "=================================================="
+  echo " Update Description — agent: $AGENT_NAME"
+  echo "=================================================="
+  echo ""
+
+  CLUSTER_NAME="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
+  SERVICE_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}"
+  SERVICE_STATUS=$(aws ecs describe-services \
+    --cluster "$CLUSTER_NAME" \
+    --services "$SERVICE_NAME" \
+    --query 'services[0].status' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "MISSING")
+
+  if [ "$SERVICE_STATUS" != "ACTIVE" ]; then
+    echo "ERROR: Agent '$AGENT_NAME' not found or not ACTIVE (status: $SERVICE_STATUS)."
+    echo "Deployed agents:"
+    list_deployed_agents
+    exit 1
+  fi
+
+  TASK_DEF_ARN=$(aws ecs describe-services \
+    --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" \
+    --query 'services[0].taskDefinition' --output text --region "$AWS_REGION")
+  CURRENT_DESC=$(aws ecs describe-task-definition \
+    --task-definition "$TASK_DEF_ARN" \
+    --query "taskDefinition.containerDefinitions[0].environment[?name=='AGENT_DESCRIPTION'].value | [0]" \
+    --output text --region "$AWS_REGION")
+  AGENT_IMAGE=$(aws ecs describe-task-definition \
+    --task-definition "$TASK_DEF_ARN" \
+    --query 'taskDefinition.containerDefinitions[0].image' \
+    --output text --region "$AWS_REGION")
+
+  echo "Current description: ${CURRENT_DESC:-(none set)}"
+  echo ""
+  NEW_DESC=""
+  while [ -z "$NEW_DESC" ]; do
+    read -p "New description (required): " NEW_DESC < /dev/tty
+    [ -z "$NEW_DESC" ] && echo "  ✗ Description cannot be empty."
+  done
+
+  CURRENT_MAP=$(build_secrets_map_from_ssm "$AGENT_NAME")
+  if [ -n "$CURRENT_MAP" ]; then
+    ENABLE_EXTERNAL="true"
+  else
+    ENABLE_EXTERNAL="false"
+  fi
+
+  STATE_BUCKET=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_bucket" \
+    --query Parameter.Value --output text --region "$AWS_REGION")
+  LOCK_TABLE=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
+    --query Parameter.Value --output text --region "$AWS_REGION")
+  RDS_SG_ID=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
+    aws ec2 describe-security-groups \
+      --filters "Name=group-name,Values=${PROJECT_NAME}-${ENVIRONMENT}-postgres*" \
+      --query "SecurityGroups[0].GroupId" --output text --region "$AWS_REGION")
+  DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
+
+  cd "$AGENT_DIR"
+
+  cat > prod.tfvars << EOF
+aws_region   = "$AWS_REGION"
+project_name = "$PROJECT_NAME"
+environment  = "$ENVIRONMENT"
+
+default_tags = {
+  Owner      = "${OWNER:-platform-engineering}"
+  CostCenter = "${COST_CENTER:-unallocated}"
+}
+
+agent_name        = "$AGENT_NAME"
+agent_description = "$NEW_DESC"
+
+step1_ssm_prefix = ""
+step2_ssm_prefix = ""
+
+rds_security_group_id  = "$RDS_SG_ID"
+agent_image            = "$AGENT_IMAGE"
+deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
+enable_external_egress = $ENABLE_EXTERNAL
+external_secrets = {
+$CURRENT_MAP
+}
+EOF
+
+  cat > backend.hcl << EOF
+bucket         = "$STATE_BUCKET"
+key            = "3-rg-ai-agent-platform-agent/${AGENT_NAME}/terraform.tfstate"
+region         = "$AWS_REGION"
+dynamodb_table = "$LOCK_TABLE"
+encrypt        = true
+EOF
+
+  echo ""
+  echo "Applying description change (no image rebuild)..."
+  terraform init -backend-config=backend.hcl -reconfigure -input=false
+  apply_with_retry "prod.tfvars"
+
+  echo ""
+  echo "  ✓ Description updated: $NEW_DESC"
+  echo "  The ECS service is rolling to pick up the change. Verify with:"
+  echo "  aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME \\"
+  echo "    --query 'services[0].[runningCount,deployments[0].rolloutState]' --output text --region $AWS_REGION"
+}
+
 add_agent() {
   echo "=================================================="
   echo " Add New Agent"
@@ -507,7 +646,11 @@ add_agent() {
   list_deployed_agents
 
   read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
-  read -p "Agent description (e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
+  AGENT_DESC=""
+  while [ -z "$AGENT_DESC" ]; do
+    read -p "Agent description (required — e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
+    [ -z "$AGENT_DESC" ] && echo "  ✗ Description cannot be empty."
+  done
 
   # ----------------------------------------------------------------------
   # Credentials are NOT collected at creation time. Agents are always
@@ -641,18 +784,6 @@ EOF
   # Build and push image (via CodeBuild — no local Docker required)
   echo ""
   echo "Building and pushing agent image via CodeBuild..."
-
-  # Select this agent's real logic if it exists, otherwise fall back to the
-  # empty shell. business_logic.py is a build-time staging file, regenerated
-  # fresh before every build — it should never be hand-edited or committed.
-  if [ -f "$AGENT_DIR/app/agents/${AGENT_NAME}.py" ]; then
-    cp "$AGENT_DIR/app/agents/${AGENT_NAME}.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
-  else
-    cp "$AGENT_DIR/app/agents/_shell.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
-  fi
-
   build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" "$ECR_IMAGE"
   echo "  ✓ Image pushed to ECR"
 
@@ -846,9 +977,10 @@ if [ -z "$ACTION" ]; then
   echo "  3) List deployed agents"
   echo "  4) Add a credential to an agent"
   echo "  5) Remove a credential from an agent"
-  echo "  6) Exit"
+  echo "  6) Update an agent's description"
+  echo "  7) Exit"
   echo ""
-  read -p "Choose (1-6): " CHOICE < /dev/tty
+  read -p "Choose (1-7): " CHOICE < /dev/tty
 
   case $CHOICE in
     1) ACTION="add" ;;
@@ -866,18 +998,25 @@ if [ -z "$ACTION" ]; then
       secret_agent "$SECRET_AGENT_NAME" "remove"
       exit 0
       ;;
-    6) exit 0 ;;
+    6)
+      list_deployed_agents
+      read -p "Agent name: " DESCRIBE_AGENT_NAME < /dev/tty
+      describe_agent "$DESCRIBE_AGENT_NAME"
+      exit 0
+      ;;
+    7) exit 0 ;;
     *) echo "Invalid choice."; exit 1 ;;
   esac
 fi
 
 case $ACTION in
-  add)    add_agent ;;
-  remove) remove_agent ;;
-  list)   list_deployed_agents ;;
-  secret) secret_agent "${2:-}" "${3:-}" ;;
+  add)      add_agent ;;
+  remove)   remove_agent ;;
+  list)     list_deployed_agents ;;
+  secret)   secret_agent "${2:-}" "${3:-}" ;;
+  describe) describe_agent "${2:-}" ;;
   *)
-    echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove]"
+    echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|describe <agent_name>]"
     exit 1
     ;;
 esac
