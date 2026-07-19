@@ -648,7 +648,16 @@ for i in $(seq 1 "$AGENT_COUNT"); do
   else
     read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
   fi
-  AGENT_DESC="Isolated agent node"
+
+  if [ "$CI_MODE" = "true" ]; then
+    AGENT_DESC="${CI_AGENT_DESC:-Isolated agent node}"
+  else
+    AGENT_DESC=""
+    while [ -z "$AGENT_DESC" ]; do
+      read -p "Agent description (required — e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
+      [ -z "$AGENT_DESC" ] && echo "  ✗ Description cannot be empty."
+    done
+  fi
 
   AGENT_EXTERNAL+=("false")
   AGENT_SECRETS_HCL+=("")
