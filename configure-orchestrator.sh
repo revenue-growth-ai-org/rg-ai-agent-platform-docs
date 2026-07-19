@@ -293,23 +293,52 @@ if [ "$NEEDS_LLM" = "true" ]; then
       --secret-id "$ANTHROPIC_SECRET_ARN" \
       --query SecretString --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
-    ANTHROPIC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-      https://api.anthropic.com/v1/models \
-      -H "x-api-key: $ANTHROPIC_KEY" \
-      -H "anthropic-version: 2023-06-01")
+    if [ -z "$ANTHROPIC_KEY" ]; then
+      echo ""
+      echo "  No Anthropic API key has been set yet, and this routing config"
+      echo "  needs one for LLM-based routing to work."
+      echo ""
+      echo "  Enter your Anthropic API key now (or press enter to skip and"
+      echo "  set it later by re-running this script):"
+      read -s ANTHROPIC_KEY < /dev/tty
+      echo ""
+      if [ -z "$ANTHROPIC_KEY" ]; then
+        echo "  Skipped. LLM-based routing rules will fail until a key is set."
+        echo ""
+        read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
+        if [ "$LLM_CONFIRM" != "yes" ]; then
+          echo "Cancelled. Nothing has been pushed to SSM."
+          exit 0
+        fi
+        ANTHROPIC_KEY=""
+      else
+        aws secretsmanager put-secret-value \
+          --secret-id "$ANTHROPIC_SECRET_ARN" \
+          --secret-string "$ANTHROPIC_KEY" \
+          --region "$AWS_REGION" > /dev/null
+        echo "  ✓ Anthropic API key stored"
+      fi
+    fi
 
-    if [[ "$ANTHROPIC_STATUS" =~ ^2 ]]; then
-      echo "  ✓ Anthropic API key is valid"
-    else
-      echo ""
-      echo "  ⚠ WARNING: Anthropic API key check returned HTTP $ANTHROPIC_STATUS —"
-      echo "  it may be invalid, expired, or revoked. LLM-based routing rules"
-      echo "  will fail at runtime until this is fixed."
-      echo ""
-      read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
-      if [ "$LLM_CONFIRM" != "yes" ]; then
-        echo "Cancelled. Nothing has been pushed to SSM."
-        exit 0
+    if [ -n "$ANTHROPIC_KEY" ]; then
+      ANTHROPIC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+        https://api.anthropic.com/v1/models \
+        -H "x-api-key: $ANTHROPIC_KEY" \
+        -H "anthropic-version: 2023-06-01")
+
+      if [[ "$ANTHROPIC_STATUS" =~ ^2 ]]; then
+        echo "  ✓ Anthropic API key is valid"
+      else
+        echo ""
+        echo "  ⚠ WARNING: Anthropic API key check returned HTTP $ANTHROPIC_STATUS —"
+        echo "  it may be invalid, expired, or revoked. LLM-based routing rules"
+        echo "  will fail at runtime until this is fixed."
+        echo ""
+        read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
+        if [ "$LLM_CONFIRM" != "yes" ]; then
+          echo "Cancelled. Nothing has been pushed to SSM."
+          exit 0
+        fi
       fi
     fi
   fi
