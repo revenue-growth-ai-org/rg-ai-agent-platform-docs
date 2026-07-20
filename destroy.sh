@@ -42,7 +42,7 @@ else
   exit 1
 fi
 
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
 AWS_REGION="${AWS_REGION:-us-east-2}"
 NAME_PREFIX="${PROJECT_NAME}-${ENVIRONMENT}"
 CLUSTER="${NAME_PREFIX}-ecs"
@@ -505,10 +505,13 @@ EOF
     # webhook_secret is seeded by install.sh/master-setup.sh outside Terraform
     # (bootstrap.tf no longer creates it) — delete it explicitly here.
     WEBHOOK_SECRET_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
-    DELETE_OUTPUT=$(aws ssm delete-parameter \
+    if DELETE_OUTPUT=$(aws ssm delete-parameter \
       --name "$WEBHOOK_SECRET_PATH" \
-      --region "$AWS_REGION" 2>&1)
-    DELETE_STATUS=$?
+      --region "$AWS_REGION" 2>&1); then
+      DELETE_STATUS=0
+    else
+      DELETE_STATUS=$?
+    fi
     if [ $DELETE_STATUS -eq 0 ]; then
       echo "  ✓ Deleted SSM parameter: $WEBHOOK_SECRET_PATH"
     elif echo "$DELETE_OUTPUT" | grep -q "ParameterNotFound"; then
@@ -560,7 +563,7 @@ if [ "$ORCH_SKIPPED" = "true" ] || [ "$BASE_SKIPPED" = "true" ]; then
   # --- ALB and its target groups ---
   FALLBACK_ALB_ARN=$(aws elbv2 describe-load-balancers \
     --query "LoadBalancers[?LoadBalancerName=='${NAME_PREFIX_EXACT}-webhook-alb'].LoadBalancerArn" \
-    --output text --region "$AWS_REGION" 2>/dev/null)
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   if [ -n "$FALLBACK_ALB_ARN" ]; then
     for LISTENER_ARN in $(aws elbv2 describe-listeners --load-balancer-arn "$FALLBACK_ALB_ARN" --query "Listeners[].ListenerArn" --output text --region "$AWS_REGION" 2>/dev/null); do
       aws elbv2 delete-listener --listener-arn "$LISTENER_ARN" --region "$AWS_REGION" > /dev/null 2>&1 || true
@@ -620,7 +623,7 @@ if data.get('Objects'):
   # --- Cloud Map namespace and any services registered inside it ---
   FALLBACK_NS_ID=$(aws servicediscovery list-namespaces \
     --query "Namespaces[?Name=='${NAME_PREFIX_EXACT}.internal'].Id" \
-    --output text --region "$AWS_REGION" 2>/dev/null)
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   if [ -n "$FALLBACK_NS_ID" ]; then
     for SVC_ID in $(aws servicediscovery list-services \
         --filters "Name=NAMESPACE_ID,Values=${FALLBACK_NS_ID},Condition=EQ" \
@@ -635,7 +638,7 @@ if data.get('Objects'):
   # --- VPC and every dependent, in the required order ---
   FALLBACK_VPC_ID=$(aws ec2 describe-vpcs \
     --filters "Name=tag:Name,Values=${NAME_PREFIX_EXACT}-vpc" \
-    --query "Vpcs[0].VpcId" --output text --region "$AWS_REGION" 2>/dev/null)
+    --query "Vpcs[0].VpcId" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   if [ -n "$FALLBACK_VPC_ID" ] && [ "$FALLBACK_VPC_ID" != "None" ]; then
     echo "  Found VPC: $FALLBACK_VPC_ID — deleting dependents in order..."
 
@@ -701,7 +704,7 @@ if data.get('Objects'):
   # but that's fine — once the alias is gone, a fresh install can create a new
   # key/alias pair without conflict regardless of the old key's pending state.
   FALLBACK_KMS_ALIAS="alias/${NAME_PREFIX_EXACT}-rds"
-  FALLBACK_KMS_KEY_ID=$(aws kms describe-key --key-id "$FALLBACK_KMS_ALIAS" --query "KeyMetadata.KeyId" --output text --region "$AWS_REGION" 2>/dev/null)
+  FALLBACK_KMS_KEY_ID=$(aws kms describe-key --key-id "$FALLBACK_KMS_ALIAS" --query "KeyMetadata.KeyId" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   if [ -n "$FALLBACK_KMS_KEY_ID" ] && [ "$FALLBACK_KMS_KEY_ID" != "None" ]; then
     aws kms delete-alias --alias-name "$FALLBACK_KMS_ALIAS" --region "$AWS_REGION" > /dev/null 2>&1 && \
       echo "  ✓ Deleted KMS alias: $FALLBACK_KMS_ALIAS"
@@ -935,7 +938,7 @@ if data.get('Objects'):
 
   FALLBACK_CERT_ARN=$(aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/acm_certificate_arn" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null)
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   if [ -n "$FALLBACK_CERT_ARN" ] && [ "$FALLBACK_CERT_ARN" != "None" ]; then
     aws acm delete-certificate --certificate-arn "$FALLBACK_CERT_ARN" --region "$AWS_REGION" > /dev/null 2>&1 && \
       echo "  ✓ Deleted ACM certificate: $FALLBACK_CERT_ARN" || \
