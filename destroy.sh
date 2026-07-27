@@ -947,6 +947,47 @@ if data.get('Objects'):
 fi
 
 # ------------------------------------------------------------------------------
+# Sweep bootstrap orphans — always runs, regardless of whether bootstrap's
+# terraform destroy ran. If the state bucket was emptied before bootstrap's
+# destroy (or state was otherwise stranded), terraform destroy is a no-op
+# against an empty state and leaves the real AWS resources behind (seen live
+# 2026-07-27: revg-1-prod-image-builder CodeBuild project survived destroy
+# and blocked the next install with ResourceAlreadyExistsException).
+# Deleting already-gone resources is a harmless no-op.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "  Sweeping bootstrap orphans (CodeBuild project, buckets, lock table)..."
+
+aws codebuild delete-project --name "${PROJECT_NAME}-${ENVIRONMENT}-image-builder" --region "$AWS_REGION" > /dev/null 2>&1 && \
+  echo "  ✓ Deleted CodeBuild project: ${PROJECT_NAME}-${ENVIRONMENT}-image-builder" || true
+
+aws logs delete-log-group --log-group-name "/aws/codebuild/${PROJECT_NAME}-${ENVIRONMENT}-image-builder" --region "$AWS_REGION" > /dev/null 2>&1 && \
+  echo "  ✓ Deleted CodeBuild log group" || true
+
+for SWEEP_BUCKET in "${PROJECT_NAME}-${ENVIRONMENT}-terraform-state-${AWS_ACCOUNT_ID}" "${PROJECT_NAME}-${ENVIRONMENT}-build-artifacts-${AWS_ACCOUNT_ID}"; do
+  if aws s3api head-bucket --bucket "$SWEEP_BUCKET" --region "$AWS_REGION" 2>/dev/null; then
+    aws s3 rm "s3://$SWEEP_BUCKET" --recursive --region "$AWS_REGION" > /dev/null 2>&1 || true
+    for KIND in Versions DeleteMarkers; do
+      aws s3api list-object-versions --bucket "$SWEEP_BUCKET" --output json \
+        --query "{Objects: ${KIND}[].{Key:Key,VersionId:VersionId}}" 2>/dev/null | \
+        python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if data.get('Objects'):
+    print(json.dumps(data))
+" | aws s3api delete-objects --bucket "$SWEEP_BUCKET" --delete file:///dev/stdin --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
+    aws s3 rb "s3://$SWEEP_BUCKET" --force --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted S3 bucket: $SWEEP_BUCKET" || \
+      echo "  ⚠ Could not fully delete S3 bucket: $SWEEP_BUCKET"
+  fi
+done
+
+aws dynamodb delete-table --table-name "${PROJECT_NAME}-${ENVIRONMENT}-terraform-state-lock" --region "$AWS_REGION" > /dev/null 2>&1 && \
+  echo "  ✓ Deleted DynamoDB table: ${PROJECT_NAME}-${ENVIRONMENT}-terraform-state-lock" || true
+
+# ------------------------------------------------------------------------------
 # Sweep every SSM parameter for this project — always runs once, regardless
 # of which layers used a Terraform-based destroy vs. the fallback above.
 # Deleting an already-gone parameter is a harmless no-op, so there's no
