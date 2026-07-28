@@ -2,6 +2,8 @@
 
 Reference guide for walking customers through the install process. Covers every issue encountered during testing and live deployments.
 
+> **Folder layout (updated 2026-07-28):** `install.sh` now clones each deployment into its own per-project folder — `~/rg-ai-agent-platform/<project>/` — so multiple customer deployments can coexist on one machine. Every path in this guide uses `<project>`; substitute the deployment's PROJECT_NAME (e.g. `~/rg-ai-agent-platform/revg-1/1-rg-ai-agent-platform-base`). Installs created before this change live directly under `~/rg-ai-agent-platform/` with no project level.
+
 ---
 
 ## Before starting — confirm these first
@@ -71,7 +73,7 @@ terraform version   # confirm >= 1.11.1
 After upgrading, resume from where the install failed — no need to start over. If this failed mid-Step-1:
 
 ```shell
-cd ~/rg-ai-agent-platform/1-rg-ai-agent-platform-base
+cd ~/rg-ai-agent-platform/<project>/1-rg-ai-agent-platform-base
 terraform init -upgrade
 make deploy
 ```
@@ -125,7 +127,7 @@ aws acm describe-certificate \
 **Resume after certificate is issued** — no need to destroy or restart:
 
 ```shell
-cd ~/rg-ai-agent-platform/1-rg-ai-agent-platform-base
+cd ~/rg-ai-agent-platform/<project>/1-rg-ai-agent-platform-base
 make deploy
 ```
 
@@ -239,14 +241,14 @@ make deploy
 **Fix**: In most cases, just re-run from the interrupted step's directory:
 
 ```shell
-cd ~/rg-ai-agent-platform/<step-directory>
+cd ~/rg-ai-agent-platform/<project>/<step-directory>
 make deploy
 ```
 
 Or resume via master-setup.sh (which handles all steps in sequence):
 
 ```shell
-cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs
+cd ~/rg-ai-agent-platform/<project>/rg-ai-agent-platform-docs
 bash master-setup.sh
 ```
 
@@ -449,13 +451,13 @@ So `"test-contact-001"` was never actually looked up against any CRM in CI — i
 
 | Situation | Command |
 | :---- | :---- |
-| Resume Step 0 (bootstrap) | `cd ~/rg-ai-agent-platform/0-rg-ai-agent-platform-bootstrap && make deploy` |
-| Resume Step 1 (base infra) | `cd ~/rg-ai-agent-platform/1-rg-ai-agent-platform-base && terraform init -upgrade && make deploy` |
-| Resume Step 2 (orchestrator) | `cd ~/rg-ai-agent-platform/2-rg-ai-agent-platform-orchestrator && make deploy` |
-| Resume Step 3 (agent) | `cd ~/rg-ai-agent-platform/3-rg-ai-agent-platform-agent && make deploy` |
-| Push routing config | `cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs && bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json` |
-| Run webhook test | `cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs && bash test-webhook.sh` |
-| Destroy everything | `cd ~/rg-ai-agent-platform/rg-ai-agent-platform-docs && bash destroy.sh` |
+| Resume Step 0 (bootstrap) | `cd ~/rg-ai-agent-platform/<project>/0-rg-ai-agent-platform-bootstrap && make deploy` |
+| Resume Step 1 (base infra) | `cd ~/rg-ai-agent-platform/<project>/1-rg-ai-agent-platform-base && terraform init -upgrade && make deploy` |
+| Resume Step 2 (orchestrator) | `cd ~/rg-ai-agent-platform/<project>/2-rg-ai-agent-platform-orchestrator && make deploy` |
+| Resume Step 3 (agent) | `cd ~/rg-ai-agent-platform/<project>/3-rg-ai-agent-platform-agent && make deploy` |
+| Push routing config | `cd ~/rg-ai-agent-platform/<project>/rg-ai-agent-platform-docs && bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json` |
+| Run webhook test | `cd ~/rg-ai-agent-platform/<project>/rg-ai-agent-platform-docs && bash test-webhook.sh` |
+| Destroy everything | `cd ~/rg-ai-agent-platform/<project>/rg-ai-agent-platform-docs && bash destroy.sh` |
 
 ---
 
