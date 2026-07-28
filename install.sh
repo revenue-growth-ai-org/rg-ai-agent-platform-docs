@@ -10,17 +10,23 @@ set -e
 # This script:
 #   1. Detects your operating system
 #   2. Installs missing prerequisites (Terraform, AWS CLI, Git)
-#   3. Clones all five platform repositories
+#   3. Asks for the project name, then clones all five platform repositories
+#      into a per-project folder: ~/rg-ai-agent-platform/<project-name>/
 #   4. Opens defaults.env for editing
 #   5. Hands off to master-setup.sh
+#
+# Per-project folders mean multiple customer deployments can coexist on the
+# same machine, each with its own clones, tfvars, and defaults.env.
 #
 # Docker is NOT installed or required on this machine — image builds run in
 # AWS via CodeBuild, not locally.
 # =============================================================================
 
 GITHUB_ORG="revenue-growth-ai-org"
-INSTALL_DIR="$HOME/rg-ai-agent-platform"
+BASE_DIR="$HOME/rg-ai-agent-platform"
 DOCS_REPO="rg-ai-agent-platform-docs"
+# INSTALL_DIR is set after the project name is collected (Step 2) —
+# it becomes $BASE_DIR/$PROJECT_NAME so every customer gets its own folder.
 
 echo ""
 echo "=================================================="
@@ -243,7 +249,7 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
-# Clone repositories
+# Clone repositories (into the per-project INSTALL_DIR)
 # ------------------------------------------------------------------------------
 
 clone_repos() {
@@ -319,7 +325,30 @@ install_terraform
 create_iam_role
 
 echo ""
-echo "Step 2 of 6 — Cloning repositories..."
+echo "Step 2 of 6 — Naming the project and cloning repositories..."
+echo ""
+
+# The project name is collected BEFORE cloning because it determines the
+# install folder: each customer deployment lives in its own directory at
+# ~/rg-ai-agent-platform/<project-name>/, so multiple customers can coexist
+# on this machine without overwriting each other's clones or config.
+while true; do
+  read -p "Project name (lowercase, hyphens only, max 12 characters, e.g. acme-corp): " PROJECT_NAME < /dev/tty
+  if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9-]+$ ]]; then
+    echo "  Invalid: use only lowercase letters, numbers, and hyphens (no spaces or uppercase)"
+    continue
+  fi
+  if [ ${#PROJECT_NAME} -gt 12 ]; then
+    echo "  Invalid: project name must be 12 characters or less (AWS resource name limits)"
+    continue
+  fi
+  break
+done
+
+INSTALL_DIR="$BASE_DIR/$PROJECT_NAME"
+echo ""
+echo "  Install folder: $INSTALL_DIR"
+
 clone_repos
 
 echo ""
@@ -338,18 +367,6 @@ MY_IP=$(curl -s https://checkip.amazonaws.com 2>/dev/null || echo "")
 # Prompt for the remaining values
 echo "Please answer a few questions to configure your deployment:"
 echo ""
-while true; do
-  read -p "Project name (lowercase, hyphens only, max 12 characters, e.g. acme-corp): " PROJECT_NAME < /dev/tty
-  if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9-]+$ ]]; then
-    echo "  Invalid: use only lowercase letters, numbers, and hyphens (no spaces or uppercase)"
-    continue
-  fi
-  if [ ${#PROJECT_NAME} -gt 12 ]; then
-    echo "  Invalid: project name must be 12 characters or less (AWS resource name limits)"
-    continue
-  fi
-  break
-done
 ENVIRONMENT="prod"
 read -p "Domain name for SSL certificate (e.g. revenue-growth.ai): " DOMAIN_NAME < /dev/tty
 
@@ -489,6 +506,7 @@ echo "  Environment: $ENVIRONMENT"
 echo "  Account:     $AWS_ACCOUNT_ID"
 echo "  Region:      $AWS_REGION"
 echo "  Allowed IP:  $ALLOWED_CIDR"
+echo "  Folder:      $INSTALL_DIR"
 echo ""
 read -p "Start deployment now? (yes/no): " START_NOW < /dev/tty
 
@@ -504,4 +522,11 @@ else
   echo ""
 fi
 
-git remote set-url origin https://github.com/revenue-growth-ai-org/rg-ai-agent-platform-docs.git 2>/dev/null || true
+# Strip the embedded install token from every repo's git remote so it never
+# overrides the developer's own credential helper on future pushes. Runs for
+# all five repos, not just docs.
+for REPO in 0-rg-ai-agent-platform-bootstrap 1-rg-ai-agent-platform-base 2-rg-ai-agent-platform-orchestrator 3-rg-ai-agent-platform-agent rg-ai-agent-platform-docs; do
+  if [ -d "$INSTALL_DIR/$REPO/.git" ]; then
+    git -C "$INSTALL_DIR/$REPO" remote set-url origin "https://github.com/$GITHUB_ORG/$REPO.git" 2>/dev/null || true
+  fi
+done
