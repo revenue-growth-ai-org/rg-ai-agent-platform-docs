@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -o pipefail
 
 # =============================================================================
 # AWS Agent Platform — Destroy Script
@@ -9,7 +9,101 @@ set -e
 #
 # Usage:
 #   bash destroy.sh
+#
+# Key behaviors (added after the July 2026 leftover-resource audit, where
+# 6+ orphaned test environments accumulated ~$250/mo of idle spend):
+#
+#   1. NO `set -e`: a failed terraform destroy no longer silently aborts the
+#      rest of the script. Every failure is recorded and the script exits
+#      non-zero with a loud summary at the end. Partial destroys are the #1
+#      way expensive resources (RDS, NAT, KMS) get orphaned.
+#
+#   2. PROJECT REGISTRY: every project this script ever targets is recorded
+#      in the SSM parameter $REGISTRY_PARAM and only removed after a fully
+#      clean destroy. On every run, the script prints any previously-targeted
+#      projects that never finished destroying, so orphans can't hide.
+#      (install.sh / master-setup.sh should also call registry_add at install
+#      time — see the function below — but the registry self-populates from
+#      destroy runs even without that.)
+#
+#   3. ORPHAN SCAN: before destroying, the script prints billable resources
+#      in the account (RDS, NAT, ALB, ECS, non-default VPCs) that DON'T match
+#      the current project, as a read-only heads-up.
+#
+#   4. ECS task definitions are deregistered (cosmetic — they're free, but
+#      hundreds of stale revisions pollute the account inventory).
+#
+#   5. KMS sweep: customer-managed keys aliased or tagged to this project are
+#      alias-deleted and scheduled for deletion even when terraform destroy
+#      failed (previously ~70 keys survived failed destroys).
+#
+# Recommended companion (outside this script): an AWS Budgets alert at ~$25/mo
+# on this account so any failed destroy pages you within a day.
 # =============================================================================
+
+# ------------------------------------------------------------------------------
+# Failure tracking — replaces `set -e`. Any recorded failure makes the script
+# exit 1 at the end, after attempting everything else it can.
+# ------------------------------------------------------------------------------
+FAILURES=()
+
+note_failure() {
+  FAILURES+=("$1")
+  echo ""
+  echo "  ✗✗✗ FAILURE RECORDED: $1"
+  echo "      (continuing with remaining teardown steps — see summary at end)"
+  echo ""
+}
+
+run_tf_destroy() {
+  # run_tf_destroy <label> [extra terraform args...]
+  local TF_LABEL="$1"; shift
+  if terraform destroy "$@" -auto-approve; then
+    echo "  ✓ terraform destroy succeeded: $TF_LABEL"
+  else
+    note_failure "terraform destroy FAILED: $TF_LABEL — its resources may survive"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Project registry — a single SSM StringList parameter recording every
+# project:environment this script has ever targeted. Entries are removed only
+# after a fully clean destroy, so anything still listed is a known or possible
+# orphan. Lives outside any project's own SSM prefix so project sweeps never
+# delete it.
+# ------------------------------------------------------------------------------
+REGISTRY_PARAM="/rg-platform/registry/projects"
+
+registry_list() {
+  aws ssm get-parameter --name "$REGISTRY_PARAM" \
+    --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null \
+    | tr ',' '\n' | grep -v '^$' | grep -v '^None$' || true
+}
+
+registry_add() {
+  local ENTRY="$1"
+  local CURRENT NEW
+  CURRENT=$(registry_list)
+  if echo "$CURRENT" | grep -qx "$ENTRY"; then
+    return 0
+  fi
+  NEW=$(printf '%s\n%s' "$CURRENT" "$ENTRY" | grep -v '^$' | sort -u | paste -sd',' -)
+  aws ssm put-parameter --name "$REGISTRY_PARAM" --type StringList \
+    --value "$NEW" --overwrite --region "$AWS_REGION" > /dev/null 2>&1 || true
+}
+
+registry_remove() {
+  local ENTRY="$1"
+  local CURRENT NEW
+  CURRENT=$(registry_list)
+  NEW=$(echo "$CURRENT" | grep -vx "$ENTRY" | grep -v '^$' | paste -sd',' -)
+  if [ -z "$NEW" ]; then
+    aws ssm delete-parameter --name "$REGISTRY_PARAM" --region "$AWS_REGION" > /dev/null 2>&1 || true
+  else
+    aws ssm put-parameter --name "$REGISTRY_PARAM" --type StringList \
+      --value "$NEW" --overwrite --region "$AWS_REGION" > /dev/null 2>&1 || true
+  fi
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -68,6 +162,68 @@ fi
 if [ "$CONFIRM" != "$PROJECT_NAME" ]; then
   echo "Cancelled — input did not match '$PROJECT_NAME'."
   exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# Step 0 — Register this project, report known orphans, and scan the account
+# for billable resources that don't belong to this project (read-only).
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 0 ] Project registry and account orphan scan..."
+
+REGISTRY_ENTRY="${PROJECT_NAME}:${ENVIRONMENT}"
+registry_add "$REGISTRY_ENTRY"
+echo "  ✓ Registered in $REGISTRY_PARAM: $REGISTRY_ENTRY"
+
+KNOWN_ORPHANS=$(registry_list | grep -vx "$REGISTRY_ENTRY" || true)
+if [ -n "$KNOWN_ORPHANS" ]; then
+  echo ""
+  echo "  ⚠⚠⚠ REGISTRY: these previously-targeted projects never finished a"
+  echo "      clean destroy and may still have live (billing) resources:"
+  echo "$KNOWN_ORPHANS" | sed 's/^/        - /'
+  echo "      Destroy each with:"
+  echo "        DESTROY_TARGET_PROJECT_NAME=<name> DESTROY_TARGET_ENVIRONMENT=<env> bash destroy.sh"
+  echo ""
+fi
+
+# Read-only scan: billable resources in this region NOT matching this project.
+echo "  Scanning region $AWS_REGION for billable resources outside '${PROJECT_NAME}'..."
+ORPHAN_SCAN=""
+
+SCAN_RDS=$(aws rds describe-db-instances \
+  --query "DBInstances[?!contains(DBInstanceIdentifier,'${PROJECT_NAME}')].DBInstanceIdentifier" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' ' ')
+[ -n "$SCAN_RDS" ] && ORPHAN_SCAN="${ORPHAN_SCAN}    RDS: ${SCAN_RDS}\n"
+
+SCAN_NAT=$(aws ec2 describe-nat-gateways \
+  --filter "Name=state,Values=available,pending" \
+  --query "NatGateways[?!(Tags[?Key=='Project' && Value=='${PROJECT_NAME}'])].NatGatewayId" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' ' ')
+[ -n "$SCAN_NAT" ] && ORPHAN_SCAN="${ORPHAN_SCAN}    NAT gateways: ${SCAN_NAT}\n"
+
+SCAN_ALB=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?!contains(LoadBalancerName,'${PROJECT_NAME}')].LoadBalancerName" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' ' ')
+[ -n "$SCAN_ALB" ] && ORPHAN_SCAN="${ORPHAN_SCAN}    ALBs: ${SCAN_ALB}\n"
+
+SCAN_ECS=$(aws ecs list-clusters \
+  --query "clusterArns[?!contains(@,'${PROJECT_NAME}')]" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' ' ')
+[ -n "$SCAN_ECS" ] && ORPHAN_SCAN="${ORPHAN_SCAN}    ECS clusters: ${SCAN_ECS}\n"
+
+SCAN_VPC=$(aws ec2 describe-vpcs \
+  --query "Vpcs[?IsDefault==\`false\` && !(Tags[?Key=='Project' && Value=='${PROJECT_NAME}'])].VpcId" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' ' ')
+[ -n "$SCAN_VPC" ] && ORPHAN_SCAN="${ORPHAN_SCAN}    Non-default VPCs: ${SCAN_VPC}\n"
+
+if [ -n "$ORPHAN_SCAN" ]; then
+  echo ""
+  echo "  ⚠ Billable resources found that do NOT belong to '${PROJECT_NAME}'"
+  echo "    (NOT touched by this run — verify they're expected):"
+  echo -e "$ORPHAN_SCAN"
+else
+  echo "  ✓ No unrelated billable resources detected in $AWS_REGION"
 fi
 
 # ------------------------------------------------------------------------------
@@ -442,9 +598,11 @@ EOF
       echo "dynamodb_table = \"$LOCK_TABLE\"" >> backend.hcl
     fi
 
-    terraform init -backend-config=backend.hcl -reconfigure > /dev/null 2>&1
-    terraform destroy -var-file="prod.tfvars" -auto-approve
-    echo "  ✓ Agent $AGENT_NAME destroyed"
+    if ! terraform init -backend-config=backend.hcl -reconfigure > /dev/null 2>&1; then
+      note_failure "terraform init failed for agent $AGENT_NAME"
+      continue
+    fi
+    run_tf_destroy "agent $AGENT_NAME" -var-file="prod.tfvars"
   done
 fi
 
@@ -483,7 +641,12 @@ EOF
     echo "dynamodb_table = \"$LOCK_TABLE\"" >> backend.hcl
   fi
 
-  terraform init -backend-config=backend.hcl -reconfigure > /dev/null 2>&1
+  if ! terraform init -backend-config=backend.hcl -reconfigure > /dev/null 2>&1; then
+    note_failure "terraform init failed for $(basename $DIR)"
+    [ "$DIR" = "$ORCH_DIR" ] && ORCH_SKIPPED="true"
+    [ "$DIR" = "$BASE_DIR" ] && BASE_SKIPPED="true"
+    continue
+  fi
 
   if [ "$DIR" = "$BASE_DIR" ]; then
     # Delete CloudTrail trails
@@ -499,7 +662,15 @@ EOF
     done
   fi
 
-  terraform destroy -var-file="prod.tfvars" -auto-approve
+  if terraform destroy -var-file="prod.tfvars" -auto-approve; then
+    echo "  ✓ terraform destroy succeeded: $(basename $DIR)"
+  else
+    note_failure "terraform destroy FAILED: $(basename $DIR)"
+    # Mark as skipped so the direct-deletion fallback below also runs and
+    # catches whatever terraform left behind.
+    [ "$DIR" = "$ORCH_DIR" ] && ORCH_SKIPPED="true"
+    [ "$DIR" = "$BASE_DIR" ] && BASE_SKIPPED="true"
+  fi
 
   if [ "$DIR" = "$ORCH_DIR" ]; then
     # webhook_secret is seeded by install.sh/master-setup.sh outside Terraform
@@ -865,8 +1036,11 @@ if data.get('Objects'):
   done
 
   echo "  Destroying bootstrap..."
-  terraform init -reconfigure > /dev/null 2>&1
-  terraform destroy -var-file="prod.tfvars" -auto-approve
+  if terraform init -reconfigure > /dev/null 2>&1; then
+    run_tf_destroy "bootstrap" -var-file="prod.tfvars"
+  else
+    note_failure "terraform init failed for bootstrap"
+  fi
 else
   echo ""
   echo "  ⚠ WARNING: bootstrap repo not found or has no prod.tfvars — skipping"
@@ -1117,6 +1291,157 @@ for REPO in $ECR_REPO_NAMES; do
 done
 
 # ------------------------------------------------------------------------------
+# Step 6.7 — Deregister every ECS task definition revision for this project
+#
+# Task definitions are never deleted by terraform destroy (deregistering the
+# service doesn't touch them) and every deploy registers a new revision, so
+# hundreds of INACTIVE-but-listed revisions accumulate across install/destroy
+# cycles. They're free, but they pollute the account inventory and make audits
+# (like resourcegroupstaggingapi sweeps) unreadable. Deregister everything
+# whose family starts with "${PROJECT_NAME}-".
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 6.7 ] Deregistering ECS task definitions for this project..."
+
+TD_COUNT=0
+for TD_ARN in $(aws ecs list-task-definitions \
+    --family-prefix "${PROJECT_NAME}-" \
+    --query "taskDefinitionArns" \
+    --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+  [ -z "$TD_ARN" ] && continue
+  aws ecs deregister-task-definition \
+    --task-definition "$TD_ARN" \
+    --region "$AWS_REGION" > /dev/null 2>&1 && TD_COUNT=$((TD_COUNT + 1)) || true
+done
+echo "  ✓ Deregistered $TD_COUNT task definition revision(s)"
+
+# ------------------------------------------------------------------------------
+# Step 6.8 — KMS sweep: schedule deletion of every customer-managed key that
+# belongs to this project, by alias prefix AND by tag.
+#
+# When terraform destroy fails mid-run (the main historical cause of
+# orphans), its KMS keys survive and bill $1/mo each forever. The fallback
+# path above only handles the single "-rds" alias; this sweep catches all of
+# them. Keys can only be SCHEDULED for deletion (7-day AWS minimum) but
+# billing stops once scheduled. Aliases are deleted immediately so a fresh
+# install never hits an alias-name collision.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 6.8 ] Sweeping KMS keys for this project..."
+
+# Pass 1: aliases matching this project's prefix
+for ALIAS_NAME in $(aws kms list-aliases \
+    --query "Aliases[?starts_with(AliasName, 'alias/${PROJECT_NAME}-')].AliasName" \
+    --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+  [ -z "$ALIAS_NAME" ] && continue
+  SWEEP_KEY_ID=$(aws kms describe-key --key-id "$ALIAS_NAME" \
+    --query "KeyMetadata.KeyId" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  aws kms delete-alias --alias-name "$ALIAS_NAME" --region "$AWS_REGION" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted KMS alias: $ALIAS_NAME" || true
+  if [ -n "$SWEEP_KEY_ID" ] && [ "$SWEEP_KEY_ID" != "None" ]; then
+    aws kms schedule-key-deletion --key-id "$SWEEP_KEY_ID" \
+      --pending-window-in-days 7 --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Scheduled KMS key deletion (7-day window): $SWEEP_KEY_ID" || true
+  fi
+done
+
+# Pass 2: enabled customer-managed keys tagged to this project (catches keys
+# whose alias was already removed, or that never had one)
+for SWEEP_KEY_ID in $(aws kms list-keys \
+    --query "Keys[].KeyId" --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+  [ -z "$SWEEP_KEY_ID" ] && continue
+  KEY_META=$(aws kms describe-key --key-id "$SWEEP_KEY_ID" \
+    --query "[KeyMetadata.KeyManager,KeyMetadata.KeyState]" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  echo "$KEY_META" | grep -q "^CUSTOMER[[:space:]]*Enabled" || continue
+  KEY_PROJECT_TAG=$(aws kms list-resource-tags --key-id "$SWEEP_KEY_ID" \
+    --query "Tags[?TagKey=='Project'].TagValue | [0]" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ "$KEY_PROJECT_TAG" = "$PROJECT_NAME" ]; then
+    aws kms schedule-key-deletion --key-id "$SWEEP_KEY_ID" \
+      --pending-window-in-days 7 --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Scheduled tagged KMS key deletion: $SWEEP_KEY_ID" || true
+  fi
+done
+echo "  ✓ KMS sweep complete"
+
+# ------------------------------------------------------------------------------
+# Step 6.9 — Route 53 and ACM sweep
+#
+# Hosted zones bill $0.50/mo each and are never deleted by terraform destroy
+# when created outside Terraform (the July 2026 audit found ~11 orphaned test
+# zones). ACM certs are free but pile up and block re-installs; the fallback
+# above only deletes the one cert recorded in SSM, which is useless once that
+# parameter is gone. Both are swept here by project association.
+#
+# CAUTION: the zone sweep matches zones whose NAME CONTAINS the project name.
+# If a real production domain could ever match a project name, review before
+# running.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 6.9 ] Sweeping Route 53 zones/health checks and ACM certs..."
+
+# --- Route 53 hosted zones matching this project ---
+for ZONE_ID in $(aws route53 list-hosted-zones \
+    --query "HostedZones[?contains(Name, '${PROJECT_NAME}')].Id" \
+    --output text 2>/dev/null | tr '\t' '\n' | sed 's|/hostedzone/||'); do
+  [ -z "$ZONE_ID" ] && continue
+  # Delete all non-NS/SOA records first — the zone can't be deleted while
+  # they exist.
+  RECORD_BATCH=$(aws route53 list-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+    --query 'ResourceRecordSets[?Type!=`NS` && Type!=`SOA`]' --output json 2>/dev/null | \
+    python3 -c "
+import sys, json
+records = json.load(sys.stdin)
+if records:
+    print(json.dumps({'Changes': [{'Action': 'DELETE', 'ResourceRecordSet': r} for r in records]}))
+" 2>/dev/null || echo "")
+  if [ -n "$RECORD_BATCH" ]; then
+    echo "$RECORD_BATCH" > /tmp/r53-batch-$$.json
+    aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+      --change-batch file:///tmp/r53-batch-$$.json > /dev/null 2>&1 || true
+    rm -f /tmp/r53-batch-$$.json
+  fi
+  aws route53 delete-hosted-zone --id "$ZONE_ID" > /dev/null 2>&1 && \
+    echo "  ✓ Deleted hosted zone: $ZONE_ID" || \
+    echo "  ⚠ Could not delete hosted zone (records may remain): $ZONE_ID"
+done
+
+# --- Route 53 health checks tagged to this project ---
+for HC_ID in $(aws route53 list-health-checks \
+    --query "HealthChecks[].Id" --output text 2>/dev/null | tr '\t' '\n'); do
+  [ -z "$HC_ID" ] && continue
+  HC_PROJECT=$(aws route53 list-tags-for-resource --resource-type healthcheck \
+    --resource-id "$HC_ID" \
+    --query "ResourceTagSet.Tags[?Key=='Project'].Value | [0]" \
+    --output text 2>/dev/null || echo "")
+  if [ "$HC_PROJECT" = "$PROJECT_NAME" ]; then
+    aws route53 delete-health-check --health-check-id "$HC_ID" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted health check: $HC_ID" || true
+  fi
+done
+
+# --- ACM certs tagged to this project (runs after ALB deletion above, so
+# certs should be detached and deletable by now) ---
+for CERT_ARN in $(aws acm list-certificates \
+    --query "CertificateSummaryList[].CertificateArn" \
+    --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n'); do
+  [ -z "$CERT_ARN" ] && continue
+  CERT_PROJECT=$(aws acm list-tags-for-certificate --certificate-arn "$CERT_ARN" \
+    --query "Tags[?Key=='Project'].Value | [0]" \
+    --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ "$CERT_PROJECT" = "$PROJECT_NAME" ]; then
+    aws acm delete-certificate --certificate-arn "$CERT_ARN" --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted ACM certificate: $CERT_ARN" || \
+      echo "  ⚠ Could not delete ACM cert (still attached to a listener?): $CERT_ARN"
+  fi
+done
+echo "  ✓ Route 53 / ACM sweep complete"
+
+# ------------------------------------------------------------------------------
 # Step 7 — Verify
 # ------------------------------------------------------------------------------
 
@@ -1173,12 +1498,77 @@ if PROJECT_NAME="$PROJECT_NAME" ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGI
   echo ""
   echo "  ✓ verify-destroy.sh: clean"
 else
-  if [ "$CI_MODE" = "true" ]; then
-    echo ""
-    echo "  ✗ verify-destroy.sh found leftover resources. Failing (CI_MODE=true)."
-    exit 1
-  else
-    echo ""
-    echo "  ⚠ verify-destroy.sh found leftover resources. Review above; not failing (CI_MODE=false)."
-  fi
+  note_failure "verify-destroy.sh found leftover resources for ${PROJECT_NAME}-${ENVIRONMENT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Step 8.5 — Catch-all: ANY resource still tagged to this project, of any type.
+#
+# Everything above deletes resources we KNOW about. The historical failure
+# mode was resource types nobody thought to enumerate. This check doesn't
+# delete anything — it refuses to call the destroy clean if anything tagged
+# Project=${PROJECT_NAME} still exists, whatever its type, converting every
+# future coverage gap into a loud exit-1 with the exact ARN instead of a
+# silent monthly charge.
+#
+# REQUIRES: Terraform default_tags must include Project = "<project name>"
+# in every layer (base, orchestrator, agent) for full coverage.
+#
+# Exclusions:
+#   - KMS: keys in PendingDeletion remain tagged until AWS purges them.
+#   - Task definitions: deregistered revisions remain listed as INACTIVE.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "[ Step 8.5 ] Tagging-API catch-all sweep..."
+
+LEFTOVER_TAGGED=$(aws resourcegroupstaggingapi get-resources \
+  --tag-filters "Key=Project,Values=${PROJECT_NAME}" \
+  --query "ResourceTagMappingList[].ResourceARN" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n' | \
+  grep -v ":kms:" | grep -v "task-definition/" | grep -v '^$' || true)
+
+if [ -n "$LEFTOVER_TAGGED" ]; then
+  echo "  Resources still tagged Project=${PROJECT_NAME}:"
+  echo "$LEFTOVER_TAGGED" | sed 's/^/    /'
+  note_failure "tagging-API sweep found resources still tagged Project=${PROJECT_NAME} (see list above)"
+else
+  echo "  ✓ No resources remain tagged Project=${PROJECT_NAME}"
+fi
+
+# ------------------------------------------------------------------------------
+# Step 9 — Final summary and registry update
+#
+# The registry entry is removed ONLY on a fully clean destroy (no recorded
+# failures AND verify-destroy passed). Anything less leaves the entry in
+# place, so the next destroy run — for any project — will print it as a
+# known orphan in Step 0. A partial destroy can never silently disappear.
+# ------------------------------------------------------------------------------
+
+echo ""
+echo "=================================================="
+if [ ${#FAILURES[@]} -eq 0 ]; then
+  registry_remove "$REGISTRY_ENTRY"
+  echo " ✓ DESTROY FULLY CLEAN: ${PROJECT_NAME}-${ENVIRONMENT}"
+  echo "   Removed from registry ($REGISTRY_PARAM)."
+  echo "=================================================="
+  exit 0
+else
+  echo " ✗✗✗ DESTROY INCOMPLETE: ${PROJECT_NAME}-${ENVIRONMENT}"
+  echo "=================================================="
+  echo ""
+  echo " The following failures were recorded — resources from this project"
+  echo " MAY STILL EXIST AND STILL BE BILLING:"
+  echo ""
+  for F in "${FAILURES[@]}"; do
+    echo "   ✗ $F"
+  done
+  echo ""
+  echo " This project remains in the registry ($REGISTRY_PARAM) and will be"
+  echo " reported as an orphan on every future destroy run until a clean"
+  echo " destroy completes. Re-run with:"
+  echo ""
+  echo "   DESTROY_TARGET_PROJECT_NAME=$PROJECT_NAME DESTROY_TARGET_ENVIRONMENT=$ENVIRONMENT bash destroy.sh"
+  echo ""
+  exit 1
 fi
