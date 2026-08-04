@@ -107,6 +107,13 @@ teardown() {
   PENDING_EXIT=$?
   set +e
   DESTROY_EXIT=0
+  # Delete the CI webhook secret BEFORE destroy runs: it's created by this
+  # harness (not the install), so verify-destroy — which runs inside
+  # destroy.sh — will flag it as a leftover and fail the run if it still
+  # exists (seen in CI run #85).
+  aws ssm delete-parameter \
+    --name "/${CI_PROJECT_NAME}/prod/orchestrator/webhook_secret" \
+    --region "$AWS_REGION" > /dev/null 2>&1
   if [ "$INSTALL_STARTED" = "true" ]; then
     echo ""
     echo "=================================================="
