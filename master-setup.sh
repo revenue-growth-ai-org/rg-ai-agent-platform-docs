@@ -467,6 +467,8 @@ default_tags = {
 domain_name = "$DOMAIN_NAME"
 EOF
 
+echo "DEBUG: identity immediately before bootstrap doctor:"
+aws sts get-caller-identity || echo "DEBUG: STS FAILED here, before make was involved"
 make doctor
 echo ""
 echo "Running Step 0 terraform apply..."
