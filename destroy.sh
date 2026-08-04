@@ -1267,6 +1267,12 @@ echo "  ✓ SSM parameter sweep complete"
 echo ""
 echo "[ Step 6 ] Removing local repos..."
 
+# Leave the repo directories before deleting them — Step 5 cd's into the
+# layer dirs, and deleting the directory the shell is standing in makes
+# every later subprocess fail with "shell-init: getcwd" errors (seen in CI
+# run #85, where it broke verify-destroy's launch).
+cd "$SCRIPT_DIR" 2>/dev/null || cd /tmp
+
 if [ ${#FAILURES[@]} -gt 0 ]; then
   echo "  ⚠ SKIPPING local repo and defaults.env cleanup — ${#FAILURES[@]} failure(s)"
   echo "    recorded so far. Local config is preserved so this destroy can be"
