@@ -141,26 +141,79 @@ AWS_REGION="${AWS_REGION:-us-east-2}"
 NAME_PREFIX="${PROJECT_NAME}-${ENVIRONMENT}"
 CLUSTER="${NAME_PREFIX}-ecs"
 
+# ------------------------------------------------------------------------------
+# Account guard — refuse to run against an unexpected AWS account.
+#
+# Added after 2026-08-04, when this script was accidentally run with a
+# customer's credentials active in the shell. EXPECTED_ACCOUNT_ID should be
+# set in defaults.env (recorded at install time). If it's absent, the guard
+# still shows the live account/ARN and requires the account ID to be typed as
+# part of confirmation — a wrong-account run can never proceed silently.
+# ------------------------------------------------------------------------------
+
+ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "UNKNOWN")
+ACTUAL_CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text 2>/dev/null || echo "UNKNOWN")
+
+if [ "$ACTUAL_ACCOUNT_ID" = "UNKNOWN" ]; then
+  echo "ERROR: cannot determine AWS account (aws sts get-caller-identity failed)."
+  echo "Check credentials and retry."
+  exit 1
+fi
+
+if [ -n "${EXPECTED_ACCOUNT_ID:-}" ] && [ "$ACTUAL_ACCOUNT_ID" != "$EXPECTED_ACCOUNT_ID" ]; then
+  echo ""
+  echo "=================================================="
+  echo " ✗✗✗ FATAL: WRONG AWS ACCOUNT"
+  echo "=================================================="
+  echo "  Credentials:      $ACTUAL_CALLER_ARN"
+  echo "  Active account:   $ACTUAL_ACCOUNT_ID"
+  echo "  Expected account: $EXPECTED_ACCOUNT_ID"
+  echo ""
+  echo "  Refusing to run. Switch AWS_PROFILE / credentials and retry."
+  echo "  (For a deliberate destroy in another account, set EXPECTED_ACCOUNT_ID"
+  echo "   to that account explicitly.)"
+  exit 1
+fi
+
 echo ""
 echo "=================================================="
 echo " AWS Agent Platform — Destroy"
 echo "=================================================="
 echo ""
-echo "  Project:  $PROJECT_NAME"
-echo "  Env:      $ENVIRONMENT"
-echo "  Account:  $AWS_ACCOUNT_ID"
-echo "  Region:   $AWS_REGION"
+echo "  Project:     $PROJECT_NAME"
+echo "  Env:         $ENVIRONMENT"
+echo "  Credentials: $ACTUAL_CALLER_ARN"
+echo "  Account:     $ACTUAL_ACCOUNT_ID${EXPECTED_ACCOUNT_ID:+  (expected: $EXPECTED_ACCOUNT_ID ✓)}"
+echo "  Region:      $AWS_REGION"
 echo ""
 echo "  This will permanently destroy ALL infrastructure for this project"
 echo "  and environment — VPC, database, load balancer, everything."
 echo ""
 if [ "$CI_MODE" = "true" ]; then
+  if [ -z "${EXPECTED_ACCOUNT_ID:-}" ]; then
+    echo "ERROR: CI_MODE requires EXPECTED_ACCOUNT_ID to be set (no human to eyeball the account)."
+    exit 1
+  fi
   CONFIRM="$PROJECT_NAME"
-else
+  CONFIRM_ACCT="$ACTUAL_ACCOUNT_ID"
+elif [ -n "${EXPECTED_ACCOUNT_ID:-}" ]; then
+  # Expected account known and already verified above — confirm project only.
   read -p "Type the project name shown above ('$PROJECT_NAME') to confirm: " CONFIRM < /dev/tty
+  CONFIRM_ACCT="$ACTUAL_ACCOUNT_ID"
+else
+  # No expected account on file — require typing BOTH the project name and
+  # the account ID so the human must consciously acknowledge which account
+  # this will destroy in.
+  echo "  ⚠ EXPECTED_ACCOUNT_ID is not set — confirm the account manually."
+  read -p "Type the project name shown above ('$PROJECT_NAME') to confirm: " CONFIRM < /dev/tty
+  read -p "Type the AWS account ID shown above to confirm the account: " CONFIRM_ACCT < /dev/tty
 fi
 if [ "$CONFIRM" != "$PROJECT_NAME" ]; then
   echo "Cancelled — input did not match '$PROJECT_NAME'."
+  exit 0
+fi
+if [ "$CONFIRM_ACCT" != "$ACTUAL_ACCOUNT_ID" ]; then
+  echo "Cancelled — account ID did not match $ACTUAL_ACCOUNT_ID."
   exit 0
 fi
 
@@ -252,36 +305,59 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 2 — Stop ECS services
+# Step 2 — Stop ECS services (ALL project clusters, unconditionally)
+#
+# The 2026-08-04 AskNicely destroy test proved terraform state cannot be
+# trusted as the source of truth for ECS services: agent services created by
+# deploy-agent.sh via the CLI live outside any state file, survived a
+# "Destroy complete!" run, and kept the cluster, NAT gateways, and VPC
+# endpoints alive. So this step sweeps by LISTING: every cluster whose ARN
+# contains "${PROJECT_NAME}-" gets all its services drained and deleted and
+# stray tasks stopped, before terraform ever runs.
 # ------------------------------------------------------------------------------
 
 echo ""
-echo "[ Step 2 ] Stopping ECS services..."
+echo "[ Step 2 ] Stopping ECS services in all project clusters..."
 
-SERVICES=$(aws ecs list-services \
-  --cluster "$CLUSTER" \
-  --query 'serviceArns[]' \
-  --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+PROJECT_CLUSTERS=$(aws ecs list-clusters \
+  --query "clusterArns[?contains(@, '${PROJECT_NAME}-')]" \
+  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n' || echo "")
 
-if [ -n "$SERVICES" ]; then
-  for SERVICE_ARN in $SERVICES; do
-    SERVICE_NAME=$(echo "$SERVICE_ARN" | awk -F'/' '{print $NF}')
-    aws ecs update-service \
-      --cluster "$CLUSTER" \
-      --service "$SERVICE_NAME" \
-      --desired-count 0 \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    aws ecs delete-service \
-      --cluster "$CLUSTER" \
-      --service "$SERVICE_NAME" \
-      --force \
-      --region "$AWS_REGION" > /dev/null 2>&1 || true
-    echo "  ✓ Stopped $SERVICE_NAME"
+if [ -n "$PROJECT_CLUSTERS" ]; then
+  for CLUSTER_ARN in $PROJECT_CLUSTERS; do
+    [ -z "$CLUSTER_ARN" ] && continue
+    echo "  Cluster: $(echo "$CLUSTER_ARN" | awk -F'/' '{print $NF}')"
+    SERVICES=$(aws ecs list-services \
+      --cluster "$CLUSTER_ARN" \
+      --query 'serviceArns[]' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    for SERVICE_ARN in $SERVICES; do
+      [ -z "$SERVICE_ARN" ] && continue
+      SERVICE_NAME=$(echo "$SERVICE_ARN" | awk -F'/' '{print $NF}')
+      aws ecs update-service \
+        --cluster "$CLUSTER_ARN" \
+        --service "$SERVICE_NAME" \
+        --desired-count 0 \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      aws ecs delete-service \
+        --cluster "$CLUSTER_ARN" \
+        --service "$SERVICE_NAME" \
+        --force \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+      echo "  ✓ Stopped $SERVICE_NAME"
+    done
+    # Stop any stray tasks not owned by a service
+    for TASK_ARN in $(aws ecs list-tasks --cluster "$CLUSTER_ARN" \
+        --query 'taskArns' --output text --region "$AWS_REGION" 2>/dev/null); do
+      [ -z "$TASK_ARN" ] && continue
+      aws ecs stop-task --cluster "$CLUSTER_ARN" --task "$TASK_ARN" \
+        --region "$AWS_REGION" > /dev/null 2>&1 || true
+    done
   done
   echo "  Waiting 30 seconds for services to stop..."
   sleep 30
 else
-  echo "  No ECS services found"
+  echo "  No ECS clusters found for project '${PROJECT_NAME}'"
 fi
 
 # ------------------------------------------------------------------------------
@@ -1180,11 +1256,22 @@ echo "  ✓ SSM parameter sweep complete"
 
 # ------------------------------------------------------------------------------
 # Step 6 — Delete local repos for a completely fresh start
+#
+# GATED ON A CLEAN RUN: on 2026-08-04 this cleanup ran after terraform
+# destroys had failed, deleting the local backend.hcl/prod.tfvars needed to
+# retry — turning one failed destroy into an unrecoverable-without-recloning
+# situation. If ANY failure has been recorded by this point, the local repos
+# and defaults.env are preserved so the destroy can simply be re-run.
 # ------------------------------------------------------------------------------
 
 echo ""
 echo "[ Step 6 ] Removing local repos..."
 
+if [ ${#FAILURES[@]} -gt 0 ]; then
+  echo "  ⚠ SKIPPING local repo and defaults.env cleanup — ${#FAILURES[@]} failure(s)"
+  echo "    recorded so far. Local config is preserved so this destroy can be"
+  echo "    re-run. Repos will be cleaned up by the next fully clean destroy."
+else
 for REPO in "$PARENT_DIR"/[0-9]*; do
   if [ -d "$REPO" ]; then
     DIRTY=""
@@ -1208,6 +1295,7 @@ echo "  ✓ defaults.env deleted"
 echo ""
 echo "  Local repos deleted. To redeploy run:"
 echo "  curl -fsSL https://raw.githubusercontent.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/main/install.sh | bash"
+fi
 
 # Delete CloudWatch log groups
 echo "  Cleaning up CloudWatch log groups..."
