@@ -8,9 +8,11 @@ set -e
 # Run this after the initial master-setup.sh deployment is complete.
 #
 # Usage:
-#   bash manage-agent.sh          — interactive mode (add or remove)
+#   bash manage-agent.sh          — interactive mode (menu)
 #   bash manage-agent.sh add      — add a new agent
 #   bash manage-agent.sh remove   — remove an existing agent
+#   bash manage-agent.sh redeploy <agent_name> — rebuild + push an agent's
+#                                   logic changes (wraps redeploy-agent.sh)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -964,6 +966,35 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+# Redeploy agent — thin wrapper around redeploy-agent.sh
+#
+# redeploy-agent.sh remains the single implementation (and still works
+# standalone); this menu entry only lists deployed agents, collects the
+# name, and delegates. No build/deploy logic is duplicated here.
+# ------------------------------------------------------------------------------
+
+redeploy_agent_menu() {
+  local REDEPLOY_AGENT_NAME=$1
+
+  if [ ! -f "$SCRIPT_DIR/redeploy-agent.sh" ]; then
+    echo "ERROR: redeploy-agent.sh not found in $SCRIPT_DIR"
+    exit 1
+  fi
+
+  if [ -z "$REDEPLOY_AGENT_NAME" ]; then
+    list_deployed_agents
+    read -p "Agent name to redeploy: " REDEPLOY_AGENT_NAME < /dev/tty
+  fi
+
+  if [ -z "$REDEPLOY_AGENT_NAME" ]; then
+    echo "ERROR: Agent name is required."
+    exit 1
+  fi
+
+  bash "$SCRIPT_DIR/redeploy-agent.sh" --agent "$REDEPLOY_AGENT_NAME"
+}
+
+# ------------------------------------------------------------------------------
 # Main — determine action
 # ------------------------------------------------------------------------------
 
@@ -978,9 +1009,10 @@ if [ -z "$ACTION" ]; then
   echo "  4) Add a credential to an agent"
   echo "  5) Remove a credential from an agent"
   echo "  6) Update an agent's description"
-  echo "  7) Exit"
+  echo "  7) Redeploy an agent (rebuild + push logic changes)"
+  echo "  8) Exit"
   echo ""
-  read -p "Choose (1-7): " CHOICE < /dev/tty
+  read -p "Choose (1-8): " CHOICE < /dev/tty
 
   case $CHOICE in
     1) ACTION="add" ;;
@@ -1004,7 +1036,11 @@ if [ -z "$ACTION" ]; then
       describe_agent "$DESCRIBE_AGENT_NAME"
       exit 0
       ;;
-    7) exit 0 ;;
+    7)
+      redeploy_agent_menu ""
+      exit 0
+      ;;
+    8) exit 0 ;;
     *) echo "Invalid choice."; exit 1 ;;
   esac
 fi
@@ -1015,8 +1051,9 @@ case $ACTION in
   list)     list_deployed_agents ;;
   secret)   secret_agent "${2:-}" "${3:-}" ;;
   describe) describe_agent "${2:-}" ;;
+  redeploy) redeploy_agent_menu "${2:-}" ;;
   *)
-    echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|describe <agent_name>]"
+    echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|describe <agent_name>|redeploy <agent_name>]"
     exit 1
     ;;
 esac
