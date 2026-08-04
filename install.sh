@@ -455,6 +455,9 @@ DOMAIN_NAME="$DOMAIN_NAME"
 ALLOWED_CIDR="$ALLOWED_CIDR"
 DEPLOYMENT_ROLE_ARN="$DEPLOY_ROLE_ARN"
 AWS_REGION="$AWS_REGION"
+# Account this platform was installed into. destroy.sh refuses to run against
+# any other account (guard added 2026-08-04 after a wrong-account near-miss).
+EXPECTED_ACCOUNT_ID="$AWS_ACCOUNT_ID"
 COST_CENTER="unallocated"
 OWNER="platform-engineering"
 CRM_TYPE="$CRM_TYPE"
