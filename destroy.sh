@@ -1622,12 +1622,73 @@ LEFTOVER_TAGGED=$(aws resourcegroupstaggingapi get-resources \
   --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n' | \
   grep -v ":kms:" | grep -v "task-definition/" | grep -v '^$' || true)
 
+# The tagging API is eventually consistent: deleted resources (especially EC2
+# networking and ECS) linger in its index for minutes to hours after the
+# owning service has fully removed them. Cross-check every reported ARN
+# against the owning service API; only resources the service itself confirms
+# alive are recorded as failures. Unknown types stay failures (catch-all).
+CONFIRMED_LEFTOVERS=""
 if [ -n "$LEFTOVER_TAGGED" ]; then
-  echo "  Resources still tagged Project=${PROJECT_NAME}:"
-  echo "$LEFTOVER_TAGGED" | sed 's/^/    /'
-  note_failure "tagging-API sweep found resources still tagged Project=${PROJECT_NAME} (see list above)"
+  while IFS= read -r arn; do
+    rid="${arn##*/}"
+    alive="yes"
+    case "$arn" in
+      *:natgateway/*)
+        state=$(aws ec2 describe-nat-gateways --region "$AWS_REGION" \
+          --nat-gateway-ids "$rid" \
+          --query 'NatGateways[0].State' --output text 2>/dev/null || echo "gone")
+        { [ "$state" = "deleted" ] || [ "$state" = "gone" ]; } && alive="no"
+        ;;
+      *:vpc-endpoint/*)
+        state=$(aws ec2 describe-vpc-endpoints --region "$AWS_REGION" \
+          --vpc-endpoint-ids "$rid" \
+          --query 'VpcEndpoints[0].State' --output text 2>/dev/null || echo "gone")
+        { [ "$state" = "deleted" ] || [ "$state" = "gone" ]; } && alive="no"
+        ;;
+      *:subnet/*)
+        aws ec2 describe-subnets --region "$AWS_REGION" \
+          --subnet-ids "$rid" >/dev/null 2>&1 || alive="no"
+        ;;
+      *:security-group/*)
+        aws ec2 describe-security-groups --region "$AWS_REGION" \
+          --group-ids "$rid" >/dev/null 2>&1 || alive="no"
+        ;;
+      *:security-group-rule/*)
+        found=$(aws ec2 describe-security-group-rules --region "$AWS_REGION" \
+          --security-group-rule-ids "$rid" \
+          --query 'SecurityGroupRules[0].SecurityGroupRuleId' \
+          --output text 2>/dev/null || echo "gone")
+        { [ "$found" = "gone" ] || [ "$found" = "None" ]; } && alive="no"
+        ;;
+      *:ecs:*:cluster/*)
+        status=$(aws ecs describe-clusters --region "$AWS_REGION" \
+          --clusters "$rid" \
+          --query 'clusters[0].status' --output text 2>/dev/null || echo "gone")
+        [ "$status" = "ACTIVE" ] || alive="no"
+        ;;
+      *:ecs:*:service/*)
+        svc_cluster=$(echo "$arn" | awk -F'/' '{print $(NF-1)}')
+        status=$(aws ecs describe-services --region "$AWS_REGION" \
+          --cluster "$svc_cluster" --services "$rid" \
+          --query 'services[0].status' --output text 2>/dev/null || echo "gone")
+        [ "$status" = "ACTIVE" ] || alive="no"
+        ;;
+    esac
+    if [ "$alive" = "yes" ]; then
+      CONFIRMED_LEFTOVERS="${CONFIRMED_LEFTOVERS}${arn}"$'\n'
+    else
+      echo "  (stale tagging-index entry, confirmed gone: $arn)"
+    fi
+  done <<< "$LEFTOVER_TAGGED"
+  CONFIRMED_LEFTOVERS=$(echo "$CONFIRMED_LEFTOVERS" | grep -v '^$' || true)
+fi
+
+if [ -n "$CONFIRMED_LEFTOVERS" ]; then
+  echo "  Resources still tagged Project=${PROJECT_NAME} and CONFIRMED alive:"
+  echo "$CONFIRMED_LEFTOVERS" | sed 's/^/    /'
+  note_failure "tagging-API sweep found live resources still tagged Project=${PROJECT_NAME} (see list above)"
 else
-  echo "  ✓ No resources remain tagged Project=${PROJECT_NAME}"
+  echo "  ✓ No live resources remain tagged Project=${PROJECT_NAME}"
 fi
 
 # ------------------------------------------------------------------------------
