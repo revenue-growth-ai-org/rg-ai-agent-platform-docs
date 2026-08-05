@@ -1673,13 +1673,27 @@ if [ -n "$LEFTOVER_TAGGED" ]; then
           --query 'services[0].status' --output text 2>/dev/null || echo "gone")
         [ "$status" = "ACTIVE" ] || alive="no"
         ;;
-        *:rds:*:snapshot:*)
+       *:rds:*:snapshot:*)
         snap_id="${arn##*:snapshot:}"
-        found=$(aws rds describe-db-snapshots --region "$AWS_REGION" \
+        snap_info=$(aws rds describe-db-snapshots --region "$AWS_REGION" \
           --db-snapshot-identifier "$snap_id" \
-          --query 'DBSnapshots[0].DBSnapshotIdentifier' \
+          --query 'DBSnapshots[0].[SnapshotType,DBInstanceIdentifier]' \
           --output text 2>/dev/null || echo "gone")
-        { [ "$found" = "gone" ] || [ "$found" = "None" ]; } && alive="no"
+        if [ "$snap_info" = "gone" ] || [ "$snap_info" = "None" ]; then
+          alive="no"
+        else
+          snap_type=$(echo "$snap_info" | awk '{print $1}')
+          snap_instance=$(echo "$snap_info" | awk '{print $2}')
+          if [ "$snap_type" = "automated" ]; then
+            # Automated snapshots are deleted by AWS when their instance is
+            # deleted, with lag. If the parent instance is gone, this snapshot
+            # is in the deletion pipeline — not a leftover. Manual snapshots
+            # and retained backups (Issue 18) are different objects and still
+            # fail loudly.
+            aws rds describe-db-instances --region "$AWS_REGION" \
+              --db-instance-identifier "$snap_instance" >/dev/null 2>&1 || alive="no"
+          fi
+        fi
         ;;
     esac
     if [ "$alive" = "yes" ]; then
