@@ -1673,6 +1673,14 @@ if [ -n "$LEFTOVER_TAGGED" ]; then
           --query 'services[0].status' --output text 2>/dev/null || echo "gone")
         [ "$status" = "ACTIVE" ] || alive="no"
         ;;
+        *:rds:*:snapshot:*)
+        snap_id="${arn##*:snapshot:}"
+        found=$(aws rds describe-db-snapshots --region "$AWS_REGION" \
+          --db-snapshot-identifier "$snap_id" \
+          --query 'DBSnapshots[0].DBSnapshotIdentifier' \
+          --output text 2>/dev/null || echo "gone")
+        { [ "$found" = "gone" ] || [ "$found" = "None" ]; } && alive="no"
+        ;;
     esac
     if [ "$alive" = "yes" ]; then
       CONFIRMED_LEFTOVERS="${CONFIRMED_LEFTOVERS}${arn}"$'\n'
