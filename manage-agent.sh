@@ -45,6 +45,48 @@ source "$DEFAULTS_FILE"
 # ------------------------------------------------------------------------------
 
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+# ------------------------------------------------------------------------------
+# Detect the RDS security group ID — shared by secret/describe/add flows.
+#
+# Resolution order:
+#   1. SSM parameter (written by base install)
+#   2. Ask the RDS instance directly (deterministic — the instance knows its SG)
+#   3. Prompt the operator
+#
+# NEVER writes an invalid value into prod.tfvars: the AWS CLI returns the
+# literal string "None" (not empty) for missing [0] results with --output
+# text, which previously slipped past empty-string checks and produced
+# rds_security_group_id = "None" — failing terraform validation. Every path
+# here is gated on a ^sg- format check instead.
+# ------------------------------------------------------------------------------
+
+detect_rds_sg() {
+  RDS_SG_ID=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+    RDS_SG_ID=$(aws rds describe-db-instances \
+      --db-instance-identifier "${PROJECT_NAME}-${ENVIRONMENT}-postgres" \
+      --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  fi
+
+  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+    echo ""
+    echo "ERROR: Could not auto-detect the RDS security group ID (got: '${RDS_SG_ID:-empty}')."
+    echo "Find it manually with:"
+    echo "  aws rds describe-db-instances --db-instance-identifier ${PROJECT_NAME}-${ENVIRONMENT}-postgres \\"
+    echo "    --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' --output text --region ${AWS_REGION}"
+    read -p "Enter the RDS security group ID (sg-...): " RDS_SG_ID < /dev/tty
+    if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+      echo "ERROR: '$RDS_SG_ID' is not a valid security group ID. Aborting before writing prod.tfvars."
+      exit 1
+    fi
+  fi
+  echo "  â RDS security group: $RDS_SG_ID"
+}
 AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
 
 CODEBUILD_PROJECT_NAME=$(aws ssm get-parameter \
@@ -441,12 +483,7 @@ secret_agent() {
   LOCK_TABLE=$(aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
     --query Parameter.Value --output text --region "$AWS_REGION")
-  RDS_SG_ID=$(aws ssm get-parameter \
-    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
-    aws ec2 describe-security-groups \
-      --filters "Name=group-name,Values=${PROJECT_NAME}-${ENVIRONMENT}-postgres*" \
-      --query "SecurityGroups[0].GroupId" --output text --region "$AWS_REGION")
+  detect_rds_sg
   DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
 
   cd "$AGENT_DIR"
@@ -584,12 +621,7 @@ describe_agent() {
   LOCK_TABLE=$(aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
     --query Parameter.Value --output text --region "$AWS_REGION")
-  RDS_SG_ID=$(aws ssm get-parameter \
-    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
-    aws ec2 describe-security-groups \
-      --filters "Name=group-name,Values=${PROJECT_NAME}-${ENVIRONMENT}-postgres*" \
-      --query "SecurityGroups[0].GroupId" --output text --region "$AWS_REGION")
+  detect_rds_sg
   DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
 
   cd "$AGENT_DIR"
@@ -688,19 +720,7 @@ add_agent() {
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
     --query Parameter.Value --output text 2>/dev/null || echo "")
 
-  RDS_SG_ID=$(aws ssm get-parameter \
-    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || \
-  aws ec2 describe-security-groups \
-    --filters "Name=tag:Name,Values=*${PROJECT_NAME}*rds*" \
-    --query 'SecurityGroups[0].GroupId' \
-    --output text \
-    --region "$AWS_REGION" 2>/dev/null || echo "")
-
-  if [ -z "$RDS_SG_ID" ]; then
-    echo "ERROR: Could not determine RDS security group ID. Verify the platform is fully deployed."
-    exit 1
-  fi
+  detect_rds_sg
 
   if [ -z "$STATE_BUCKET" ]; then
     echo "ERROR: Cannot read state bucket from SSM."
