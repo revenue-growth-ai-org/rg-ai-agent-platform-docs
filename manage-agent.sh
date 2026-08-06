@@ -85,7 +85,7 @@ detect_rds_sg() {
       exit 1
     fi
   fi
-  echo "  â RDS security group: $RDS_SG_ID"
+  echo "  ✓ RDS security group: $RDS_SG_ID"
 }
 AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
 
@@ -332,24 +332,124 @@ build_secrets_map_from_ssm() {
 }
 
 # ------------------------------------------------------------------------------
+# NOTE: credential applies create/remove the SSM pointer and IAM grant and
+# roll the ECS service to a new task definition revision (same image) — the
+# restart is REQUIRED: agents discover their credentials at container
+# startup, so a change is not visible until the agent's tasks cycle.
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Which agents reference a given secret ARN? Scans every agent's live SSM
+# credential pointers (the source of truth Terraform maintains from each
+# agent's external_secrets map). Prints one agent name per line.
+# ------------------------------------------------------------------------------
+
+agents_referencing_arn() {
+  local TARGET_ARN="$1"
+  aws ssm get-parameters-by-path \
+    --path "/${PROJECT_NAME}/${ENVIRONMENT}/agents" \
+    --recursive \
+    --query "Parameters[].[Name,Value]" \
+    --output text --region "$AWS_REGION" 2>/dev/null | \
+  awk -F'\t' -v arn="$TARGET_ARN" '
+    $1 ~ /\/secrets\// && $2 == arn {
+      n = split($1, parts, "/")
+      # path: /<project>/<env>/agents/<agent>/secrets/<name>
+      print parts[n-2]
+    }
+  ' | sort -u
+}
+
+# ------------------------------------------------------------------------------
+# List every platform credential, its ARN, and which agents reference it.
+# Flags orphans (referenced by zero agents) and legacy per-agent names so
+# nothing becomes invisible debris.
+#
+#   bash manage-agent.sh secret list
+# ------------------------------------------------------------------------------
+
+secrets_list() {
+  echo "=================================================="
+  echo " Platform credentials — ${PROJECT_NAME}-${ENVIRONMENT}"
+  echo "=================================================="
+  echo ""
+
+  local DEPLOYED_AGENTS SECRET_ROWS FOUND ARN NAME REFS LEGACY_TAG
+  DEPLOYED_AGENTS=$(aws ecs list-services \
+    --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+    --query "serviceArns" --output text --region "$AWS_REGION" 2>/dev/null | \
+    tr '\t' '\n' | awk -F'/' '{print $NF}' | \
+    sed "s/^${PROJECT_NAME}-${ENVIRONMENT}-//" | grep -v '^orchestrator$' || true)
+
+  FOUND=0
+  while IFS=$'\t' read -r NAME ARN; do
+    [ -z "$NAME" ] && continue
+    FOUND=1
+    REFS=$(agents_referencing_arn "$ARN" | tr '\n' ' ')
+
+    LEGACY_TAG=""
+    for A in $DEPLOYED_AGENTS; do
+      case "$NAME" in
+        "${PROJECT_NAME}-${ENVIRONMENT}-${A}-"*) LEGACY_TAG=" (legacy per-agent name)" ;;
+      esac
+    done
+
+    echo "  ${NAME}${LEGACY_TAG}"
+    echo "    ARN: $ARN"
+    if [ -n "${REFS// /}" ]; then
+      echo "    Referenced by: $REFS"
+    else
+      echo "    ⚠ ORPHAN — referenced by no agent. Delete deliberately with:"
+      echo "      aws secretsmanager delete-secret --secret-id \"$NAME\" --force-delete-without-recovery --region $AWS_REGION"
+    fi
+    echo ""
+  done < <(aws secretsmanager list-secrets \
+    --query "SecretList[?starts_with(Name, '${PROJECT_NAME}-${ENVIRONMENT}-')].[Name,ARN]" \
+    --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\t')
+
+  if [ "$FOUND" = "0" ]; then
+    echo "  (no credentials stored under ${PROJECT_NAME}-${ENVIRONMENT}-)"
+    echo ""
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # Attach or detach a single credential on an EXISTING agent — no container
 # rebuild, no CodeBuild round trip. Terraform + Secrets Manager only.
 #
 #   bash manage-agent.sh secret <agent_name> add
 #   bash manage-agent.sh secret <agent_name> remove
+#   bash manage-agent.sh secret list
 #
-# The apply creates/removes the SSM pointer and IAM grant and rolls the ECS
-# service to a new task definition revision (same image) — the restart is
-# REQUIRED: agents discover their credentials at container startup, so a
-# new credential is not visible to the running agent until its tasks cycle.
+# STORAGE MODEL (store-once / grant-per-agent):
+#   Credentials are stored ONCE per account under the shared name
+#   ${PROJECT_NAME}-${ENVIRONMENT}-<credential>. Access is granted per-agent
+#   per-ARN via each agent's external_secrets map — attaching the same
+#   credential to two agents reuses one ARN with two independent grants.
+#   Isolation lives in the grants, not in duplicating stored bytes.
+#
+#   Guard rails (do not remove — each blocks a shipped incident class):
+#   - Attach NEVER silently overwrites an existing value (Issue 17 class:
+#     name collision silently replacing a live credential). Updating a
+#     stored value requires an explicit double confirmation that lists
+#     every referencing agent.
+#   - Detach NEVER deletes the stored secret (shared naming would destroy
+#     it for every other referencing agent at runtime). Zero-reference
+#     orphans are surfaced by `secret list` with an explicit delete command.
 # ------------------------------------------------------------------------------
 
 secret_agent() {
   local AGENT_NAME="$1"
   local SECRET_ACTION="$2"
 
+  if [ "$AGENT_NAME" = "list" ] && [ -z "$SECRET_ACTION" ]; then
+    secrets_list
+    exit 0
+  fi
+
   if [ -z "$AGENT_NAME" ] || { [ "$SECRET_ACTION" != "add" ] && [ "$SECRET_ACTION" != "remove" ]; }; then
     echo "Usage: bash manage-agent.sh secret <agent_name> add|remove"
+    echo "       bash manage-agent.sh secret list"
     exit 1
   fi
 
@@ -391,38 +491,100 @@ secret_agent() {
       echo "ERROR: Use lowercase letters, digits, hyphens, underscores only."
       exit 1
     fi
-    echo "  Single API tokens: paste the token as-is."
-    echo "  Multi-field credentials: paste a JSON object, e.g."
-    echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
-    echo "  TIP: validate first with: bash test-api-credential.sh"
-    read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
-    echo ""
-    if [ -z "$SECRET_VALUE" ]; then
-      echo "ERROR: Empty value."
-      exit 1
-    fi
 
-    FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
+    # Shared, account-level name — no agent segment (store-once model).
+    FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${SECRET_NAME}"
 
-    if aws secretsmanager create-secret \
-        --name "$FULL_SECRET_NAME" \
-        --secret-string "$SECRET_VALUE" \
-        --region "$AWS_REGION" > /dev/null 2>&1; then
-      echo "  ✓ Stored: $FULL_SECRET_NAME"
-    else
-      aws secretsmanager update-secret \
-        --secret-id "$FULL_SECRET_NAME" \
-        --secret-string "$SECRET_VALUE" \
-        --region "$AWS_REGION" > /dev/null
-      echo "  ✓ Updated existing: $FULL_SECRET_NAME"
-    fi
-
-    SECRET_ARN=$(aws secretsmanager describe-secret \
+    EXISTING_ARN=$(aws secretsmanager describe-secret \
       --secret-id "$FULL_SECRET_NAME" \
-      --query ARN --output text --region "$AWS_REGION")
-    if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
-      echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
-      exit 1
+      --query ARN --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+    if [[ "$EXISTING_ARN" == arn:aws:secretsmanager* ]]; then
+      # ---- Secret already exists: reuse by default; never silently overwrite.
+      REFERENCING=$(agents_referencing_arn "$EXISTING_ARN" | tr '\n' ' ')
+      echo ""
+      echo "A credential named '$FULL_SECRET_NAME' already exists."
+      if [ -n "${REFERENCING// /}" ]; then
+        echo "Currently referenced by: $REFERENCING"
+      else
+        echo "Currently referenced by: (no agents)"
+      fi
+      echo ""
+      echo "  1) Attach the EXISTING stored value to '$AGENT_NAME' (default)"
+      echo "  2) UPDATE the stored value (affects every referencing agent)"
+      echo "  3) Abort"
+      read -p "Choose (1-3) [1]: " EXIST_CHOICE < /dev/tty
+      EXIST_CHOICE="${EXIST_CHOICE:-1}"
+
+      case "$EXIST_CHOICE" in
+        1)
+          SECRET_ARN="$EXISTING_ARN"
+          echo "  ✓ Reusing existing secret (value untouched): $FULL_SECRET_NAME"
+          ;;
+        2)
+          echo ""
+          echo "  ⚠ This REPLACES the stored value for EVERY agent listed above."
+          echo "  Each will pick up the new value at its next task start."
+          read -p "  Type the credential name ('$SECRET_NAME') to confirm the update: " UPDATE_CONFIRM < /dev/tty
+          if [ "$UPDATE_CONFIRM" != "$SECRET_NAME" ]; then
+            echo "Confirmation did not match. Nothing changed."
+            exit 0
+          fi
+          echo "  Single API tokens: paste the token as-is."
+          echo "  Multi-field credentials: paste a JSON object."
+          echo "  TIP: validate first with: bash test-api-credential.sh"
+          read -s -p "  New value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
+          echo ""
+          if [ -z "$SECRET_VALUE" ]; then
+            echo "ERROR: Empty value. Nothing changed."
+            exit 1
+          fi
+          aws secretsmanager put-secret-value \
+            --secret-id "$FULL_SECRET_NAME" \
+            --secret-string "$SECRET_VALUE" \
+            --region "$AWS_REGION" > /dev/null
+          SECRET_ARN="$EXISTING_ARN"
+          echo "  ✓ Value updated: $FULL_SECRET_NAME"
+          ;;
+        *)
+          echo "Aborted. Nothing changed."
+          exit 0
+          ;;
+      esac
+    else
+      # ---- Secret does not exist yet: create it.
+      echo "  Single API tokens: paste the token as-is."
+      echo "  Multi-field credentials: paste a JSON object, e.g."
+      echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
+      echo "  TIP: validate first with: bash test-api-credential.sh"
+      read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
+      echo ""
+      if [ -z "$SECRET_VALUE" ]; then
+        echo "ERROR: Empty value."
+        exit 1
+      fi
+
+      if ! aws secretsmanager create-secret \
+          --name "$FULL_SECRET_NAME" \
+          --secret-string "$SECRET_VALUE" \
+          --region "$AWS_REGION" > /dev/null 2>&1; then
+        echo "ERROR: Could not create secret '$FULL_SECRET_NAME'."
+        echo "It may have been created concurrently, or a same-named secret is"
+        echo "pending deletion (Secrets Manager holds deleted names for the"
+        echo "recovery window). Inspect with:"
+        echo "  aws secretsmanager describe-secret --secret-id \"$FULL_SECRET_NAME\" --region $AWS_REGION"
+        echo "Nothing was attached. Re-run once resolved."
+        exit 1
+      fi
+      echo "  ✓ Stored: $FULL_SECRET_NAME"
+
+      SECRET_ARN=$(aws secretsmanager describe-secret \
+        --secret-id "$FULL_SECRET_NAME" \
+        --query ARN --output text --region "$AWS_REGION")
+      if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
+        echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
+        exit 1
+      fi
     fi
 
     # New map = current map minus any same-named line, plus the new entry
@@ -437,14 +599,14 @@ secret_agent() {
       echo "ERROR: No credential named '$SECRET_NAME' on agent '$AGENT_NAME'."
       exit 1
     fi
+    DETACHED_ARN=$(echo "$CURRENT_MAP" | awk -v n="$SECRET_NAME" '$1 == n {gsub(/"/,"",$3); print $3}')
     NEW_MAP=$(echo "$CURRENT_MAP" | grep -v "^  ${SECRET_NAME} = " || true)
     NEW_MAP=$(echo "$NEW_MAP" | sed '/^$/d')
 
-    FULL_SECRET_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-${SECRET_NAME}"
     echo ""
-    echo "The Terraform apply will remove this agent's access (SSM pointer +"
-    echo "IAM grant). The Secrets Manager secret itself ($FULL_SECRET_NAME)"
-    read -p "can ALSO be deleted entirely. Delete the stored secret? (yes/no): " DELETE_SECRET < /dev/tty
+    echo "This removes '$AGENT_NAME's access (SSM pointer + IAM grant) only."
+    echo "The stored secret is NEVER deleted by detach — other agents may"
+    echo "reference it. Orphaned secrets are listed by: bash manage-agent.sh secret list"
   fi
 
   # Egress convention: any agent with credentials gets external egress;
@@ -526,12 +688,18 @@ EOF
   terraform init -backend-config=backend.hcl -reconfigure -input=false
   apply_with_retry "prod.tfvars"
 
-  if [ "$SECRET_ACTION" = "remove" ] && [ "$DELETE_SECRET" = "yes" ]; then
-    aws secretsmanager delete-secret \
-      --secret-id "$FULL_SECRET_NAME" \
-      --force-delete-without-recovery \
-      --region "$AWS_REGION" > /dev/null && \
-      echo "  ✓ Secret deleted: $FULL_SECRET_NAME"
+  if [ "$SECRET_ACTION" = "remove" ] && [ -n "$DETACHED_ARN" ]; then
+    REMAINING=$(agents_referencing_arn "$DETACHED_ARN" | tr '\n' ' ')
+    echo ""
+    if [ -n "${REMAINING// /}" ]; then
+      echo "  Stored secret retained — still referenced by: $REMAINING"
+    else
+      echo "  ⚠ Stored secret is now an ORPHAN (referenced by no agent)."
+      echo "  It was NOT deleted. To delete it deliberately:"
+      echo "    aws secretsmanager delete-secret --secret-id \"${PROJECT_NAME}-${ENVIRONMENT}-${SECRET_NAME}\" --force-delete-without-recovery --region $AWS_REGION"
+      echo "  (If this was a legacy per-agent-named secret, use: bash manage-agent.sh secret list"
+      echo "  to see its exact name first.)"
+    fi
   fi
 
   echo ""
@@ -1030,9 +1198,10 @@ if [ -z "$ACTION" ]; then
   echo "  5) Remove a credential from an agent"
   echo "  6) Update an agent's description"
   echo "  7) Redeploy an agent (rebuild + push logic changes)"
-  echo "  8) Exit"
+  echo "  8) List all credentials (per-agent references + orphans)"
+  echo "  9) Exit"
   echo ""
-  read -p "Choose (1-8): " CHOICE < /dev/tty
+  read -p "Choose (1-9): " CHOICE < /dev/tty
 
   case $CHOICE in
     1) ACTION="add" ;;
@@ -1060,7 +1229,11 @@ if [ -z "$ACTION" ]; then
       redeploy_agent_menu ""
       exit 0
       ;;
-    8) exit 0 ;;
+    8)
+      secrets_list
+      exit 0
+      ;;
+    9) exit 0 ;;
     *) echo "Invalid choice."; exit 1 ;;
   esac
 fi
@@ -1073,7 +1246,7 @@ case $ACTION in
   describe) describe_agent "${2:-}" ;;
   redeploy) redeploy_agent_menu "${2:-}" ;;
   *)
-    echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|describe <agent_name>|redeploy <agent_name>]"
+    echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|secret list|describe <agent_name>|redeploy <agent_name>]"
     exit 1
     ;;
 esac
