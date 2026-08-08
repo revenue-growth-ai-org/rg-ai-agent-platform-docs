@@ -1194,8 +1194,8 @@ if [ -z "$ACTION" ]; then
   echo "  1) Add a new agent"
   echo "  2) Remove an existing agent"
   echo "  3) List deployed agents"
-  echo "  4) Attach a credential to an agent (stored once per account, reusable by any agent)
-  echo "  5) Detach a credential from an agent (stored value is kept)
+  echo "  4) Attach a credential to an agent (stored once per account, reusable by any agent)"
+  echo "  5) Detach a credential from an agent (stored value is kept)"
   echo "  6) Update an agent's description"
   echo "  7) Redeploy an agent (rebuild + push logic changes)"
   echo "  8) List all credentials (per-agent references + orphans)"
