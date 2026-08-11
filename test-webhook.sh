@@ -10,7 +10,7 @@ set -e
 # Usage:
 #   bash test-webhook.sh
 #   bash test-webhook.sh --agent <agent_name>
-#   bash test-webhook.sh --scenario <happy|malformed|wrong-event-type|unauthorized|agent-timeout>
+#   bash test-webhook.sh --scenario <happy|malformed|wrong-event-type|unauthorized|agent-timeout|hubspot-v3>
 #
 # Scenarios:
 #   happy             (default) — valid signed webhook, expects agent_success
@@ -26,6 +26,13 @@ set -e
 #                      graceful agent_error and orchestration_complete NOT
 #                      reporting status success (this exercises a known gap
 #                      where a failed agent call still reports success).
+#   hubspot-v3        — a HubSpot-shaped webhook (array payload with
+#                      subscriptionType/objectId/portalId/etc.) signed with
+#                      HubSpot's native v3 scheme (X-HubSpot-Signature-v3 +
+#                      X-HubSpot-Request-Timestamp), exercising the real
+#                      CRM_TYPE=hubspot validation path end-to-end instead of
+#                      the generic X-Hub-Signature-256 path the other
+#                      scenarios use. Skips gracefully unless CRM_TYPE=hubspot.
 #
 # Requires defaults.env in the same directory (created by install.sh).
 #
@@ -78,11 +85,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$SCENARIO" in
-  happy|malformed|wrong-event-type|unauthorized|agent-timeout)
+  happy|malformed|wrong-event-type|unauthorized|agent-timeout|hubspot-v3)
     ;;
   *)
     echo "ERROR: Unknown --scenario '$SCENARIO'"
-    echo "Valid values: happy (default), malformed, wrong-event-type, unauthorized, agent-timeout"
+    echo "Valid values: happy (default), malformed, wrong-event-type, unauthorized, agent-timeout, hubspot-v3"
     exit 1
     ;;
 esac
@@ -135,8 +142,8 @@ echo ""
 ROUTING_OVERRIDDEN=false
 AGENT_SCALED_DOWN=false
 
-if [ -n "$OVERRIDE_AGENT" ] && [ "$SCENARIO" != "happy" ] && [ "$SCENARIO" != "agent-timeout" ]; then
-  echo "  NOTE: --agent is ignored for --scenario $SCENARIO (the routing override only applies to happy/agent-timeout)."
+if [ -n "$OVERRIDE_AGENT" ] && [ "$SCENARIO" != "happy" ] && [ "$SCENARIO" != "agent-timeout" ] && [ "$SCENARIO" != "hubspot-v3" ]; then
+  echo "  NOTE: --agent is ignored for --scenario $SCENARIO (the routing override only applies to happy/agent-timeout/hubspot-v3)."
   echo ""
 fi
 
@@ -308,10 +315,30 @@ WEBHOOK_SECRET=$(aws ssm get-parameter \
   --with-decryption \
   --query Parameter.Value --output text --region "$AWS_REGION")
 
+# Only fetched when relevant: not every customer runs CRM_TYPE=hubspot, and
+# this parameter may not exist at all for a Salesforce/generic deployment —
+# an unconditional fetch here would abort the whole script (set -e) for them
+# on every scenario, not just hubspot-v3.
+if [ "${CRM_TYPE:-}" = "hubspot" ]; then
+  HUBSPOT_APP_CLIENT_SECRET=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/hubspot_app_client_secret" \
+    --with-decryption \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+else
+  HUBSPOT_APP_CLIENT_SECRET=""
+fi
+
 echo "  ✓ ALB DNS:       $ALB_DNS_NAME"
 echo "  ✓ VPC ID:        $VPC_ID"
 echo "  ✓ ALB SG:        $ALB_SG_ID"
 echo "  ✓ Webhook secret retrieved"
+if [ "${CRM_TYPE:-}" = "hubspot" ]; then
+  if [ -n "$HUBSPOT_APP_CLIENT_SECRET" ]; then
+    echo "  ✓ HubSpot app client secret retrieved"
+  else
+    echo "  WARNING: Could not retrieve hubspot_app_client_secret from SSM (only needed for --scenario hubspot-v3)"
+  fi
+fi
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -499,7 +526,7 @@ fi
 echo "  Using event_type from routing config: $EVENT_TYPE"
 echo ""
 
-if [ -n "$OVERRIDE_AGENT" ] && { [ "$SCENARIO" = "happy" ] || [ "$SCENARIO" = "agent-timeout" ]; }; then
+if [ -n "$OVERRIDE_AGENT" ] && { [ "$SCENARIO" = "happy" ] || [ "$SCENARIO" = "agent-timeout" ] || [ "$SCENARIO" = "hubspot-v3" ]; }; then
   echo "Temporarily routing $EVENT_TYPE to agent: $OVERRIDE_AGENT..."
 
   ORIGINAL_ROUTING_CONFIG="$ROUTING_CONFIG"
@@ -1063,6 +1090,148 @@ print(f\"{rejected}|{attempted}\")
     fi
     echo ""
   fi
+  ;;
+
+hubspot-v3)
+  echo "Scenario: hubspot-v3 — sending a HubSpot-shaped webhook signed with HubSpot's"
+  echo "native v3 signature scheme (X-HubSpot-Signature-v3 / X-HubSpot-Request-Timestamp),"
+  echo "exercising the real CRM_TYPE=hubspot validation path end-to-end."
+  echo ""
+
+  if [ "${CRM_TYPE:-}" != "hubspot" ]; then
+    echo "  CRM_TYPE=${CRM_TYPE:-<unset>}: this orchestrator only validates HubSpot's native"
+    echo "  v3 signature when CRM_TYPE=hubspot. There is no v3 signature path to exercise here."
+    echo "  Use --scenario happy to test the generic X-Hub-Signature-256 path this deployment"
+    echo "  actually uses."
+    echo ""
+    echo "=================================================="
+    echo " RESULT: SKIPPED"
+    echo "=================================================="
+    TEST_EXIT=0
+  elif [ -z "$HUBSPOT_APP_CLIENT_SECRET" ]; then
+    echo "ERROR: hubspot_app_client_secret could not be retrieved from SSM"
+    echo "(/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/hubspot_app_client_secret)."
+    echo "This is the HubSpot Legacy App's Client Secret (Auth tab) — set it before running"
+    echo "this scenario. It's a separate credential from any HubSpot Service Key/API key an"
+    echo "agent itself uses."
+    TEST_EXIT=1
+  else
+    # objectTypeId/changeFlag are derived from EVENT_TYPE so the payload looks
+    # like what HubSpot actually sends for this deployment's configured routing
+    # event, not a hardcoded deal.creation regardless of real config.
+    case "$EVENT_TYPE" in
+      deal.*) HS_OBJECT_TYPE_ID="0-3" ;;
+      contact.*) HS_OBJECT_TYPE_ID="0-1" ;;
+      company.*) HS_OBJECT_TYPE_ID="0-2" ;;
+      ticket.*) HS_OBJECT_TYPE_ID="0-5" ;;
+      *) HS_OBJECT_TYPE_ID="0-3" ;;
+    esac
+    case "$EVENT_TYPE" in
+      *.creation) HS_CHANGE_FLAG="NEW" ;;
+      *.deletion) HS_CHANGE_FLAG="DELETED" ;;
+      *.propertyChange) HS_CHANGE_FLAG="UPDATED" ;;
+      *) HS_CHANGE_FLAG="NEW" ;;
+    esac
+
+    NOW_MS=$(date -u +%s000)
+
+    # HubSpot always delivers a JSON array of event objects, even for a single
+    # event — main.py's `payload if isinstance(payload, list) else [payload]`
+    # handles both, but this scenario deliberately sends the array shape since
+    # that's what real HubSpot traffic looks like. portalId is a placeholder:
+    # HubSpotAdapter.normalize() (app/adapters/hubspot.py) only reads
+    # subscriptionType and objectId, so its actual value doesn't affect the test.
+    PAYLOAD="[{\"eventId\":${NOW_MS},\"subscriptionId\":5000000,\"portalId\":12345678,\"occurredAt\":${NOW_MS},\"subscriptionType\":\"${EVENT_TYPE}\",\"attemptNumber\":0,\"objectId\":${TEST_RECORD_ID},\"changeSource\":\"CRM\",\"changeFlag\":\"${HS_CHANGE_FLAG}\",\"objectTypeId\":\"${HS_OBJECT_TYPE_ID}\"}]"
+
+    # Signature source string per HubSpot's v3 spec: method + URI + body + timestamp.
+    # Must match _validate_hubspot_v3_signature() in app/webhook.py exactly — the
+    # URI there is built from the request's Host header, which curl sets to
+    # ALB_DNS_NAME below, so this has to use the same host/path/scheme.
+    HUBSPOT_URI="https://${ALB_DNS_NAME}/webhook"
+    SOURCE_STRING="POST${HUBSPOT_URI}${PAYLOAD}${NOW_MS}"
+    HUBSPOT_SIGNATURE=$(echo -n "$SOURCE_STRING" | openssl dgst -sha256 -hmac "$HUBSPOT_APP_CLIENT_SECRET" -binary | base64 | tr -d '\n')
+
+    START_TIME=$(now_minus_30s)
+
+    RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+      -X POST "$HUBSPOT_URI" \
+      -H "Content-Type: application/json" \
+      -H "X-HubSpot-Signature-v3: ${HUBSPOT_SIGNATURE}" \
+      -H "X-HubSpot-Request-Timestamp: ${NOW_MS}" \
+      -d "$PAYLOAD" \
+      --insecure)
+
+    echo "  HTTP status: $RESPONSE"
+
+    if [ "$RESPONSE" != "200" ] && [ "$RESPONSE" != "202" ]; then
+      echo ""
+      echo "=================================================="
+      echo " RESULT: FAIL"
+      echo "=================================================="
+      echo ""
+      echo "  ✗ ALB returned HTTP $RESPONSE (expected 200 or 202)"
+      echo ""
+      echo "  Investigate with:"
+      echo "  aws logs tail $LOG_GROUP --since 5m --region $AWS_REGION"
+      TEST_EXIT=1
+    else
+      echo "  ✓ ALB accepted the webhook (HTTP $RESPONSE)"
+      echo ""
+
+      echo "Checking CloudWatch logs for orchestration result..."
+      echo "  Log group: $LOG_GROUP"
+
+      AGENT_SUCCESS=false
+      ORCHESTRATION_COMPLETE=false
+
+      for i in $(seq 1 18); do
+        echo "  Waiting 10s for logs to appear (attempt $i/18)..."
+        sleep 10
+
+        LOG_EVENTS=$(fetch_log_messages "agent_success")
+
+        if echo "$LOG_EVENTS" | grep -q "agent_success"; then
+          AGENT_SUCCESS=true
+          ORCHESTRATION_COMPLETE=true
+        fi
+
+        if [ "$AGENT_SUCCESS" = "true" ] && [ "$ORCHESTRATION_COMPLETE" = "true" ]; then
+          break
+        fi
+      done
+      echo ""
+
+      echo "=================================================="
+      if [ "$AGENT_SUCCESS" = "true" ] && [ "$ORCHESTRATION_COMPLETE" = "true" ]; then
+        echo " RESULT: PASS"
+        echo "=================================================="
+        echo ""
+        echo "  ✓ HubSpot v3 signature accepted (validated via CRM_TYPE=hubspot path)"
+        echo "  ✓ agent_success found in CloudWatch logs"
+        echo "  ✓ orchestration_complete with status success confirmed"
+        TEST_EXIT=0
+      else
+        echo " RESULT: FAIL"
+        echo "=================================================="
+        echo ""
+        if [ "$AGENT_SUCCESS" = "true" ]; then
+          echo "  ✓ agent_success found in CloudWatch logs"
+        else
+          echo "  ✗ agent_success NOT found in CloudWatch logs"
+        fi
+        if [ "$ORCHESTRATION_COMPLETE" = "true" ]; then
+          echo "  ✓ orchestration_complete with status success confirmed"
+        else
+          echo "  ✗ orchestration_complete with status success NOT found"
+        fi
+        echo ""
+        echo "  Investigate with:"
+        echo "  aws logs tail $LOG_GROUP --since 5m --region $AWS_REGION"
+        TEST_EXIT=1
+      fi
+    fi
+  fi
+  echo ""
   ;;
 
 agent-timeout)
