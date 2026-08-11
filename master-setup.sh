@@ -1225,9 +1225,42 @@ if [ -n "$ALARM_EMAIL" ]; then
   fi
 fi
 
+ALB_DNS_NAME=$(aws ssm get-parameter \
+  --name "/${PROJECT_NAME}/${ENVIRONMENT}/alb_dns_name" \
+  --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
 echo ""
 echo "  Next steps:"
 echo "    1. Update SSM system prompt for your use case:"
 echo "       /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/system_prompt"
-echo "    2. Test the platform by sending a webhook to the ALB"
+echo ""
+echo "    2. If your CRM will send webhooks natively (e.g. a HubSpot app's"
+echo "       webhook subscriptions, not just this repo's own test-webhook.sh),"
+echo "       you need ONE MORE DNS record before it can reach this platform:"
+echo ""
+echo "       The ACM certificate you validated earlier only covers hostnames"
+echo "       under ${DOMAIN_NAME} — it does NOT cover this ALB's raw AWS"
+echo "       hostname (AWS does not allow certificates for *.elb.amazonaws.com)."
+echo "       A webhook sender that does real TLS verification (HubSpot and most"
+echo "       production CRMs) will fail to connect if given the raw ALB"
+echo "       hostname directly. That failure shows up as a connection/TLS error"
+echo "       on the CRM's side with nothing in this platform's CloudWatch logs,"
+echo "       since the request never arrives — easy to misdiagnose as a"
+echo "       signature or routing bug when it's actually just DNS."
+echo ""
+echo "       Add a CNAME record in your DNS provider — separate from, and IN"
+echo "       ADDITION TO, the certificate validation CNAME added earlier"
+echo "       (keep that one too, it must stay in DNS permanently for renewal):"
+echo ""
+echo "         Type:  CNAME"
+echo "         Name:  webhook.${DOMAIN_NAME}   (or any hostname you prefer"
+echo "                under ${DOMAIN_NAME})"
+echo "         Value: ${ALB_DNS_NAME:-<could not auto-fetch — run: aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/alb_dns_name --query Parameter.Value --output text --region ${AWS_REGION}>}"
+echo ""
+echo "       Once that record resolves (usually a few minutes), give your CRM"
+echo "       this as the webhook Target URL: https://webhook.${DOMAIN_NAME}/webhook"
+echo "       (substitute the hostname you actually chose above)."
+echo ""
+echo "    3. Test the platform by sending a webhook to the ALB:"
+echo "       bash test-webhook.sh"
 echo ""
