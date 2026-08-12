@@ -15,6 +15,35 @@ The AWS Agent Platform is a secure, multi-agent AI orchestration platform deploy
 
 ---
 
+Insert this section into rg-ai-agent-platform-docs/ARCHITECTURE.md, after
+the existing "How it works" numbered list:
+
+---
+
+## Scheduled agent triggers (opt-in, bypasses the webhook flow)
+
+The steps above describe the default, always-on path: CRM → ALB →
+Orchestrator → agent. A second, independent trigger path exists for agents
+that opt in: an EventBridge scheduled rule invokes `ecs:RunTask` directly
+against a dedicated scan task definition for that one agent, on a cron
+schedule. This path:
+
+- Never touches the ALB, the orchestrator's `/webhook` endpoint, or its
+  routing config — there is no webhook signature to validate and no
+  routing decision to make, since the schedule already determines which
+  agent runs.
+- Is opt-in per agent via `enable_scheduled_scan` in that agent's
+  `prod.tfvars` (see `3-rg-ai-agent-platform-agent/README.md` for details)
+  — most agents do not have this enabled.
+- Writes one audit log line per action into the orchestrator's CloudWatch
+  log group (a narrowly-scoped IAM grant, write-only, nothing else) so the
+  orchestrator's logs remain the single place to look for a record of all
+  CRM-driven actions, even for actions triggered by a schedule rather than
+  a routed webhook. Full operational logs for the scan itself still live in
+  the agent's own log group, not the orchestrator's.
+
+---
+
 ## Layer breakdown
 
 ### Network layer (Step 1)
