@@ -219,6 +219,15 @@ for AGENT_NAME in "${DEPLOYED_AGENTS[@]}"; do
 
   echo "Agent: $AGENT_NAME"
 
+  NEEDS_ROUTING=""
+  read -p "  Route webhook events to this agent? [Y/n]: " NEEDS_ROUTING < /dev/tty
+  if [[ "$NEEDS_ROUTING" =~ ^[Nn] ]]; then
+    echo "  Skipping — no routing rule will be generated for $AGENT_NAME."
+    echo "  (Use this for agents triggered only via enable_scheduled_scan, with no webhook subscription.)"
+    echo ""
+    continue
+  fi
+
   EVENT_TYPE=""
   while [ -z "$EVENT_TYPE" ]; do
     read -p "  Event type [$DEFAULT_EVENT]: " EVENT_TYPE < /dev/tty
