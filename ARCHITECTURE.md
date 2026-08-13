@@ -15,11 +15,6 @@ The AWS Agent Platform is a secure, multi-agent AI orchestration platform deploy
 
 ---
 
-Insert this section into rg-ai-agent-platform-docs/ARCHITECTURE.md, after
-the existing "How it works" numbered list:
-
----
-
 ## Scheduled agent triggers (opt-in, bypasses the webhook flow)
 
 The steps above describe the default, always-on path: CRM → ALB →
