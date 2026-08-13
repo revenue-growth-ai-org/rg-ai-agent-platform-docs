@@ -187,6 +187,25 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# Stage this agent's scan-task logic, if it exists, into scan_task.py
+# ------------------------------------------------------------------------------
+# scan_task.py is a build-time staging file, just like business_logic.py
+# above — it should never be hand-edited or committed directly. Only agents
+# with enable_scheduled_scan = true need this; agents that don't have their
+# own app/agents/<agent_name>_scan_task.py fall through to removing any
+# stale scan_task.py instead, since different agents share this same
+# working tree across builds and a leftover file would silently apply to
+# the wrong agent.
+
+if [ -f "$APP_DIR/agents/${AGENT_NAME}_scan_task.py" ]; then
+  cp "$APP_DIR/agents/${AGENT_NAME}_scan_task.py" "$APP_DIR/scan_task.py"
+  echo "  ✓ Using app/agents/${AGENT_NAME}_scan_task.py as scan_task.py"
+else
+  rm -f "$APP_DIR/scan_task.py"
+  echo "  ✓ No app/agents/${AGENT_NAME}_scan_task.py found — removed any stale scan_task.py"
+fi
+
+# ------------------------------------------------------------------------------
 # Build, push, and verify the new image
 # ------------------------------------------------------------------------------
 
