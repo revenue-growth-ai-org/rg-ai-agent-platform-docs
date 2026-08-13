@@ -171,6 +171,21 @@ CURRENT_ROUTING_JSON=$(aws ssm get-parameter \
   --output text \
   --region "$AWS_REGION" 2>/dev/null || echo "")
 
+agent_has_scheduled_scan() {
+  # Detects the opt-in EventBridge scheduled-scan trigger from
+  # 3-rg-ai-agent-platform-agent's scheduled_scan.tf (enable_scheduled_scan =
+  # true in that agent's prod.tfvars) by checking for the EventBridge rule it
+  # provisions. This script only talks to AWS APIs — it has no local
+  # checkout of the agent repo to read prod.tfvars from — so the live rule
+  # is the source of truth, named the same way as everything else here:
+  # "${PROJECT_NAME}-${ENVIRONMENT}-<agent_name>-scheduled-scan".
+  aws events describe-rule \
+    --name "${PROJECT_NAME}-${ENVIRONMENT}-$1-scheduled-scan" \
+    --region "$AWS_REGION" \
+    --query 'Name' \
+    --output text > /dev/null 2>&1
+}
+
 get_default_for_agent() {
   # Prints "event_type|match_field|match_value" for the first rule in the
   # current live routing config that already routes to this agent, so the
@@ -215,18 +230,24 @@ echo ""
 RULES_JSON="[]"
 
 for AGENT_NAME in "${DEPLOYED_AGENTS[@]}"; do
-  IFS='|' read -r DEFAULT_EVENT DEFAULT_FIELD DEFAULT_VALUE <<< "$(get_default_for_agent "$AGENT_NAME")"
-
   echo "Agent: $AGENT_NAME"
 
   NEEDS_ROUTING=""
-  read -p "  Route webhook events to this agent? [Y/n]: " NEEDS_ROUTING < /dev/tty
+  if agent_has_scheduled_scan "$AGENT_NAME"; then
+    read -p "  Route webhook events to this agent? [y/N]: " NEEDS_ROUTING < /dev/tty
+    NEEDS_ROUTING="${NEEDS_ROUTING:-n}"
+  else
+    read -p "  Route webhook events to this agent? [Y/n]: " NEEDS_ROUTING < /dev/tty
+    NEEDS_ROUTING="${NEEDS_ROUTING:-y}"
+  fi
   if [[ "$NEEDS_ROUTING" =~ ^[Nn] ]]; then
     echo "  Skipping — no routing rule will be generated for $AGENT_NAME."
     echo "  (Use this for agents triggered only via enable_scheduled_scan, with no webhook subscription.)"
     echo ""
     continue
   fi
+
+  IFS='|' read -r DEFAULT_EVENT DEFAULT_FIELD DEFAULT_VALUE <<< "$(get_default_for_agent "$AGENT_NAME")"
 
   EVENT_TYPE=""
   while [ -z "$EVENT_TYPE" ]; do
