@@ -595,6 +595,7 @@ find_repo() {
 
 AGENT_DIR=$(find_repo "agent")
 ORCH_DIR=$(find_repo "orchestrator")
+CHAT_DIR=$(find_repo "chat")
 BASE_DIR=$(find_repo "base")
 BOOTSTRAP_DIR=$(find_repo "bootstrap")
 
@@ -683,9 +684,14 @@ EOF
 fi
 
 ORCH_SKIPPED="false"
+CHAT_SKIPPED="false"
 BASE_SKIPPED="false"
 
-for DIR in "$ORCH_DIR" "$BASE_DIR"; do
+# Chat is destroyed before base, same as orchestrator — both read base's
+# published SSM values (VPC, ALB, cluster, etc.) via data sources, so base
+# must still exist when their destroys run. Order between orchestrator and
+# chat doesn't matter relative to each other; only "before base" does.
+for DIR in "$ORCH_DIR" "$CHAT_DIR" "$BASE_DIR"; do
   if [ -z "$DIR" ]; then
     continue
   fi
@@ -694,6 +700,7 @@ for DIR in "$ORCH_DIR" "$BASE_DIR"; do
     echo "  ⚠ WARNING: $(basename $DIR) has no prod.tfvars — skipping Terraform destroy for this repo."
     echo "  ⚠ Its resources may survive and will be caught by the bootstrap-teardown guard below."
     [ "$DIR" = "$ORCH_DIR" ] && ORCH_SKIPPED="true"
+    [ "$DIR" = "$CHAT_DIR" ] && CHAT_SKIPPED="true"
     [ "$DIR" = "$BASE_DIR" ] && BASE_SKIPPED="true"
     continue
   fi
@@ -703,6 +710,8 @@ for DIR in "$ORCH_DIR" "$BASE_DIR"; do
 
   if [ "$DIR" = "$ORCH_DIR" ]; then
     STATE_KEY="2-rg-ai-agent-platform-orchestrator/terraform.tfstate"
+  elif [ "$DIR" = "$CHAT_DIR" ]; then
+    STATE_KEY="4-rg-ai-agent-platform-chat/terraform.tfstate"
   else
     STATE_KEY="1-rg-ai-agent-platform-base/terraform.tfstate"
   fi
@@ -745,6 +754,7 @@ EOF
     # Mark as skipped so the direct-deletion fallback below also runs and
     # catches whatever terraform left behind.
     [ "$DIR" = "$ORCH_DIR" ] && ORCH_SKIPPED="true"
+    [ "$DIR" = "$CHAT_DIR" ] && CHAT_SKIPPED="true"
     [ "$DIR" = "$BASE_DIR" ] && BASE_SKIPPED="true"
   fi
 
@@ -784,13 +794,19 @@ EOF
   fi
 done
 
-if [ "$ORCH_SKIPPED" = "true" ] || [ "$BASE_SKIPPED" = "true" ]; then
+if [ "$ORCH_SKIPPED" = "true" ] || [ "$CHAT_SKIPPED" = "true" ] || [ "$BASE_SKIPPED" = "true" ]; then
   echo ""
-  echo "  ⚠ WARNING: base and/or orchestrator Terraform destroy was skipped."
+  echo "  ⚠ WARNING: base, orchestrator, and/or chat Terraform destroy was skipped."
   echo "  Falling back to direct deletion of known resources by name, in"
   echo "  dependency order. This is a best-effort fallback, not a substitute"
   echo "  for a real terraform destroy — if these layers ever create"
   echo "  resources beyond what's covered here, they will NOT be caught."
+  echo "  (The IAM-role and log-group sweeps below are broad prefix/substring"
+  echo "  matches, so they also catch chat's task-exec/task roles and log"
+  echo "  group if it reaches this fallback — but chat's own security group"
+  echo "  and its ALB listener rule/autoscaling resources are not explicitly"
+  echo "  covered here; a clean chat terraform destroy above is what actually"
+  echo "  covers those.)"
   echo ""
 
   NAME_PREFIX_EXACT="${PROJECT_NAME}-${ENVIRONMENT}"

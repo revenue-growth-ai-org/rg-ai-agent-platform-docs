@@ -447,6 +447,26 @@ So `"test-contact-001"` was never actually looked up against any CRM in CI — i
 
 ---
 
+## Issue 15 — RDS `engine_version` drifted from Terraform config (17.5 configured, 17.9 live) — applying as-is would downgrade production
+
+**Symptom**: Running `terraform plan` in `1-rg-ai-agent-platform-base` shows an unrelated `module.rds.module.db_instance.aws_db_instance.this[0]` update alongside whatever change you're actually making, with `terraform plan` itself printing a "Note: Objects have changed outside of Terraform" warning:
+
+```
+~ engine_version_actual = "17.5" -> "17.9"
+...
+~ engine_version = "17.9" -> "17.5"
+```
+
+**Cause**: `var.rds_engine_version` in `variables.tf` still defaults to `"17.5"` (not overridden in `prod.tfvars`), but AWS auto-upgraded the live prod RDS instance's minor engine version to `17.9` outside of Terraform at some point (RDS minor-version auto-upgrade), after this was last applied at `17.5`. Terraform's state doesn't know about this until a `plan` refreshes against real state and detects the drift. Found 2026-08-16 while planning an unrelated ALB target-group change (adding a `chat` target group for the new chat app repo) — this drift predates that change and has nothing to do with it.
+
+**Not fixed — deliberate**: this is documented, not resolved. `terraform apply` on this repo as currently configured would attempt to downgrade the live engine version from 17.9 back to 17.5, which is a real, disruptive operation on production RDS, not something to bundle into unrelated Terraform work. Marked directly at `var.rds_engine_version`'s definition in `variables.tf` and at the `engine_version = var.rds_engine_version` line in `main.tf`'s `module "rds"` block, so it can't be missed by someone running `terraform apply` later without reading this file first.
+
+**Decision needed (Michael)**: either bump `rds_engine_version` to `"17.9"` to match reality, or confirm you actually want it back at `17.5` and accept what a live downgrade entails. Until one of those happens, **do not run `terraform apply` on `1-rg-ai-agent-platform-base`** — `plan` is safe (read-only), `apply` is not.
+
+**Separately noticed while filing this**: CLAUDE.md's own incident ledger references Issues 15–18 (tab-joined `aws --output text` bug, `destroy.sh` only destroying the last-touched agent, the Issue 17 secret-collision that motivated the multi-secret redesign, and RDS snapshot/backup accumulation across destroy cycles) as already fixed and numbered — none of those four actually appear in this file. This entry claims "Issue 15" as the true next number in *this* file's own sequence; the apparent gap (16–18 not being about those four topics) reflects that this file was never backfilled to match CLAUDE.md's numbering, not that anything here was deleted. Worth reconciling separately — not done as part of this entry.
+
+---
+
 ## Quick reference — resume commands by step
 
 | Situation | Command |
