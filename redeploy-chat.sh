@@ -3,19 +3,28 @@ set -e
 set -o pipefail
 
 # =============================================================================
-# AWS Agent Platform — Redeploy Agent
+# AWS Agent Platform — Redeploy Chat App
 # =============================================================================
-# Rebuilds a single agent's container image, pushes it to ECR, and forces a
-# new ECS deployment — the same automated build/push/verify/wait flow as
-# redeploy-orchestrator.sh (shared via redeploy-common.sh), just targeting one
-# agent's service instead of the orchestrator.
+# Rebuilds the standalone chat app's container image, pushes it to ECR, and
+# forces a new ECS deployment — so nobody needs to run docker build/tag/push
+# or aws ecs commands by hand after changing chat app code. Verifies the
+# pushed image is actually new, waits for the rollout to finish (failing fast
+# on a bad task), then tails recent logs so you can confirm clean startup.
+#
+# Requires the chat app's ECS service to already exist (i.e.
+# 4-rg-ai-agent-platform-chat has already been applied at least once with a
+# real image). For the very first deploy of a brand-new service, there's no
+# ECS service yet to force-redeploy — build and push the initial image
+# directly via build_tag_push_and_verify (see redeploy-common.sh), point
+# prod.tfvars's chat_image at the pushed :latest URI, then run
+# `terraform apply` to create the service. Use this script for every deploy
+# after that first one — mirrors redeploy-orchestrator.sh exactly.
 #
 # Usage:
-#   bash redeploy-agent.sh --agent researcher
-#   bash redeploy-agent.sh --agent researcher --project myplatform --environment prod --region us-east-1
+#   bash redeploy-chat.sh
+#   bash redeploy-chat.sh --project myplatform --environment prod --region us-east-1
 #
-# Arguments:
-#   --agent        Agent name (required — must match an existing deployed agent)
+# Arguments (all optional — default to defaults.env):
 #   --project      Project name (overrides PROJECT_NAME from defaults.env)
 #   --environment  Environment name (overrides ENVIRONMENT from defaults.env)
 #   --region       AWS region (overrides AWS_REGION from defaults.env)
@@ -31,17 +40,12 @@ source "$SCRIPT_DIR/redeploy-common.sh"
 # Parse arguments
 # ------------------------------------------------------------------------------
 
-AGENT_NAME=""
 PROJECT_OVERRIDE=""
 ENVIRONMENT_OVERRIDE=""
 REGION_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --agent)
-      AGENT_NAME="$2"
-      shift 2
-      ;;
     --project)
       PROJECT_OVERRIDE="$2"
       shift 2
@@ -56,17 +60,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: bash redeploy-agent.sh --agent <name> [--project <name>] [--environment <env>] [--region <region>]"
+      echo "Usage: bash redeploy-chat.sh [--project <name>] [--environment <env>] [--region <region>]"
       exit 1
       ;;
   esac
 done
-
-if [ -z "$AGENT_NAME" ]; then
-  echo "ERROR: --agent argument is required."
-  echo "Usage: bash redeploy-agent.sh --agent <name>"
-  exit 1
-fi
 
 # ------------------------------------------------------------------------------
 # Load defaults.env, then apply flag overrides
@@ -109,10 +107,9 @@ fi
 
 echo ""
 echo "=================================================="
-echo " AWS Agent Platform — Redeploy Agent: $AGENT_NAME"
+echo " AWS Agent Platform — Redeploy Chat App"
 echo "=================================================="
 echo ""
-echo "  Agent:       $AGENT_NAME"
 echo "  Project:     $PROJECT_NAME"
 echo "  Environment: $ENVIRONMENT"
 echo "  Account:     $AWS_ACCOUNT_ID"
@@ -120,39 +117,39 @@ echo "  Region:      $AWS_REGION"
 echo ""
 
 # ------------------------------------------------------------------------------
-# Locate the agent repo and its app directory
+# Locate the chat app repo and its app directory
 # ------------------------------------------------------------------------------
 
-AGENT_REPO=$(find_platform_repo "agent" "orchestrator")
+CHAT_REPO=$(find_platform_repo "chat")
 
-if [ -z "$AGENT_REPO" ]; then
-  echo "ERROR: Cannot find the agent repo in $PARENT_DIR"
-  echo "Expected a directory matching *agent* (e.g. 3-rg-ai-agent-platform-agent)"
+if [ -z "$CHAT_REPO" ]; then
+  echo "ERROR: Cannot find the chat app repo in $PARENT_DIR"
+  echo "Expected a directory matching *chat* (e.g. 4-rg-ai-agent-platform-chat)"
   echo "cloned into the same parent directory as this docs repo."
   exit 1
 fi
 
-APP_DIR="$AGENT_REPO/app"
+APP_DIR="$CHAT_REPO/app"
 
 if [ ! -d "$APP_DIR" ]; then
-  echo "ERROR: Agent app directory not found: $APP_DIR"
-  echo "Expected the agent repo to contain an app/ directory with its Dockerfile."
+  echo "ERROR: Chat app directory not found: $APP_DIR"
+  echo "Expected the chat app repo to contain an app/ directory with its Dockerfile."
   exit 1
 fi
 
-echo "  Agent repo:     $AGENT_REPO"
-echo "  App directory:  $APP_DIR"
+echo "  Chat app repo: $CHAT_REPO"
+echo "  App directory: $APP_DIR"
 echo ""
 
 # ------------------------------------------------------------------------------
-# Verify the agent service exists before doing any work
+# Verify the chat app service exists before doing any work
 # ------------------------------------------------------------------------------
 
 CLUSTER_NAME="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
-SERVICE_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}"
-IMAGE_NAME="${PROJECT_NAME}-${AGENT_NAME}"
+SERVICE_NAME="${PROJECT_NAME}-${ENVIRONMENT}-chat"
+IMAGE_NAME="${PROJECT_NAME}-chat"
 ECR_REPO_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_NAME}"
-LOG_GROUP="/ecs/${PROJECT_NAME}-${ENVIRONMENT}/${AGENT_NAME}"
+LOG_GROUP="/ecs/${PROJECT_NAME}-${ENVIRONMENT}/chat"
 
 SERVICE_STATUS=$(aws ecs describe-services \
   --cluster "$CLUSTER_NAME" \
@@ -162,48 +159,15 @@ SERVICE_STATUS=$(aws ecs describe-services \
   --region "$AWS_REGION" 2>/dev/null || echo "NOT_FOUND")
 
 if [ "$SERVICE_STATUS" != "ACTIVE" ]; then
-  echo "ERROR: Agent '$AGENT_NAME' is not deployed (service not found or not active: $SERVICE_NAME)."
-  echo "Deploy it first with: bash manage-agent.sh add"
+  echo "ERROR: Chat app ECS service not found or not active: $SERVICE_NAME"
+  echo "This script is for redeploying an already-applied chat app. For the very"
+  echo "first deploy, build+push the initial image directly (see this script's"
+  echo "header comment), point prod.tfvars's chat_image at it, then run"
+  echo "terraform apply in $CHAT_REPO to create the service."
   exit 1
 fi
 
-echo "  ✓ Agent service found and active"
-
-# ------------------------------------------------------------------------------
-# Stage this agent's real logic, if it exists, into business_logic.py
-# ------------------------------------------------------------------------------
-# business_logic.py is a build-time staging file, regenerated fresh before
-# every build — it should never be hand-edited or committed directly. This
-# is what makes editing app/agents/<agent_name>.py and running this script
-# actually take effect; skipping this step would just rebuild whatever was
-# last staged (commonly still the empty shell).
-
-if [ -f "$APP_DIR/agents/${AGENT_NAME}.py" ]; then
-  cp "$APP_DIR/agents/${AGENT_NAME}.py" "$APP_DIR/business_logic.py"
-  echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
-else
-  cp "$APP_DIR/agents/_shell.py" "$APP_DIR/business_logic.py"
-  echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
-fi
-
-# ------------------------------------------------------------------------------
-# Stage this agent's scan-task logic, if it exists, into scan_task.py
-# ------------------------------------------------------------------------------
-# scan_task.py is a build-time staging file, just like business_logic.py
-# above — it should never be hand-edited or committed directly. Only agents
-# with enable_scheduled_scan = true need this; agents that don't have their
-# own app/agents/<agent_name>_scan_task.py fall through to removing any
-# stale scan_task.py instead, since different agents share this same
-# working tree across builds and a leftover file would silently apply to
-# the wrong agent.
-
-if [ -f "$APP_DIR/agents/${AGENT_NAME}_scan_task.py" ]; then
-  cp "$APP_DIR/agents/${AGENT_NAME}_scan_task.py" "$APP_DIR/scan_task.py"
-  echo "  ✓ Using app/agents/${AGENT_NAME}_scan_task.py as scan_task.py"
-else
-  rm -f "$APP_DIR/scan_task.py"
-  echo "  ✓ No app/agents/${AGENT_NAME}_scan_task.py found — removed any stale scan_task.py"
-fi
+echo "  ✓ Chat app service found and active"
 
 # ------------------------------------------------------------------------------
 # Build, push, and verify the new image
@@ -232,7 +196,6 @@ echo "=================================================="
 echo " Redeploy complete"
 echo "=================================================="
 echo ""
-echo "  Agent:   $AGENT_NAME"
 echo "  Image:   ${ECR_REPO_URI}:latest"
 echo "  Service: $SERVICE_NAME"
 echo ""

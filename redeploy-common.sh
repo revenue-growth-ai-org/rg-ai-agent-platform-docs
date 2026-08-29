@@ -87,8 +87,8 @@ zip_source_for_build() {
   ORIGINAL_DIR="$(pwd)"
   cd "$APP_DIR"
   zip -r -q "$DEST_ZIP" . \
-    -x ".env" \
-    -x "*.env" \
+    -x ".env*" \
+    -x "*/.env*" \
     -x "*.tfvars" \
     -x "*.backup.*" \
     -x ".terraform/*" \
