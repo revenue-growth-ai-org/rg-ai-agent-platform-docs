@@ -10,16 +10,6 @@ Controls protecting the shared platform code across all five repositories. Becau
 
 This document states each control precisely, including its actual coverage. These facts were verified against live GitHub and repository settings on 2026-07-12, not restated from earlier summaries.
 
-> **Coverage gap — `4-rg-ai-agent-platform-chat` (noted 2026-09-07).** The
-> "all five repositories" coverage stated below was accurate when verified on
-> 2026-07-12. A sixth repository, `4-rg-ai-agent-platform-chat`, was created on
-> 2026-08-24 and is **not** covered by any control in the table: it has no
-> `.github/workflows/` (so no gitleaks CI job and no required status checks) and
-> no `.github/dependabot.yml`. The counts below are left as-is because they
-> state what is actually true today — they are not a claim about the chat repo.
-> Closing this gap is tracked separately; it requires adding CI to that repo,
-> not editing this document.
-
 ## Source repository controls
 
 | Control | Coverage | Detail |
