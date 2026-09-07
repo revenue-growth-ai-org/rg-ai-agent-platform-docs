@@ -376,11 +376,10 @@ routing rules before they affect real traffic.
 
 ### Step 3 — Write the agent's real business logic
 
-> ⚠️ **UNVERIFIED — confirm before relying on this section.** An "Agent
-> Implementation Engineer" Claude Project, referenced in earlier versions
-> of this guide, has not been confirmed to exist or to match the
-> platform's current architecture. The mechanism below is the verified,
-> current one — use it regardless of whether that Project exists.
+> The "Agent Implementation Engineer" Claude Project referenced in earlier
+> versions of this guide does exist and is in use. It is a convenience for
+> drafting agent logic — the mechanism described below is the contract, and
+> anything that Project produces still has to match it.
 
 Write the agent's real logic directly into
 `app/agents/<agent_name>.py` in the `3-rg-ai-agent-platform-agent` repo,
