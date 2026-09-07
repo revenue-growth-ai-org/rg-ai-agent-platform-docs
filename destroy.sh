@@ -662,7 +662,7 @@ rds_security_group_id  = "sg-000000000000destroy"
 agent_image            = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
 deployment_role_arn    = "$DEPLOY_ROLE_ARN_FOR_DESTROY"
 enable_external_egress = false
-external_secrets_arns  = []
+external_secrets       = {}
 EOF
 
     cat > backend.hcl << EOF
