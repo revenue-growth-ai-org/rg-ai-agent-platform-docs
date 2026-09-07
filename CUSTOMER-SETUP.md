@@ -93,10 +93,12 @@ If Git is not installed on Mac run:
 
 ## Step 6 — Clone the platform repositories
 
-Create a folder for the platform repos and clone all five:
+Create a per-project folder for the platform repos and clone all five. Use the
+same layout `install.sh` uses (`~/rg-ai-agent-platform/<project-name>/`, see
+install.sh:333) so multiple customer deployments can coexist on one machine:
 
-    mkdir aws-agent-platform
-    cd aws-agent-platform
+    mkdir -p ~/rg-ai-agent-platform/<project-name>
+    cd ~/rg-ai-agent-platform/<project-name>
 
     git clone https://github.com/revenue-growth-ai-org/0-rg-ai-agent-platform-bootstrap.git
     git clone https://github.com/revenue-growth-ai-org/1-rg-ai-agent-platform-base.git

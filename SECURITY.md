@@ -4,7 +4,7 @@
 
 Do not open a public GitHub issue for security findings.
 
-Email michael@revenue-growth.ai with subject line [SECURITY] aws-agent-platform.
+Email michael@revenue-growth.ai with subject line [SECURITY] rg-ai-agent-platform.
 Acknowledgment within 1 business day. For urgent issues, mark the subject URGENT.
 
 For the full incident response process — including severity framing, response
