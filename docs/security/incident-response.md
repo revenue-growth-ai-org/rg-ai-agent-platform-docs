@@ -18,7 +18,7 @@ This is the single point of contact for security reports, vulnerability disclosu
 
 | Stage | Commitment |
 |---|---|
-| **Acknowledgment** | Within 1 business day of a report reaching the contact above |
+| **Acknowledgment** | Within 5 business days of a report reaching the contact above |
 | **Initial assessment** | A good-faith initial read on severity and scope communicated to the reporter as soon as it's available — typically alongside or shortly after acknowledgment |
 | **Customer notification** | Any confirmed incident affecting a customer's deployment or data is communicated to that customer within 72 hours of confirmation |
 | **Resolution timeline** | Depends on severity and complexity; the reporter and any affected customer will be kept informed of progress rather than left waiting silently |
