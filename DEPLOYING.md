@@ -130,12 +130,22 @@ After deploy completes paste your Anthropic API key:
 
 ### Step 3 — Agent nodes (repeat per agent type)
 
-    git clone https://github.com/revenue-growth-ai-org/3-rg-ai-agent-platform-agent.git
-    cd 3-rg-ai-agent-platform-agent
-    bash setup.sh
-    make doctor
-    make setup
-    make deploy
+Unlike Steps 0–2, agents are **not** deployed with a per-repo `setup.sh`. That
+script is stale in `3-rg-ai-agent-platform-agent` — it generates the removed
+`external_secrets_arns` variable and deliberately exits 1 rather than produce a
+broken `prod.tfvars`. Use the platform tooling instead, from this repo:
+
+    bash manage-agent.sh add
+
+This clones/locates the agent repo, writes `prod.tfvars` and `backend.hcl` with
+the correct state key (`3-rg-ai-agent-platform-agent/<agent_name>/terraform.tfstate`),
+and deploys. Repeat per agent type. To attach credentials afterwards:
+
+    bash manage-agent.sh secret <agent_name> add
+
+To ship logic changes to an existing agent:
+
+    bash redeploy-agent.sh <agent_name>
 
 ## Cleaning up a failed install
 
