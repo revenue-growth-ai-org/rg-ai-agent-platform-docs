@@ -13,12 +13,13 @@ commitments, and what an active-incident timeline looks like — see
 
 ## Scope
 
-This policy covers all five platform repositories:
+This policy covers all six platform repositories:
 - rg-ai-agent-platform-docs
 - 0-rg-ai-agent-platform-bootstrap
 - 1-rg-ai-agent-platform-base
 - 2-rg-ai-agent-platform-orchestrator
 - 3-rg-ai-agent-platform-agent
+- 4-rg-ai-agent-platform-chat
 
 ## Security best practices
 
