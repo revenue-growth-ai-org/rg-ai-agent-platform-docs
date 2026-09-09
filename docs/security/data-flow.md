@@ -1,7 +1,7 @@
 # Data Flow & Trust Boundaries
 
 **Revenue-Growth.AI Agent Platform — Security Documentation**
-Status: Current as of July 2026
+Status: Current as of September 2026
 Related documents: [Customer Isolation Statement](./customer-isolation.md) · [Encryption Matrix](./encryption-matrix.md) · [Secrets Access Map](./secrets-access-map.md)
 
 ---
@@ -83,5 +83,5 @@ flowchart TB
 
 Stated here deliberately, consistent with this documentation set's evidence-based approach:
 
-- **Intra-VPC traffic is plaintext HTTP** (hops 2 and 3). TLS terminates at the ALB; service-to-service traffic inside the VPC relies on network isolation (private subnets, paired security groups) rather than transport encryption. There is no cross-tenant exposure — the deployment is single-tenant — and mTLS between services is on the productization roadmap.
-- **Per-agent egress gating is application-layer, not network-layer** (hop 5). The security-group rule permitting outbound 443 exists for every agent; the `ENABLE_EXTERNAL_EGRESS` flag is enforced in application configuration. Moving this control to the security group is a tracked improvement.
+- **Intra-VPC traffic is plaintext HTTP** (hops 2 and 3). TLS terminates at the ALB; service-to-service traffic inside the VPC relies on network isolation (private subnets, paired security groups) rather than transport encryption. There is no cross-tenant exposure — the deployment is single-tenant — and Encrypting this traffic is tracked as [issue #13](https://github.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/issues/13).
+- **Per-agent egress gating is application-layer, not network-layer** (hop 5). The security-group rule permitting outbound 443 exists for every agent; the `ENABLE_EXTERNAL_EGRESS` flag is enforced in application configuration. Moving this control to the security group is tracked as [issue #14](https://github.com/revenue-growth-ai-org/rg-ai-agent-platform-docs/issues/14).
