@@ -44,7 +44,8 @@ schedule. This path:
 ### Network layer (Step 1)
 - Private VPC with public, private, and database subnet tiers
 - NAT gateway for controlled outbound internet access
-- Internal ALB with IP allowlist enforcement — no public ingress to compute
+- ALB placement and ingress depend on `crm_type` — see [Webhook ingress](#webhook-ingress) below
+- ECS tasks and RDS are always in private subnets with no public IPs
 - VPC interface endpoints for ECR, SSM, Secrets Manager, CloudWatch (no internet required for AWS API calls)
 
 ### Compute layer (Steps 2 and 3)
@@ -72,17 +73,37 @@ schedule. This path:
 
 ---
 
+## Webhook ingress
+
+The ALB's scheme is not fixed. It is set by the `crm_type` variable
+(`1-rg-ai-agent-platform-base/main.tf`: `internal = var.crm_type == "other"`),
+because different CRMs require different ingress models.
+
+| `crm_type` | ALB scheme | Network ingress | Authentication boundary |
+|---|---|---|---|
+| `hubspot` *(default)* | **Internet-facing** | `0.0.0.0/0` — HubSpot publishes no static source IPs | **HMAC** signature (`X-Hub-Signature-256`), verified by the orchestrator |
+| `salesforce` | **Internet-facing** | Restricted to Salesforce's published IP ranges | Source-IP restriction (no HMAC) |
+| `other` | **Internal** | Explicit `ALLOWED_CIDR` allowlist | Network allowlist |
+
+In every mode, compute stays private: ECS tasks and RDS have no public IPs, and
+only the ALB and NAT gateways occupy public subnets.
+
+For the full hop-by-hop path and trust boundaries, see
+[docs/security/data-flow.md](docs/security/data-flow.md).
+
+---
+
 ## Security controls
 
 | Control | Implementation |
 |---|---|
-| Zero public ingress to compute | ALB is internal; ECS tasks are in private subnets |
+| No public ingress to compute | ECS tasks and RDS run in private subnets with no public IPs; only the ALB and NAT gateways sit in public subnets |
 | Per-agent IAM isolation | Each agent has its own IAM task role with no shared permissions |
 | Per-agent network isolation | Each agent has its own security group; only the orchestrator can call agents |
 | KMS encryption at rest | Dedicated CMK for RDS with MFA break-glass policy |
 | Secrets management | All credentials in Secrets Manager — never in environment variables |
 | Audit logging | CloudTrail data events on KMS key; structured logs on all containers |
-| IP allowlist on ALB | Only explicitly allowlisted CIDRs can reach the platform |
+| ALB ingress restriction | Depends on `crm_type` (see [Webhook ingress](#webhook-ingress)). HubSpot deployments accept `0.0.0.0/0` and rely on HMAC verification as the authentication boundary; Salesforce restricts to published IP ranges; `other` uses an explicit CIDR allowlist |
 | External egress control | Internal-only by default; external egress enabled per agent via variable |
 
 ---
