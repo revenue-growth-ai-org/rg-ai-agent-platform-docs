@@ -161,13 +161,38 @@ SERVICE_STATUS=$(aws ecs describe-services \
   --output text \
   --region "$AWS_REGION" 2>/dev/null || echo "NOT_FOUND")
 
-if [ "$SERVICE_STATUS" != "ACTIVE" ]; then
-  echo "ERROR: Agent '$AGENT_NAME' is not deployed (service not found or not active: $SERVICE_NAME)."
-  echo "Deploy it first with: bash manage-agent.sh add"
-  exit 1
-fi
+# A scan-only agent (enable_agent_service = false in its tfvars — see the agent
+# repo's variables.tf) has no ECS service at all: its work runs entirely in the
+# EventBridge-scheduled scan task. "No service" is a legitimate deployed state
+# for those, not a failure, so distinguish the two before erroring out.
+#
+# The live EventBridge rule is the signal, same as generate-routing-config.sh
+# uses and named the same way — this script has no way to read the agent's
+# prod.tfvars, so AWS is the source of truth. Note this only tells us the agent
+# HAS a scheduled scan; combined with "and has no ECS service" it means the
+# agent was deliberately deployed scan-only.
+HAS_SERVICE=true
 
-echo "  ✓ Agent service found and active"
+if [ "$SERVICE_STATUS" != "ACTIVE" ]; then
+  if aws events describe-rule \
+       --name "${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-scheduled-scan" \
+       --region "$AWS_REGION" \
+       --query 'Name' \
+       --output text > /dev/null 2>&1; then
+    HAS_SERVICE=false
+    echo "  ✓ Scan-only agent (scheduled-scan rule present, no ECS service)"
+    echo "    Image will be rebuilt and pushed; there is no service to roll."
+    echo "    The next scheduled scan run picks up the new image."
+  else
+    echo "ERROR: Agent '$AGENT_NAME' is not deployed (service not found or not active: $SERVICE_NAME),"
+    echo "       and it has no scheduled-scan EventBridge rule either, so it is not"
+    echo "       a scan-only agent."
+    echo "Deploy it first with: bash manage-agent.sh add"
+    exit 1
+  fi
+else
+  echo "  ✓ Agent service found and active"
+fi
 
 # ------------------------------------------------------------------------------
 # Stage this agent's real logic, if it exists, into business_logic.py
@@ -215,10 +240,20 @@ build_tag_push_and_verify "$APP_DIR" "$IMAGE_NAME" "$ECR_REPO_URI"
 # Force new deployment and wait for it to complete
 # ------------------------------------------------------------------------------
 
-if ! force_deploy_and_wait "$CLUSTER_NAME" "$SERVICE_NAME" "$LOG_GROUP"; then
+# A scan-only agent has no service to force a new deployment on. Its scan task
+# definition points at the same :latest image tag that was just pushed, so the
+# next EventBridge-triggered run picks up this build with no further action.
+if [ "$HAS_SERVICE" = true ]; then
+  if ! force_deploy_and_wait "$CLUSTER_NAME" "$SERVICE_NAME" "$LOG_GROUP"; then
+    echo ""
+    echo "Redeploy did not complete successfully. See error above."
+    exit 1
+  fi
+else
   echo ""
-  echo "Redeploy did not complete successfully. See error above."
-  exit 1
+  echo "  Skipping ECS service roll — this agent is scan-only."
+  echo "  To exercise the new image immediately instead of waiting for the"
+  echo "  schedule, trigger a run manually (see manual-scan-trigger)."
 fi
 
 # ------------------------------------------------------------------------------
@@ -234,7 +269,11 @@ echo "=================================================="
 echo ""
 echo "  Agent:   $AGENT_NAME"
 echo "  Image:   ${ECR_REPO_URI}:latest"
-echo "  Service: $SERVICE_NAME"
+if [ "$HAS_SERVICE" = true ]; then
+  echo "  Service: $SERVICE_NAME"
+else
+  echo "  Service: (none — scan-only agent)"
+fi
 echo ""
 echo "  Follow logs live:"
 echo "  aws logs tail $LOG_GROUP --follow --region $AWS_REGION"
