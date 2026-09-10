@@ -133,6 +133,88 @@ echo "  ✓ Platform found: VPC $VPC_ID"
 echo ""
 
 # ------------------------------------------------------------------------------
+# Detect an EXISTING agent's topology from live AWS
+# ------------------------------------------------------------------------------
+# Every prod.tfvars this script writes is applied. Any variable it omits falls
+# back to its Terraform default, which silently rewrites the agent's shape:
+#
+#   enable_scheduled_scan  omitted -> false -> DESTROYS the agent's scan path
+#                                              (EventBridge rule, scan task
+#                                              definition, invoke role, audit
+#                                              log grant)
+#   enable_agent_service   omitted -> true  -> RECREATES the always-on ECS
+#                                              service that a scan-only agent
+#                                              deliberately does not have
+#
+# For a scan-only agent those compound: one apply destroys the work it actually
+# does and resurrects the idle task it does not need. Neither shows up as
+# unusual in the plan output.
+#
+# So: discover both from live AWS and emit them explicitly. Sets SCAN_BLOCK and
+# SERVICE_BLOCK for the caller to interpolate. Call only for an agent that
+# already exists — see add_agent() for why a new agent is different.
+#
+# Note this is discovery, not intent. It reproduces what the agent IS. That is
+# right for secret/describe/remove, which must not change an agent's shape as a
+# side effect of an unrelated edit.
+detect_topology_blocks() {
+  local AGENT="$1"
+  local RULE_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT}-scheduled-scan"
+  local SVC_NAME="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT}"
+  local SCAN_TD="${PROJECT_NAME}-${ENVIRONMENT}-${AGENT}-scan"
+
+  # --- scheduled scan: the live EventBridge rule is the source of truth, same
+  #     probe generate-routing-config.sh and redeploy-agent.sh already use.
+  local CRON
+  CRON=$(aws events describe-rule \
+    --name "$RULE_NAME" \
+    --query 'ScheduleExpression' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -n "$CRON" ] && [ "$CRON" != "None" ]; then
+    # Recover the container command from the scan task definition so the
+    # regenerated tfvars matches what is actually deployed rather than assuming
+    # the ["python","-m","scan_task"] default.
+    local CMD_JSON
+    CMD_JSON=$(aws ecs describe-task-definition \
+      --task-definition "$SCAN_TD" \
+      --query 'taskDefinition.containerDefinitions[0].command' \
+      --output json \
+      --region "$AWS_REGION" 2>/dev/null | tr -d '\n ' || echo "")
+    if [ -z "$CMD_JSON" ] || [ "$CMD_JSON" = "null" ]; then
+      CMD_JSON='["python","-m","scan_task"]'
+      echo "  ! Scan rule found but scan task definition '$SCAN_TD' was not readable;" >&2
+      echo "    falling back to the default scan command. Verify before applying." >&2
+    fi
+    SCAN_BLOCK="
+enable_scheduled_scan     = true
+scheduled_scan_expression = \"${CRON}\"
+scheduled_scan_command    = ${CMD_JSON}"
+    echo "  ✓ Scheduled scan detected: $CRON"
+  else
+    SCAN_BLOCK="
+enable_scheduled_scan     = false"
+  fi
+
+  # --- always-on ECS service
+  local SVC_STATUS
+  SVC_STATUS=$(aws ecs describe-services \
+    --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+    --services "$SVC_NAME" \
+    --query 'services[0].status' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "NOT_FOUND")
+
+  if [ "$SVC_STATUS" = "ACTIVE" ]; then
+    SERVICE_BLOCK="enable_agent_service = true"
+  else
+    SERVICE_BLOCK="enable_agent_service = false"
+    echo "  ✓ Scan-only agent detected (no ECS service) — keeping it serviceless"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # Find agent repo
 # ------------------------------------------------------------------------------
 
@@ -650,6 +732,8 @@ secret_agent() {
 
   cd "$AGENT_DIR"
 
+  detect_topology_blocks "$AGENT_NAME"
+
   cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
@@ -673,6 +757,8 @@ enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $NEW_MAP
 }
+$SCAN_BLOCK
+$SERVICE_BLOCK
 EOF
 
   cat > backend.hcl << EOF
@@ -794,6 +880,8 @@ describe_agent() {
 
   cd "$AGENT_DIR"
 
+  detect_topology_blocks "$AGENT_NAME"
+
   cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
@@ -817,6 +905,8 @@ enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $CURRENT_MAP
 }
+$SCAN_BLOCK
+$SERVICE_BLOCK
 EOF
 
   cat > backend.hcl << EOF
@@ -938,6 +1028,11 @@ add_agent() {
     cp prod.tfvars prod.tfvars.backup
   fi
 
+  # A brand-new agent has no EventBridge rule and no ECS service yet, so
+  # detect_topology_blocks() would read "no service" and write
+  # enable_agent_service = false — the opposite of what a new agent needs.
+  # These are therefore stated explicitly rather than discovered: every new
+  # agent gets a service, and the scheduled scan stays opt-in via manage-scan.sh.
   cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
@@ -960,6 +1055,9 @@ deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $EXTERNAL_SECRETS_MAP}
+
+enable_scheduled_scan = false
+enable_agent_service  = true
 EOF
 
   # Write backend.hcl (backend.tf stays an empty tracked stub)
@@ -1068,7 +1166,11 @@ remove_agent() {
 
   cd "$AGENT_DIR"
 
-  # Write prod.tfvars so terraform knows what to destroy
+  # Write prod.tfvars so terraform knows what to destroy. The topology blocks
+  # matter here too: the tfvars must describe the agent as it actually IS, so
+  # every resource it owns is in the configuration being destroyed.
+  detect_topology_blocks "$AGENT_NAME"
+
   cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
 project_name = "$PROJECT_NAME"
@@ -1090,6 +1192,8 @@ agent_image            = "$ECR_IMAGE"
 deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = false
 external_secrets = {}
+$SCAN_BLOCK
+$SERVICE_BLOCK
 EOF
 
   # Write backend.hcl pointing to this agent's state (backend.tf stays an empty tracked stub)
