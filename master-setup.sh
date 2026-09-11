@@ -792,6 +792,22 @@ if [ "$CI_MODE" = "true" ]; then
   fi
   rm -f "$BASE_DIR/prod.tfvars.bak"
 
+  # RDS capacity: CI's db.t4g.medium request failed with AWS
+  # 'insufficient-capacity' twice on 2026-09-11, in both AZs the database
+  # subnet group spans. Nothing on the platform connects to this database —
+  # the e2e included — so CI uses the smallest Intel class instead: a separate
+  # capacity pool from Graviton t4g, and the class master-setup already uses
+  # for ENVIRONMENT=dev. Customer installs are unaffected. Override with
+  # CI_RDS_INSTANCE_CLASS if this class ever hits capacity limits too.
+  CI_RDS_CLASS="${CI_RDS_INSTANCE_CLASS:-db.t3.micro}"
+  echo "  CI_MODE: setting rds_instance_class = $CI_RDS_CLASS"
+  if grep -q "^rds_instance_class" "$BASE_DIR/prod.tfvars"; then
+    sed -i.bak "s|^rds_instance_class.*=.*|rds_instance_class  = \"$CI_RDS_CLASS\"|" "$BASE_DIR/prod.tfvars"
+  else
+    printf '\nrds_instance_class = "%s"\n' "$CI_RDS_CLASS" >> "$BASE_DIR/prod.tfvars"
+  fi
+  rm -f "$BASE_DIR/prod.tfvars.bak"
+
   echo "  CI_MODE: setting ecs_container_insights_enabled = false"
   if grep -q "^ecs_container_insights_enabled" "$BASE_DIR/prod.tfvars"; then
     sed -i.bak "s|ecs_container_insights_enabled.*=.*|ecs_container_insights_enabled = false|" "$BASE_DIR/prod.tfvars"
