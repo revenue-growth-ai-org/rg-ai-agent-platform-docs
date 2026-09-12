@@ -964,6 +964,35 @@ for i in $(seq 0 $((AGENT_COUNT-1))); do
 
   ECR_AGENT_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
 
+  # enable_scheduled_scan and enable_agent_service must be written explicitly.
+  # Omitting either lets Terraform fall back to its default and silently rewrite
+  # the agent's shape on apply: enable_scheduled_scan -> false destroys an
+  # existing agent's scan path (EventBridge rule, scan task definition, invoke
+  # role, audit-log grant), and enable_agent_service -> true recreates the
+  # always-on ECS service a scan-only agent deliberately does not have. For a
+  # scan-only agent those compound. master-setup.sh is documented as re-runnable,
+  # so it can meet agents that already exist.
+  #
+  # An agent that ALREADY EXISTS is discovered from live AWS, so a re-run
+  # preserves the shape it already has. A BRAND-NEW agent has no EventBridge rule
+  # and no ECS service yet, so detection would read "no service" and write
+  # enable_agent_service = false — the opposite of what it needs — so its values
+  # are stated explicitly instead.
+  if aws ecs describe-services \
+       --cluster "${PROJECT_NAME}-${ENVIRONMENT}-ecs" \
+       --services "${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}" \
+       --query 'services[0].status' --output text --region "$AWS_REGION" 2>/dev/null | grep -q ACTIVE \
+     || aws events describe-rule \
+       --name "${PROJECT_NAME}-${ENVIRONMENT}-${AGENT_NAME}-scheduled-scan" \
+       --region "$AWS_REGION" >/dev/null 2>&1; then
+    echo "  Existing agent '$AGENT_NAME' found — preserving its current topology"
+    detect_topology_blocks "$AGENT_NAME"
+  else
+    SCAN_BLOCK="
+enable_scheduled_scan = false"
+    SERVICE_BLOCK="enable_agent_service = true"
+  fi
+
   echo "  Writing prod.tfvars..."
   cat > prod.tfvars << EOF
 aws_region   = "$AWS_REGION"
@@ -987,6 +1016,8 @@ deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $AGENT_SECRETS_MAP}
+$SCAN_BLOCK
+$SERVICE_BLOCK
 EOF
 
   # Always update RDS security group ID — it changes on every redeploy
