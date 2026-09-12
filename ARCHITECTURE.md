@@ -55,7 +55,8 @@ schedule. This path:
 - Each agent has its own IAM role and security group — zero shared permissions
 
 ### Data layer (Step 1)
-- Amazon RDS PostgreSQL — KMS encrypted, Multi-AZ, private subnets only
+- Amazon RDS PostgreSQL — KMS encrypted, private subnets only; single-AZ by
+  default (Multi-AZ is opt-in via `rds_multi_az`)
 - AWS Secrets Manager — dynamic database credentials, auto-rotation
 - AWS SSM Parameter Store — configuration and cross-repo output sharing
 
