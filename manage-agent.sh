@@ -66,6 +66,26 @@ detect_rds_sg() {
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
     --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
+  # Look the group up by the Name tag base's rds_security_group module sets
+  # ("<project>-<env>-rds"). That module is deliberately NOT gated on
+  # enable_rds — other security groups reference it — so the group outlives
+  # the database. Without this, a deployment with no RDS instance
+  # (enable_rds = false, now the default) falls through to the
+  # describe-db-instances probe below, which cannot succeed, and every agent
+  # operation stops to prompt. Exact tag match, and only a single result is
+  # accepted, so a look-alike group is never picked silently.
+  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+    local TAG_MATCHES
+    TAG_MATCHES=$(aws ec2 describe-security-groups \
+      --filters "Name=tag:Name,Values=${PROJECT_NAME}-${ENVIRONMENT}-rds" \
+      --query 'SecurityGroups[].GroupId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    if [[ "$TAG_MATCHES" =~ ^sg-[0-9a-f]+$ ]]; then
+      RDS_SG_ID="$TAG_MATCHES"
+    fi
+  fi
+
+  # Older deployments that still have the instance: read it off the database.
   if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
     RDS_SG_ID=$(aws rds describe-db-instances \
       --db-instance-identifier "${PROJECT_NAME}-${ENVIRONMENT}-postgres" \
