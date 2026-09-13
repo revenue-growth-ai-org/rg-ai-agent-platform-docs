@@ -26,7 +26,7 @@ What a vendor-side disruption would actually pause: new installs, platform updat
 
 ## Backups and restore
 
-Covered in detail in the [Encryption Matrix](./encryption-matrix.md) and [Retention & Deletion Policy](./retention-deletion.md): RDS automated backups (7-day default) with deletion protection in production, and versioned Terraform state. The application layer persists no customer data today, so there is currently no application dataset whose restore requires testing; restore procedures will be defined and tested alongside the first database-consuming release, before or with that release.
+Covered in detail in the [Encryption Matrix](./encryption-matrix.md) and [Retention & Deletion Policy](./retention-deletion.md): versioned Terraform state and a versioned CloudTrail bucket. No database is provisioned by default; when RDS is enabled it adds automated backups (7-day default) with deletion protection in production. The application layer persists no customer data today, so there is currently no application dataset whose restore requires testing; restore procedures will be defined and tested alongside the first database-consuming release, before or with that release.
 
 ## What this document is not
 

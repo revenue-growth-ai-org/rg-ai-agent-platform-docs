@@ -84,12 +84,14 @@ then retry.
 
 Symptom: terraform apply fails with "InvalidGroupId.Malformed: Invalid id:
 sg-xxxxxxxxxxxxxxxxx" or a similar placeholder value.
-Cause: setup.sh could not auto-detect the RDS security group ID and left a
-placeholder in prod.tfvars.
-Fix: Find the real value and update prod.tfvars manually:
-    aws rds describe-db-instances \
-      --db-instance-identifier <project>-<env>-postgres \
-      --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' \
+Cause: the setup tooling (master-setup.sh or manage-agent.sh) could not
+auto-detect the RDS security group ID and left a placeholder in prod.tfvars.
+Fix: Find the real value and update prod.tfvars manually. The group exists
+even when no database is provisioned (enable_rds = false), so look it up by
+its Name tag rather than through an RDS instance:
+    aws ec2 describe-security-groups \
+      --filters "Name=tag:Name,Values=<project>-<env>-rds" \
+      --query 'SecurityGroups[0].GroupId' \
       --output text
 Then replace the placeholder in prod.tfvars with this value and re-run
 make deploy.

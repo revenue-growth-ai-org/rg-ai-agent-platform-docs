@@ -8,7 +8,7 @@ Related documents: [Encryption Matrix](./encryption-matrix.md) · [Customer Isol
 
 Which principal can read which secret, and when. All secrets live in the customer account's Secrets Manager; all principals are IAM roles in the customer account. Two properties hold everywhere and are the point of this document:
 
-1. **No wildcard access.** Every `secretsmanager:GetSecretValue` grant in the platform enumerates explicit secret ARNs. No role anywhere is granted secret access with a `*` resource.
+1. **No wildcard access in platform-created grants.** Every `secretsmanager:GetSecretValue` grant that the platform's Terraform creates enumerates explicit secret ARNs; no task or build role is granted secret access with a `*` resource. The one broad path is the deployment role, whose access comes from the `AdministratorAccess` policy the setup guide attaches by default — see [Deploy-time and build-time access](#deploy-time-and-build-time-access).
 2. **Every runtime grant maps to a consuming code path.** Grants without consuming code are removed rather than left "just in case" — most recently, unused grants on the RDS master credential were removed from both task roles when a source audit confirmed no database client exists in the applications (validated by a full green install→test→destroy CI cycle).
 
 ## Runtime access (running services)
@@ -24,22 +24,23 @@ Which principal can read which secret, and when. All secrets live in the custome
 
 | Principal | Secret access | Notes |
 |---|---|---|
-| Deployment role (Terraform apply/destroy) | **No decrypt access to the platform CMK** — the key policy grants administration (create/describe/delete) but excludes `kms:Decrypt` and `kms:Encrypt`. Creates/updates secret *resources* as infrastructure. | Customer-provisioned and customer-revocable |
+| Deployment role (Terraform apply/destroy) | **Every secret, and decrypt/encrypt with the platform CMK**, when it carries the default `AdministratorAccess` policy. The key policy's own statement for this role grants administration only, but a separate statement grants the account root `kms:*`, which lets IAM policies authorise key use — so the role's IAM policy, not the key policy, is what limits it. Verified with the IAM policy simulator against a live deployment. | Customer-provisioned and customer-revocable. [CUSTOMER-SETUP.md](../../CUSTOMER-SETUP.md) attaches `AdministratorAccess` by default and documents replacing it with a scoped policy; doing so is what narrows this row. |
 | CodeBuild role (image builds) | **None.** The build role's policy contains no Secrets Manager or KMS statements at all — builds pull source from S3, push images to ECR, and write logs. | Verified by direct policy audit |
 | CI validation role (GitHub Actions, plan-only) | No secret values read in any workflow | OIDC-federated, trust policy pinned to a single repository and branch |
 
 ## KMS decrypt access (customer-account CMK)
 
-The CMK protecting RDS storage and CloudTrail can be used to decrypt by exactly two principals:
+The platform CMK encrypts the CloudTrail log bucket, and RDS storage when a database is enabled (`enable_rds`, off by default). Its key policy authorises use in three ways:
 
-1. **The RDS service itself**, condition-scoped (`kms:ViaService` + source-ARN match to the specific database instance).
-2. **The account root, only with MFA present** — an explicit break-glass path controlled entirely by the customer.
+1. **The RDS service**, condition-scoped (`kms:ViaService` + source-ARN match to the deployment's database instance). With no database provisioned, nothing uses this statement.
+2. **The account root with MFA present** — an explicit break-glass statement.
+3. **IAM policies in the account.** The key policy also grants the account root `kms:*` without conditions, which AWS treats as delegating key access to IAM. Any role or user whose IAM policy allows `kms:Decrypt` on the key can decrypt with it — including the deployment role and account administrators holding `AdministratorAccess`.
 
-No ECS task role, deployment role, or build role holds `kms:Decrypt` on the CMK. Task roles read Secrets Manager values through the Secrets Manager service (which performs its own KMS operations with the AWS-managed `aws/secretsmanager` key); they never touch the CMK directly.
+No ECS task role or build role holds a KMS permission, so none of them can use the CMK. This was confirmed with the IAM policy simulator for the orchestrator's task and execution roles, two agent task roles, and the CodeBuild role. Task roles read Secrets Manager values through the Secrets Manager service (which performs its own KMS operations with the AWS-managed `aws/secretsmanager` key); they never touch the CMK directly.
 
-## Published-but-unread parameters
+## Database credential (only when RDS is enabled)
 
-The platform publishes the RDS master credential's secret ARN to SSM Parameter Store for forward compatibility with planned agent-state features. As of this document, **zero roles are granted read access to that secret** — the parameter exists, its consumers do not. The grant will be reintroduced in the same change that ships database-consuming code, keeping the evidence-derived property intact.
+RDS is off by default (`enable_rds = false`), and then neither the RDS master credential secret nor its SSM parameter exists. When a deployment enables RDS, the platform publishes the master credential's secret ARN to SSM Parameter Store, and **zero roles are granted read access to that secret**. The grant will be reintroduced in the same change that ships database-consuming code, keeping the evidence-derived property intact.
 
 ## How this is maintained
 

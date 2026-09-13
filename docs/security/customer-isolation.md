@@ -18,9 +18,9 @@ Most vendor isolation claims describe controls that *separate* tenants sharing i
 |---|---|---|
 | Orchestrator and agent containers (ECS Fargate) | Customer AWS account | Customer |
 | Container images (ECR) and image builds (CodeBuild) | Customer AWS account | Customer |
-| RDS Postgres, S3 buckets, DynamoDB, CloudWatch logs | Customer AWS account | Customer |
+| S3 buckets, DynamoDB, CloudWatch logs (and RDS Postgres, if enabled — off by default) | Customer AWS account | Customer |
 | Secrets (Anthropic API key, CRM credentials) — Secrets Manager | Customer AWS account | Customer |
-| KMS keys (RDS storage CMK) | Customer AWS account | Customer |
+| KMS key (customer-managed; encrypts CloudTrail logs, and RDS storage if enabled) | Customer AWS account | Customer |
 | VPC, subnets, security groups, ALB, VPC endpoints | Customer AWS account | Customer |
 | Terraform state (S3 + DynamoDB lock) | Customer AWS account | Customer |
 | Source code (five repositories) | GitHub, Revenue-Growth.AI org | Revenue-Growth.AI |
@@ -28,17 +28,19 @@ Most vendor isolation claims describe controls that *separate* tenants sharing i
 
 The only components Revenue-Growth.AI operates are the source repositories and DNS. Neither carries customer data.
 
+**Exception — outbound email.** Alarm and tamper alerts are emailed via SNS to the addresses a deployment subscribes. Where the daily-report agent is deployed, it also emails a summary via SES to recipients set in its code — currently a Revenue-Growth.AI address. That summary contains CRM record IDs, error details and AWS cost figures, so it is customer operational data leaving the account to a mailbox Revenue-Growth.AI operates.
+
 ## Isolation properties
 
 **Account boundary.** The AWS account is the strongest isolation primitive AWS offers — IAM, billing, service quotas, and API visibility are all account-scoped by default. Because each deployment is a separate customer account, cross-customer access would require crossing an AWS account boundary, which no role in the platform is granted.
 
-**No shared data plane.** Webhooks from the customer's SaaS systems (e.g., HubSpot) are delivered directly to an Application Load Balancer in the customer's account and processed by compute in that account. Customer data never transits Revenue-Growth.AI infrastructure.
+**No shared data plane.** Webhooks from the customer's SaaS systems (e.g., HubSpot) are delivered directly to an Application Load Balancer in the customer's account and processed by compute in that account. Customer data never transits Revenue-Growth.AI infrastructure, apart from the outbound email described above.
 
-**Customer-resident secrets and keys.** API credentials are stored in the customer account's Secrets Manager and read at runtime by IAM task roles scoped to explicitly enumerated secret ARNs — no wildcard secret access exists anywhere in the platform (see [Secrets Access Map](./secrets-access-map.md)). Database storage encryption uses a customer-account KMS CMK with rotation enabled.
+**Customer-resident secrets and keys.** API credentials are stored in the customer account's Secrets Manager and read at runtime by IAM task roles scoped to explicitly enumerated secret ARNs — no wildcard secret access exists anywhere in the platform (see [Secrets Access Map](./secrets-access-map.md)). CloudTrail logs are encrypted with a customer-managed KMS key in the customer account, with rotation enabled; the same key encrypts RDS storage if a database is enabled.
 
 **Customer-built images.** Container images are built by AWS CodeBuild *inside the customer account* and stored in the customer account's ECR. The supply chain for what runs in a customer's environment is auditable within that customer's own account, including per-build SBOMs (see [Container Scanning](./stage-4-container-scanning.md)).
 
-**Network containment.** Application tasks run in private subnets with no public IPs. Traffic to AWS services (Secrets Manager, SSM, ECR, CloudWatch Logs) uses VPC interface endpoints (PrivateLink); S3 and DynamoDB use gateway endpoints. Outbound internet access is limited to HTTPS (port 443) via NAT for the Anthropic API and customer-designated SaaS APIs. Inbound webhook traffic authenticates via HMAC signature verification at the application layer.
+**Network containment.** Application tasks run in private subnets with no public IPs. Traffic to AWS services (Secrets Manager, SSM, ECR, CloudWatch Logs) uses VPC interface endpoints (PrivateLink); S3 and DynamoDB use gateway endpoints. Outbound internet access is limited to HTTPS (port 443) via NAT for the Anthropic API and customer-designated SaaS APIs, plus AWS Cost Explorer and SES for the daily-report agent, which have no VPC endpoint. Inbound webhook traffic authenticates via HMAC signature verification at the application layer.
 
 **Customer-controlled lifecycle.** Because everything lives in the customer's account, the customer retains ultimate control: they can audit all resources with their own tooling (CloudTrail is enabled by the platform), revoke Revenue-Growth.AI's deployment access at any time, and destroy the deployment entirely — deletion is a Terraform destroy in their own account, not a request to a vendor (see [Retention & Deletion Policy](./retention-deletion.md)).
 

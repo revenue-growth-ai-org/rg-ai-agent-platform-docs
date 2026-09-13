@@ -28,14 +28,18 @@ schedule. This path:
   routing decision to make, since the schedule already determines which
   agent runs.
 - Is opt-in per agent via `enable_scheduled_scan` in that agent's
-  `prod.tfvars` (see `3-rg-ai-agent-platform-agent/README.md` for details)
-  — most agents do not have this enabled.
+  `prod.tfvars` (see `3-rg-ai-agent-platform-agent/README.md` for details).
+  An agent can also be scan-only (`enable_agent_service = false`): it then
+  has no always-on ECS service and no Cloud Map name, so this schedule is its
+  only trigger.
 - Writes one audit log line per action into the orchestrator's CloudWatch
   log group (a narrowly-scoped IAM grant, write-only, nothing else) so the
   orchestrator's logs remain the single place to look for a record of all
   CRM-driven actions, even for actions triggered by a schedule rather than
   a routed webhook. Full operational logs for the scan itself still live in
-  the agent's own log group, not the orchestrator's.
+  the agent's own log group, not the orchestrator's. The orchestrator's log
+  group retains events for 365 days, and an alarm fires if a scan cannot
+  write its audit lines.
 
 ---
 
@@ -45,7 +49,7 @@ schedule. This path:
 - Private VPC with public, private, and database subnet tiers
 - NAT gateway for controlled outbound internet access
 - ALB placement and ingress depend on `crm_type` — see [Webhook ingress](#webhook-ingress) below
-- ECS tasks and RDS are always in private subnets with no public IPs
+- ECS tasks are always in private subnets with no public IPs (so is RDS, when enabled)
 - VPC interface endpoints for ECR, SSM, Secrets Manager, CloudWatch (no internet required for AWS API calls)
 
 ### Compute layer (Steps 2 and 3)
@@ -55,16 +59,27 @@ schedule. This path:
 - Each agent has its own IAM role and security group — zero shared permissions
 
 ### Data layer (Step 1)
-- Amazon RDS PostgreSQL — KMS encrypted, private subnets only; single-AZ by
-  default (Multi-AZ is opt-in via `rds_multi_az`)
-- AWS Secrets Manager — dynamic database credentials, auto-rotation
+- Amazon RDS PostgreSQL — **optional, off by default** (`enable_rds = false`).
+  No platform code uses a database today; application audit records live in
+  CloudWatch Logs. When enabled: KMS encrypted, private subnets only,
+  single-AZ by default (Multi-AZ is opt-in via `rds_multi_az`)
+- AWS Secrets Manager — the Anthropic API key and per-agent external API
+  credentials, read at runtime by task roles scoped to explicit secret ARNs
 - AWS SSM Parameter Store — configuration and cross-repo output sharing
 
 ### Observability (Step 1)
-- CloudWatch Logs — structured JSON logs from all containers
-- CloudWatch Alarms — RDS CPU, storage, connections; ALB 5xx; ECS CPU
-- CloudTrail — KMS key usage audit logging
-- SNS alarm topic — subscribe your email or PagerDuty endpoint
+- CloudWatch Logs — structured JSON logs from all containers; 365-day
+  retention on the orchestrator, agent, ECS cluster and CodeBuild log groups
+- CloudWatch Alarms — ALB 5xx; ECS CPU; an audit-log-failure alarm for each
+  scan agent that writes audit lines; RDS CPU, storage and connections only
+  when RDS is enabled
+- CloudTrail — management events for the deployment region plus global
+  service events, delivered to an S3 bucket encrypted with the platform's
+  customer-managed KMS key, with versioning and log-file validation
+- EventBridge log-tampering rule — alerts when a log group is deleted or its
+  retention is changed
+- SNS alarm topic — all alarms and alerts publish here; subscribe addresses
+  with `alarm_notification_emails` (each address must confirm by email)
 
 ### Service discovery
 - AWS Cloud Map private DNS namespace
@@ -86,8 +101,8 @@ because different CRMs require different ingress models.
 | `salesforce` | **Internet-facing** | Restricted to Salesforce's published IP ranges | Source-IP restriction (no HMAC) |
 | `other` | **Internal** | Explicit `ALLOWED_CIDR` allowlist | Network allowlist |
 
-In every mode, compute stays private: ECS tasks and RDS have no public IPs, and
-only the ALB and NAT gateways occupy public subnets.
+In every mode, compute stays private: ECS tasks (and RDS, when enabled) have no
+public IPs, and only the ALB and NAT gateways occupy public subnets.
 
 For the full hop-by-hop path and trust boundaries, see
 [docs/security/data-flow.md](docs/security/data-flow.md).
@@ -98,14 +113,14 @@ For the full hop-by-hop path and trust boundaries, see
 
 | Control | Implementation |
 |---|---|
-| No public ingress to compute | ECS tasks and RDS run in private subnets with no public IPs; only the ALB and NAT gateways sit in public subnets |
+| No public ingress to compute | ECS tasks (and RDS, when enabled) run in private subnets with no public IPs; only the ALB and NAT gateways sit in public subnets |
 | Per-agent IAM isolation | Each agent has its own IAM task role with no shared permissions |
 | Per-agent network isolation | Each agent has its own security group; only the orchestrator can call agents |
-| KMS encryption at rest | Dedicated CMK for RDS with MFA break-glass policy |
+| KMS encryption at rest | Customer-managed key with rotation, encrypting CloudTrail logs (and RDS storage when enabled). Its policy includes an MFA-gated break-glass statement and also delegates key use to IAM, so principals with broad IAM permissions — including the default deployment role — can use it; task and build roles cannot |
 | Secrets management | All credentials in Secrets Manager — never in environment variables |
-| Audit logging | CloudTrail data events on KMS key; structured logs on all containers |
+| Audit logging | CloudTrail management events (no data events are configured); structured logs on all containers; scheduled scans write per-run audit lines to the orchestrator's log group, retained 365 days, with alarms on audit-write failure and on log deletion or retention changes |
 | ALB ingress restriction | Depends on `crm_type` (see [Webhook ingress](#webhook-ingress)). HubSpot deployments accept `0.0.0.0/0` and rely on HMAC verification as the authentication boundary; Salesforce restricts to published IP ranges; `other` uses an explicit CIDR allowlist |
-| External egress control | Internal-only by default; external egress enabled per agent via variable |
+| External egress control | Set per agent with `enable_external_egress` and enforced in application configuration. The security group still permits outbound 443 for every agent, so this is not a network-layer control (see [Known gaps](docs/security/data-flow.md#known-gaps-tracked)) |
 
 ---
 
@@ -120,7 +135,7 @@ The platform is CRM-agnostic. The Master Orchestrator detects the CRM source fro
 | Agent | Purpose | External egress needed |
 |---|---|---|
 | Researcher | Enriches contact data via external APIs (ZoomInfo, Apollo) | Yes |
-| Scorer | Qualifies leads using RDS historical data | No |
+| Scorer | Qualifies leads using historical data (requires `enable_rds = true`) | No |
 | CRM | Updates contact records in the CRM system | Yes |
 | Outbound | Enqueues contacts in sequencing tools | Yes |
 

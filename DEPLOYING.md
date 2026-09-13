@@ -157,7 +157,8 @@ for the configured project and environment so you can start completely fresh.
     bash destroy.sh
 
 destroy.sh works through the following sequence automatically:
-1. Disables RDS and ALB deletion protection
+1. Disables RDS and ALB deletion protection (the RDS step is a no-op when no
+   database exists)
 2. Stops ECS services
 3. Cleans up Cloud Map service discovery instances
 4. Revokes security group cross-references
@@ -165,8 +166,12 @@ destroy.sh works through the following sequence automatically:
 6. Destroys EVERY deployed agent's own Terraform state — enumerated from
    S3 state keys, not just the last agent that was added or removed — then
    runs terraform destroy for Steps 2 → 1 → 0
-7. Deletes RDS final snapshots and retained automated backups, so no paid
-   storage is left behind across install/destroy cycles
+7. Deletes RDS manual snapshots and retained automated backups whose
+   identifiers contain the project name, so no paid storage is left behind
+   across install/destroy cycles. **This includes a final snapshot kept on
+   purpose** — for example the one taken when a production database is removed
+   with `enable_rds = false`. Copy any snapshot you need to an identifier that
+   does not contain the project name before running destroy.sh.
 8. Removes local cloned repos
 9. Deletes CloudWatch log groups
 

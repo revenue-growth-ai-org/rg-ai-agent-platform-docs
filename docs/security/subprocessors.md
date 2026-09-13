@@ -17,7 +17,7 @@ A subprocessor is any third party that processes customer data on Revenue-Growth
 
 ## Notably absent
 
-- **Revenue-Growth.AI itself is not a data subprocessor in the traditional SaaS sense.** The company does not operate a multi-tenant backend that stores or processes customer data. Deployed infrastructure runs in the customer's account; Revenue-Growth.AI's operational footprint is limited to source code (GitHub) and DNS (Cloudflare) for `*.revenue-growth.ai`, neither of which carries customer data.
+- **Revenue-Growth.AI itself is not a data subprocessor in the traditional SaaS sense.** The company does not operate a multi-tenant backend that stores or processes customer data. Deployed infrastructure runs in the customer's account; Revenue-Growth.AI's operational footprint is limited to source code (GitHub) and DNS (Cloudflare) for `*.revenue-growth.ai`, neither of which carries customer data. The exception is outbound email — see [Customer Isolation](./customer-isolation.md#what-runs-where).
 - **No data warehouse, analytics platform, CRM sync tool, or third-party monitoring/observability SaaS** sits in the data path. Logs and metrics stay in the customer's own CloudWatch.
 - **The customer's own SaaS systems** (e.g., HubSpot, Salesforce) are not subprocessors of Revenue-Growth.AI — they are the customer's existing systems, and the platform is a component the customer has authorized to connect to them via credentials the customer supplies and controls.
 
