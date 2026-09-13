@@ -216,15 +216,16 @@ make deploy
 Error: InvalidGroupId.Malformed: Invalid id: "sg-xxxxxxxxxxxxxxxxx"
 ```
 
-**Cause**: The agent's `setup.sh` could not auto-detect the RDS security group ID and left a placeholder in `prod.tfvars`.
+**Cause**: The setup tooling (`master-setup.sh` or `manage-agent.sh`) could not auto-detect the RDS security group ID and left a placeholder in `prod.tfvars`.
 
 **Fix**:
 
 ```shell
-# Get the real RDS security group ID:
-aws rds describe-db-instances \
-  --db-instance-identifier <project>-<env>-postgres \
-  --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' \
+# Get the real RDS security group ID. The group exists even when no database
+# is provisioned (enable_rds = false), so look it up by its Name tag:
+aws ec2 describe-security-groups \
+  --filters "Name=tag:Name,Values=<project>-<env>-rds" \
+  --query 'SecurityGroups[0].GroupId' \
   --output text
 
 # Update prod.tfvars in 3-rg-ai-agent-platform-agent:

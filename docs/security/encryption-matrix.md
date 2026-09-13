@@ -12,15 +12,16 @@ Every data store and network channel in a platform deployment, with its encrypti
 
 | Data store | Contents | Encrypted | Key management | Retention / lifecycle |
 |---|---|---|---|---|
-| RDS Postgres (storage) | Provisioned persistence layer; **no application data stored today** (no service ships a database client) | Yes | **Customer-managed CMK** in the customer account, annual rotation enabled, 30-day deletion window | 7-day automated backups (default); deletion protection on in prod; Multi-AZ; not publicly accessible |
-| RDS master password secret (Secrets Manager, auto-managed by RDS) | Database master credential | Yes | AWS-managed key (`aws/secretsmanager`) | Managed by RDS; rotation not yet configured (no consuming application exists) |
+| RDS Postgres (storage) — **only if `enable_rds = true`; off by default** | No application data (no service ships a database client) | Yes | **Customer-managed CMK** in the customer account, annual rotation enabled, 30-day deletion window | 7-day automated backups (default); deletion protection on in prod; single-AZ by default (Multi-AZ opt-in); not publicly accessible |
+| RDS master password secret (Secrets Manager, auto-managed by RDS) — only if RDS is enabled | Database master credential | Yes | AWS-managed key (`aws/secretsmanager`) | Managed by RDS; rotation not yet configured (no consuming application exists). Deleted with the instance. |
+| RDS final snapshot — only if a database was provisioned and later removed | Snapshot of the removed instance | Yes | Same customer-managed CMK as the instance | Retained until deleted; `destroy.sh` deletes it |
 | Secrets Manager — Anthropic API key | Per-deployment Anthropic API credential | Yes | AWS-managed key (`aws/secretsmanager`) | Deleted with the deployment |
 | Secrets Manager — external API credentials (e.g. HubSpot) | Per-agent SaaS credentials, operator-supplied at install | Yes | AWS-managed key (`aws/secretsmanager`) | 30-day recovery window on deletion (AWS default) |
 | S3 — Terraform state | Infrastructure state (includes resource metadata) | Yes | SSE-S3 (AES-256, AWS-managed) | Versioning enabled; public access fully blocked |
 | S3 — build artifacts | Build sources and per-build SBOMs | Yes | SSE-S3 (AES-256, AWS-managed) | Build sources expire after 7 days; SBOMs retained indefinitely; public access blocked |
-| S3 — CloudTrail | API audit logs for the deployment account | Yes | **SSE-KMS with the customer-account CMK** | Public access blocked |
+| S3 — CloudTrail | API audit logs for the deployment account | Yes | **SSE-KMS with the customer-account CMK** | Versioning and log-file validation enabled; no lifecycle rule (retained indefinitely); public access blocked |
 | DynamoDB — Terraform state lock | Lock metadata only (no customer data) | Yes (DynamoDB default) | AWS-owned key | No TTL; deleted with the deployment |
-| CloudWatch Logs (all five log groups: orchestrator, agents, ECS, RDS exports, CodeBuild) | Application and infrastructure logs | Yes (CloudWatch default) | AWS-managed key | 30-day retention (default, configurable) |
+| CloudWatch Logs (orchestrator, agents, ECS cluster, CodeBuild; RDS log exports only if RDS is enabled) | Application and infrastructure logs, including the per-run audit lines scheduled scans write to the orchestrator's log group | Yes (CloudWatch default) | AWS-managed key | 365-day retention (default, configurable); ECS Container Insights performance data 1 day; RDS log exports 30 days when enabled |
 | ECR — container images | Orchestrator and agent images, built in-account by CodeBuild | Yes (ECR default) | AES-256, AWS-owned key | No lifecycle policy (images retained until deployment teardown). Registry-side scan-on-push is not enabled; vulnerability scanning instead happens **pre-push in the build pipeline** — Trivy blocks any image with fixable CRITICAL findings before it ever reaches ECR (see [Container Scanning](./stage-4-container-scanning.md)). |
 
 > **ECR note:** ECR repository creation is deliberately excluded from Terraform and from CodeBuild's IAM permissions — it is a control-plane-only action performed by the platform's setup tooling, so no pipeline credential can create registries.
@@ -35,12 +36,14 @@ Every data store and network channel in a platform deployment, with its encrypti
 | Tasks → Anthropic API | **Yes** | HTTPS via the official Anthropic SDK |
 | Tasks → customer SaaS APIs | **Yes** | HTTPS |
 | Tasks → Secrets Manager / SSM / ECR / CloudWatch Logs | **Yes** | HTTPS over VPC interface endpoints (PrivateLink) — never traverses the public internet |
-| Deploy/build tooling → S3 / DynamoDB (Terraform state, build artifacts) | **Yes** | HTTPS (AWS SDK/CLI defaults). No application task reads or writes S3/DynamoDB at runtime; gateway endpoints are provisioned in the VPC for forward compatibility. |
-| Tasks → RDS | Not applicable today | No application database client exists; the network path is security-group-scoped TCP 5432. TLS enforcement (`rds.force_ssl`) will be configured alongside the first consuming code. |
+| daily-report → Cost Explorer and SES APIs | **Yes** | HTTPS via NAT — neither service has a VPC endpoint provisioned |
+| Alarm and report emails → recipients | Depends on recipient | SMTP from SNS (alarms) and SES (daily-report summary). Transport encryption depends on the recipient's mail server, and email is not end-to-end encrypted. The content leaves the account — see [Data Flow](./data-flow.md). |
+| Deploy/build tooling → S3 / DynamoDB (Terraform state, build artifacts) | **Yes** | HTTPS (AWS SDK/CLI defaults). No application code reads or writes S3/DynamoDB at runtime. The S3 gateway endpoint does carry ECR image-layer downloads when tasks start; the DynamoDB gateway endpoint has no runtime consumer. |
+| Tasks → RDS | Not applicable — no database by default | With `enable_rds = true`, the path is security-group-scoped TCP 5432 and no application database client exists yet. TLS enforcement (`rds.force_ssl`) will be configured alongside the first consuming code. |
 
 ## Key management summary
 
-- **Customer-managed CMK** (customer account): RDS storage encryption and CloudTrail logs. Annual rotation enabled. Key policy grants use to the RDS service (condition-scoped) and an MFA-gated break-glass path for the account root; the deployment role can administer but **cannot decrypt** with this key.
+- **Customer-managed CMK** (customer account): the CloudTrail log bucket, and RDS storage when a database is enabled. Annual rotation enabled. The key policy grants use to the RDS service (condition-scoped) and an MFA-gated break-glass path for the account root, **and** grants the account root `kms:*` unconditionally, which delegates key use to IAM policies. So the deployment role (with its default `AdministratorAccess`) and account administrators **can** decrypt with this key; no task or build role can. See [Secrets Access Map](./secrets-access-map.md#kms-decrypt-access-customer-account-cmk).
 - **AWS-managed keys**: Secrets Manager secrets, CloudWatch Logs, S3 state and artifact buckets (SSE-S3).
 - **AWS-owned key**: DynamoDB lock table (metadata only).
 - No plaintext storage of any credential or customer data exists anywhere in the platform.
@@ -49,4 +52,4 @@ Every data store and network channel in a platform deployment, with its encrypti
 
 - Extend CMK coverage to Secrets Manager secrets and CloudWatch log groups (currently AWS-managed keys — encrypted, but without customer-controlled key policy/rotation).
 - Transport encryption (mTLS) for intra-VPC service-to-service traffic.
-- `rds.force_ssl` parameter-group enforcement, bundled with the first database-consuming release.
+- `rds.force_ssl` parameter-group enforcement, bundled with the first database-consuming release (applies only to deployments that enable RDS).
