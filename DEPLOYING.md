@@ -166,12 +166,13 @@ destroy.sh works through the following sequence automatically:
 6. Destroys EVERY deployed agent's own Terraform state — enumerated from
    S3 state keys, not just the last agent that was added or removed — then
    runs terraform destroy for Steps 2 → 1 → 0
-7. Deletes RDS manual snapshots and retained automated backups whose
-   identifiers contain the project name, so no paid storage is left behind
-   across install/destroy cycles. **This includes a final snapshot kept on
-   purpose** — for example the one taken when a production database is removed
-   with `enable_rds = false`. Copy any snapshot you need to an identifier that
-   does not contain the project name before running destroy.sh.
+7. Deletes the RDS snapshots and retained automated backups this run's own
+   teardown produced, so no paid storage is left behind across
+   install/destroy cycles. Snapshots and backups that **already existed when
+   destroy.sh started are kept** — for example the final snapshot taken when a
+   production database was removed with `enable_rds = false` — and listed in
+   the summary. Set `DESTROY_DELETE_KEPT_RDS_SNAPSHOTS=true` to delete those
+   too; `CI_MODE=true` always deletes them.
 8. Removes local cloned repos
 9. Deletes CloudWatch log groups
 

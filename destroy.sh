@@ -37,6 +37,14 @@ set -o pipefail
 #      alias-deleted and scheduled for deletion even when terraform destroy
 #      failed (previously ~70 keys survived failed destroys).
 #
+#   6. KEPT RDS ARTIFACTS: RDS manual snapshots and retained automated backups
+#      that already existed when this run started are KEPT, not deleted. A
+#      final snapshot deliberately retained after removing a database
+#      (enable_rds = false) must survive a later teardown. Only artifacts this
+#      run produces — from instances that existed at its start — are deleted.
+#      CI_MODE=true, or DESTROY_DELETE_KEPT_RDS_SNAPSHOTS=true, restores the
+#      earlier behaviour of deleting every project-named snapshot and backup.
+#
 # Recommended companion (outside this script): an AWS Budgets alert at ~$25/mo
 # on this account so any failed destroy pages you within a day.
 # =============================================================================
@@ -278,6 +286,65 @@ if [ -n "$ORPHAN_SCAN" ]; then
 else
   echo "  ✓ No unrelated billable resources detected in $AWS_REGION"
 fi
+
+# ------------------------------------------------------------------------------
+# Step 0.5 — Record which RDS artifacts this run is allowed to delete
+#
+# Step 6.5 deletes RDS manual snapshots and retained automated backups. One
+# that already exists before the teardown may have been kept on purpose — for
+# example the final snapshot taken when a production database was removed
+# with enable_rds = false — so Step 6.5 deletes only artifacts produced by
+# THIS run. Deciding that needs the state from before anything is destroyed:
+# the run's start time, and the DbiResourceId of every project RDS instance
+# that exists now. If the instance list cannot be read, everything is kept.
+# ------------------------------------------------------------------------------
+
+RUN_START_ISO=$(date -u +%Y-%m-%dT%H:%M:%S)
+if [ "$CI_MODE" = "true" ] || [ "${DESTROY_DELETE_KEPT_RDS_SNAPSHOTS:-false}" = "true" ]; then
+  RDS_ARTIFACT_POLICY="purge"
+else
+  RDS_ARTIFACT_POLICY="run-scoped"
+fi
+if PRE_RUN_RDS_DBI_IDS=$(aws rds describe-db-instances \
+    --query "DBInstances[?contains(DBInstanceIdentifier,'${PROJECT_NAME}')].DbiResourceId" \
+    --output text --region "$AWS_REGION" 2>/dev/null); then
+  PRE_RUN_RDS_STATE_KNOWN="true"
+  PRE_RUN_RDS_DBI_IDS=$(echo "$PRE_RUN_RDS_DBI_IDS" | tr '\t' ' ' | sed -e 's/^None$//')
+else
+  PRE_RUN_RDS_STATE_KNOWN="false"
+  PRE_RUN_RDS_DBI_IDS=""
+fi
+
+echo ""
+echo "[ Step 0.5 ] RDS artifact policy: $RDS_ARTIFACT_POLICY (run started $RUN_START_ISO UTC)"
+if [ "$RDS_ARTIFACT_POLICY" = "run-scoped" ]; then
+  if [ "$PRE_RUN_RDS_STATE_KNOWN" = "true" ]; then
+    echo "  Project RDS instances at start: ${PRE_RUN_RDS_DBI_IDS:-none}"
+  else
+    echo "  ⚠ Could not list RDS instances — Step 6.5 will keep every RDS snapshot and backup."
+  fi
+fi
+
+# rds_artifact_action <dbi-resource-id> [snapshot-create-time]
+# Prints "delete" or "keep". A pure decision with no AWS calls; see Step 0.5.
+rds_artifact_action() {
+  local DBI="$1" CREATED="${2:-}"
+  if [ "$RDS_ARTIFACT_POLICY" = "purge" ]; then echo "delete"; return; fi
+  if [ "$PRE_RUN_RDS_STATE_KNOWN" != "true" ] || [ -z "$DBI" ]; then echo "keep"; return; fi
+  case " $PRE_RUN_RDS_DBI_IDS " in
+    *" $DBI "*) ;;
+    *) echo "keep"; return ;;
+  esac
+  # A snapshot must also have been created during this run: an older manual
+  # snapshot of a still-running instance was taken on purpose too.
+  if [ -n "$CREATED" ] && [[ "${CREATED:0:19}" < "$RUN_START_ISO" ]]; then
+    echo "keep"; return
+  fi
+  echo "delete"
+}
+
+KEPT_RDS_SNAPSHOTS=""
+KEPT_RDS_BACKUP_DBI_IDS=""
 
 # ------------------------------------------------------------------------------
 # Step 1 — Disable deletion protection
@@ -1332,43 +1399,65 @@ for LG in $LOG_GROUPS; do
 done
 
 # ------------------------------------------------------------------------------
-# Step 6.5 — Clean up RDS final snapshots and retained automated backups
+# Step 6.5 — Clean up the RDS snapshots and retained backups this run produced
 #
-# terraform destroy on the RDS instance creates a final snapshot on every
-# cycle (skip_final_snapshot is not set to true), and RDS separately retains
-# an automated backup after instance deletion. Left alone, these accumulate
-# indefinitely across install/destroy cycles and incur ongoing storage cost
-# with no code ever consuming the database. Delete both here so a full
-# destroy is actually a full, cost-clean teardown.
+# terraform destroy on an RDS instance creates a final snapshot (unless
+# skip_final_snapshot is set), and RDS separately retains an automated backup
+# after instance deletion. Left alone these accumulate across install/destroy
+# cycles and bill storage, so they are deleted here.
+#
+# Only artifacts produced by THIS run are deleted (see Step 0.5): a snapshot
+# whose source instance existed at the start and was created after it, and a
+# retained backup whose instance existed at the start. Anything older is kept
+# and listed — it may be a deliberate safety net. Kept artifacts are passed to
+# verify-destroy.sh and the Step 8.5 sweep so they are reported as kept, not
+# as leftovers.
 # ------------------------------------------------------------------------------
 
 echo ""
-echo "[ Step 6.5 ] Cleaning up RDS snapshots and retained automated backups..."
+echo "[ Step 6.5 ] Cleaning up RDS snapshots and retained automated backups (policy: $RDS_ARTIFACT_POLICY)..."
 
-SNAPSHOT_IDS=$(aws rds describe-db-snapshots \
+if [ "$RDS_ARTIFACT_POLICY" = "run-scoped" ] && [ "$PRE_RUN_RDS_STATE_KNOWN" != "true" ]; then
+  note_failure "Step 0.5 could not list RDS instances, so every RDS snapshot and backup was kept — review them and delete manually if unwanted"
+fi
+
+while IFS=$'\t' read -r SNAP SNAP_DBI SNAP_CREATED; do
+  if [ -z "$SNAP" ] || [ "$SNAP" = "None" ]; then continue; fi
+  if [ "$(rds_artifact_action "$SNAP_DBI" "$SNAP_CREATED")" = "delete" ]; then
+    aws rds delete-db-snapshot \
+      --db-snapshot-identifier "$SNAP" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted RDS snapshot: $SNAP" || true
+  else
+    KEPT_RDS_SNAPSHOTS="${KEPT_RDS_SNAPSHOTS} ${SNAP}"
+    echo "  ↺ Kept RDS snapshot (existed before this run): $SNAP, created ${SNAP_CREATED:0:19}Z"
+  fi
+done <<< "$(aws rds describe-db-snapshots \
   --snapshot-type manual \
-  --query "DBSnapshots[?contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].DBSnapshotIdentifier" \
-  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+  --query "DBSnapshots[?contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].[DBSnapshotIdentifier,DbiResourceId,SnapshotCreateTime]" \
+  --output text --region "$AWS_REGION" 2>/dev/null)"
 
-for SNAP in $SNAPSHOT_IDS; do
-  [ -z "$SNAP" ] && continue
-  aws rds delete-db-snapshot \
-    --db-snapshot-identifier "$SNAP" \
-    --region "$AWS_REGION" > /dev/null 2>&1 && \
-    echo "  ✓ Deleted RDS snapshot: $SNAP" || true
-done
+while IFS=$'\t' read -r BACKUP_DBI BACKUP_INSTANCE; do
+  if [ -z "$BACKUP_DBI" ] || [ "$BACKUP_DBI" = "None" ]; then continue; fi
+  if [ "$(rds_artifact_action "$BACKUP_DBI")" = "delete" ]; then
+    aws rds delete-db-instance-automated-backup \
+      --dbi-resource-id "$BACKUP_DBI" \
+      --region "$AWS_REGION" > /dev/null 2>&1 && \
+      echo "  ✓ Deleted retained automated backup: $BACKUP_DBI" || true
+  else
+    KEPT_RDS_BACKUP_DBI_IDS="${KEPT_RDS_BACKUP_DBI_IDS} ${BACKUP_DBI}"
+    echo "  ↺ Kept retained automated backup (existed before this run): $BACKUP_INSTANCE ($BACKUP_DBI)"
+  fi
+done <<< "$(aws rds describe-db-instance-automated-backups \
+  --query "DBInstanceAutomatedBackups[?contains(DBInstanceIdentifier,'${PROJECT_NAME}')].[DbiResourceId,DBInstanceIdentifier]" \
+  --output text --region "$AWS_REGION" 2>/dev/null)"
 
-AUTO_BACKUP_IDS=$(aws rds describe-db-instance-automated-backups \
-  --query "DBInstanceAutomatedBackups[?contains(DBInstanceIdentifier,'${PROJECT_NAME}')].DbiResourceId" \
-  --output text --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
-
-for DBI_ID in $AUTO_BACKUP_IDS; do
-  [ -z "$DBI_ID" ] && continue
-  aws rds delete-db-instance-automated-backup \
-    --dbi-resource-id "$DBI_ID" \
-    --region "$AWS_REGION" > /dev/null 2>&1 && \
-    echo "  ✓ Deleted retained automated backup: $DBI_ID" || true
-done
+KEPT_RDS_SNAPSHOTS="${KEPT_RDS_SNAPSHOTS# }"
+KEPT_RDS_BACKUP_DBI_IDS="${KEPT_RDS_BACKUP_DBI_IDS# }"
+if [ -n "$KEPT_RDS_SNAPSHOTS$KEPT_RDS_BACKUP_DBI_IDS" ]; then
+  echo "  Kept artifacts still bill storage. To delete them in a later teardown, run with"
+  echo "  DESTROY_DELETE_KEPT_RDS_SNAPSHOTS=true."
+fi
 
 # ------------------------------------------------------------------------------
 # Step 6.6 — Delete every ECR repository belonging to this project
@@ -1604,7 +1693,9 @@ echo ""
 echo "[ Step 8 ] Running verify-destroy.sh..."
 echo ""
 
-if PROJECT_NAME="$PROJECT_NAME" ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/verify-destroy.sh"; then
+if PROJECT_NAME="$PROJECT_NAME" ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" \
+   VERIFY_KEPT_RDS_SNAPSHOTS="$KEPT_RDS_SNAPSHOTS" VERIFY_KEPT_RDS_BACKUP_DBI_IDS="$KEPT_RDS_BACKUP_DBI_IDS" \
+   bash "$SCRIPT_DIR/verify-destroy.sh"; then
   echo ""
   echo "  ✓ verify-destroy.sh: clean"
 else
@@ -1627,6 +1718,7 @@ fi
 # Exclusions:
 #   - KMS: keys in PendingDeletion remain tagged until AWS purges them.
 #   - Task definitions: deregistered revisions remain listed as INACTIVE.
+#   - RDS snapshots Step 6.5 kept on purpose: reported as kept, not leftovers.
 # ------------------------------------------------------------------------------
 
 echo ""
@@ -1648,6 +1740,13 @@ if [ -n "$LEFTOVER_TAGGED" ]; then
   while IFS= read -r arn; do
     rid="${arn##*/}"
     alive="yes"
+    case "$arn" in
+      *:rds:*:snapshot:*)
+        case " $KEPT_RDS_SNAPSHOTS " in
+          *" ${arn##*:snapshot:} "*) echo "  (kept RDS snapshot, not a leftover: $arn)"; continue ;;
+        esac
+        ;;
+    esac
     case "$arn" in
       *:natgateway/*)
         state=$(aws ec2 describe-nat-gateways --region "$AWS_REGION" \
@@ -1744,6 +1843,12 @@ if [ ${#FAILURES[@]} -eq 0 ]; then
   registry_remove "$REGISTRY_ENTRY"
   echo " ✓ DESTROY FULLY CLEAN: ${PROJECT_NAME}-${ENVIRONMENT}"
   echo "   Removed from registry ($REGISTRY_PARAM)."
+  if [ -n "$KEPT_RDS_SNAPSHOTS$KEPT_RDS_BACKUP_DBI_IDS" ]; then
+    echo ""
+    echo "   Kept on purpose (existed before this run; still billing storage):"
+    for S in $KEPT_RDS_SNAPSHOTS; do echo "     ↺ RDS snapshot: $S"; done
+    for B in $KEPT_RDS_BACKUP_DBI_IDS; do echo "     ↺ RDS retained automated backup: $B"; done
+  fi
   echo "=================================================="
   exit 0
 else

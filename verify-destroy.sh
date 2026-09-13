@@ -19,6 +19,12 @@
 #   PROJECT_NAME  (required)
 #   ENVIRONMENT   (default: prod)
 #   AWS_REGION    (default: us-east-2)
+#   VERIFY_KEPT_RDS_SNAPSHOTS       (optional) space-separated manual snapshot
+#                                   identifiers destroy.sh kept on purpose
+#   VERIFY_KEPT_RDS_BACKUP_DBI_IDS  (optional) DbiResourceIds of retained
+#                                   automated backups destroy.sh kept
+#   Kept items are reported as kept, not as leftovers. When these are unset
+#   (standalone use), every project snapshot and retained backup is a leftover.
 #
 # Exit 0 if verifiably clean; exit 1 with a summary of leftovers and/or
 # failed queries otherwise.
@@ -100,6 +106,19 @@ check "RDS instances" "$RDS_INSTANCE_IDS"
 MANUAL_SNAPS="$(q "RDS snapshots (manual and automated)" aws rds describe-db-snapshots --snapshot-type manual \
   --query "DBSnapshots[?contains(DBInstanceIdentifier,'${PROJECT_NAME}') || contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].DBSnapshotIdentifier" \
   --output text --region "$AWS_REGION")"
+# Snapshots destroy.sh kept on purpose (it passes their identifiers) are
+# reported, not counted as leftovers.
+KEPT_SNAPS_FOUND=""
+if [ -n "${VERIFY_KEPT_RDS_SNAPSHOTS:-}" ]; then
+  REMAINING_MANUAL=""
+  for SNAP_ID in $MANUAL_SNAPS; do
+    case " $VERIFY_KEPT_RDS_SNAPSHOTS " in
+      *" $SNAP_ID "*) KEPT_SNAPS_FOUND="${KEPT_SNAPS_FOUND} ${SNAP_ID}" ;;
+      *) REMAINING_MANUAL="${REMAINING_MANUAL} ${SNAP_ID}" ;;
+    esac
+  done
+  MANUAL_SNAPS="$REMAINING_MANUAL"
+fi
 # Automated snapshots are deletion-in-progress artifacts once their parent DB
 # instance is gone, not survivors — only report ones whose instance still exists.
 AUTO_SNAPS=""
@@ -115,11 +134,23 @@ done <<< "$(q "RDS snapshots (manual and automated)" aws rds describe-db-snapsho
   --query "DBSnapshots[?contains(DBInstanceIdentifier,'${PROJECT_NAME}') || contains(DBSnapshotIdentifier,'${PROJECT_NAME}')].[DBSnapshotIdentifier,DBInstanceIdentifier]" \
   --output text --region "$AWS_REGION")"
 check "RDS snapshots (manual and automated)" "$MANUAL_SNAPS $AUTO_SNAPS"
+[ -n "$KEPT_SNAPS_FOUND" ] && echo "  RDS snapshots kept on purpose (not leftovers):$KEPT_SNAPS_FOUND"
 
-# Retained automated backups (survive instance deletion)
-check "Retained automated backups" "$(q "Retained automated backups" aws rds describe-db-instance-automated-backups \
-  --query "DBInstanceAutomatedBackups[?contains(DBInstanceIdentifier,'${PROJECT_NAME}') && Status=='retained'].DBInstanceIdentifier" \
+# Retained automated backups (survive instance deletion). Backups destroy.sh
+# kept on purpose (it passes their DbiResourceIds) are reported, not counted.
+RETAINED_BACKUPS=""
+KEPT_BACKUPS_FOUND=""
+while read -r BACKUP_INSTANCE BACKUP_DBI; do
+  [ -z "$BACKUP_INSTANCE" ] && continue
+  case " ${VERIFY_KEPT_RDS_BACKUP_DBI_IDS:-} " in
+    *" $BACKUP_DBI "*) KEPT_BACKUPS_FOUND="${KEPT_BACKUPS_FOUND} ${BACKUP_INSTANCE} (${BACKUP_DBI})" ;;
+    *) RETAINED_BACKUPS="${RETAINED_BACKUPS} ${BACKUP_INSTANCE}" ;;
+  esac
+done <<< "$(q "Retained automated backups" aws rds describe-db-instance-automated-backups \
+  --query "DBInstanceAutomatedBackups[?contains(DBInstanceIdentifier,'${PROJECT_NAME}') && Status=='retained'].[DBInstanceIdentifier,DbiResourceId]" \
   --output text --region "$AWS_REGION")"
+check "Retained automated backups" "$RETAINED_BACKUPS"
+[ -n "$KEPT_BACKUPS_FOUND" ] && echo "  Retained automated backups kept on purpose (not leftovers):$KEPT_BACKUPS_FOUND"
 
 # VPCs by Project tag
 check "VPCs" "$(q "VPCs" aws ec2 describe-vpcs \
