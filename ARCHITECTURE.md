@@ -97,9 +97,9 @@ because different CRMs require different ingress models.
 
 | `crm_type` | ALB scheme | Network ingress | Authentication boundary |
 |---|---|---|---|
-| `hubspot` *(default)* | **Internet-facing** | `0.0.0.0/0` — HubSpot publishes no static source IPs | **HMAC** signature (`X-Hub-Signature-256`), verified by the orchestrator |
-| `salesforce` | **Internet-facing** | Restricted to Salesforce's published IP ranges | Source-IP restriction (no HMAC) |
-| `other` | **Internal** | Explicit `ALLOWED_CIDR` allowlist | Network allowlist |
+| `hubspot` *(default)* | **Internet-facing** | `0.0.0.0/0` — HubSpot publishes no static source IPs | HubSpot's **v3 request signature** (`X-HubSpot-Signature-v3`, HMAC-SHA256 with the HubSpot app client secret, `X-HubSpot-Request-Timestamp` no older than 5 minutes), verified by the orchestrator. Requests carrying a matching `X-Admin-Token` skip the check; if no client secret is configured, every webhook is rejected |
+| `salesforce` | **Internet-facing** | Whatever `ALLOWED_CIDR` is set to. `install.sh` pre-fills Salesforce outbound ranges hardcoded for the NA, EU and AP regions, plus the installer's own public IP; any other region gets only the installer's IP or a manually entered range. The ranges are not refreshed from Salesforce's published list — check them before relying on them | **None at the application layer.** The orchestrator skips signature validation for Salesforce, so the ALB security group allowlist is the only control |
+| `other` | **Internal** | Explicit `ALLOWED_CIDR` allowlist | Network allowlist, plus an HMAC-SHA256 body signature (`X-Hub-Signature-256`) when a webhook secret is configured in SSM; with no secret set, the orchestrator performs no signature check |
 
 In every mode, compute stays private: ECS tasks (and RDS, when enabled) have no
 public IPs, and only the ALB and NAT gateways occupy public subnets.
@@ -119,7 +119,7 @@ For the full hop-by-hop path and trust boundaries, see
 | KMS encryption at rest | Customer-managed key with rotation, encrypting CloudTrail logs (and RDS storage when enabled). Its policy includes an MFA-gated break-glass statement and also delegates key use to IAM, so principals with broad IAM permissions — including the default deployment role — can use it; task and build roles cannot |
 | Secrets management | All credentials in Secrets Manager — never in environment variables |
 | Audit logging | CloudTrail management events (no data events are configured); structured logs on all containers; scheduled scans write per-run audit lines to the orchestrator's log group, retained 365 days, with alarms on audit-write failure and on log deletion or retention changes |
-| ALB ingress restriction | Depends on `crm_type` (see [Webhook ingress](#webhook-ingress)). HubSpot deployments accept `0.0.0.0/0` and rely on HMAC verification as the authentication boundary; Salesforce restricts to published IP ranges; `other` uses an explicit CIDR allowlist |
+| ALB ingress restriction | Depends on `crm_type` (see [Webhook ingress](#webhook-ingress)). HubSpot deployments accept `0.0.0.0/0` and rely on HubSpot's v3 request signature as the authentication boundary; Salesforce deployments rely solely on the `ALLOWED_CIDR` allowlist, with no signature check; `other` uses an internal ALB with an explicit CIDR allowlist and an optional HMAC signature |
 | External egress control | Set per agent with `enable_external_egress` and enforced in application configuration. The security group still permits outbound 443 for every agent, so this is not a network-layer control (see [Known gaps](docs/security/data-flow.md#known-gaps-tracked)) |
 
 ---
