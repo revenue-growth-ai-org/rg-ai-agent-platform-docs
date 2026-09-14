@@ -101,6 +101,53 @@ if [ "$MISSING" -gt 0 ]; then
   exit 1
 fi
 
+# ------------------------------------------------------------------------------
+# ALLOWED_CIDR -> HCL list for salesforce_webhook_allowed_cidrs
+#
+# install.sh stores several ranges in one comma-separated value (for example
+# Salesforce's regional ranges plus the installer's IP). Written verbatim as
+# ["$ALLOWED_CIDR"] that becomes ONE list element such as
+# "96.43.144.0/20,204.14.232.0/21,203.0.113.7/32", which the AWS provider
+# rejects at plan ("must be a valid IPv4 CIDR that represents a network").
+# Split on commas and whitespace, drop empties and duplicates, and require each
+# entry to be an IPv4 network address (host bits zero, as the provider
+# requires). Fails here, before anything is applied, rather than at plan time.
+# ------------------------------------------------------------------------------
+format_cidr_list() {
+  python3 -c '
+import ipaddress, re, sys
+raw = sys.argv[1]
+items, seen, bad = [], set(), []
+for part in re.split(r"[,\s]+", raw.strip()):
+    if not part:
+        continue
+    try:
+        net = ipaddress.IPv4Network(part, strict=True)
+    except ValueError as exc:
+        bad.append(f"{part} ({exc})")
+        continue
+    text = str(net)
+    if text not in seen:
+        seen.add(text)
+        items.append(text)
+if bad or not items:
+    for b in bad:
+        print(f"  ✗ invalid CIDR in ALLOWED_CIDR: {b}", file=sys.stderr)
+    if not items and not bad:
+        print("  ✗ ALLOWED_CIDR contains no CIDR", file=sys.stderr)
+    sys.exit(1)
+print("[" + ", ".join(f"\"{i}\"" for i in items) + "]")
+' "$1"
+}
+
+if ! ALLOWED_CIDRS_HCL=$(format_cidr_list "$ALLOWED_CIDR"); then
+  echo ""
+  echo "ERROR: ALLOWED_CIDR in defaults.env must be one or more IPv4 network CIDRs,"
+  echo "separated by commas (e.g. 96.43.144.0/20,203.0.113.7/32)."
+  exit 1
+fi
+echo "  ✓ ALB webhook ingress CIDRs: $ALLOWED_CIDRS_HCL"
+
 echo ""
 
 # Apply optional defaults
@@ -762,7 +809,7 @@ database_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
 public_subnet_cidrs   = ["10.0.101.0/24", "10.0.102.0/24"]
 
 alb_certificate_arn                  = "$ACM_CERT_ARN"
-salesforce_webhook_allowed_cidrs     = ["$ALLOWED_CIDR"]
+salesforce_webhook_allowed_cidrs     = $ALLOWED_CIDRS_HCL
 deployment_role_arn       = "$DEPLOYMENT_ROLE_ARN"
 
 rds_database_name   = "agentdb"
