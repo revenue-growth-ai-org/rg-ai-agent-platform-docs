@@ -26,7 +26,7 @@ Because the platform cannot assume a given customer has (or will remember to) ac
 
 ### Scanner supply-chain integrity
 
-Trivy is pinned to version `0.69.3`. The binary is downloaded to a file with retry (`curl -fL --retry 3`), then verified against its SHA256 checksum with `sha256sum -c` before the binary is ever extracted or invoked. This closes a gap found during rollout (see §4) where a silent download failure let a corrupt/missing binary reach execution.
+Trivy is pinned to version `0.74.0` (upgraded from `0.69.3` on 2026-09-14; 0.74.0 is a GitHub immutable release). The pin is exact on purpose: Trivy's March 2026 supply-chain incident (CVE-2026-33634, GHSA-69fq-xp46-6x23) published a malicious `v0.69.4` release, which a floating "latest" install would have picked up. Upgrades are made deliberately, with the checksum taken from the release's published checksums file. The binary is downloaded to a file with retry (`curl -fL --retry 3`), then verified against its SHA256 checksum with `sha256sum -c` before the binary is ever extracted or invoked. This closes a gap found during rollout (see §4) where a silent download failure let a corrupt/missing binary reach execution.
 
 ### SBOM generation
 
