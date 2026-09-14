@@ -388,23 +388,40 @@ case "$CRM_CHOICE" in
   2)
     CRM_TYPE="salesforce"
     echo ""
-    read -p "What is your Salesforce region? (e.g. NA, EU, AP): " SF_REGION < /dev/tty
-    SF_REGION=$(echo "$SF_REGION" | tr '[:lower:]' '[:upper:]')
-    case "$SF_REGION" in
-      NA)
-        SF_CIDRS="96.43.144.0/20,204.14.232.0/21"
-        ;;
-      EU)
-        SF_CIDRS="185.79.140.0/22"
-        ;;
-      AP)
-        SF_CIDRS="103.237.212.0/22"
-        ;;
-      *)
-        echo "  Unknown region — update ALLOWED_CIDR in defaults.env with your Salesforce outbound IP ranges."
-        SF_CIDRS=""
-        ;;
-    esac
+    # Salesforce publishes its outbound (Hyperforce -> customer network) IPv4
+    # ranges as JSON, and says to allow ALL of them rather than filtering by
+    # region, since an org's traffic is not confined to one region. It adds or
+    # changes ranges at least 30 days before using them and announces updates
+    # as "UPCOMING MAINTENANCE - External IP List Update". The ALB allowlist is
+    # a snapshot taken at install time: re-run this step and re-apply the base
+    # repo when Salesforce announces a change.
+    #
+    # Note the orchestrator performs no signature check for Salesforce, and
+    # these addresses are shared by every Salesforce customer — the allowlist
+    # limits traffic to Salesforce, not to your org.
+    SF_RANGES_URL="https://ip-ranges.salesforce.com/ip-ranges.json"
+    echo "Fetching Salesforce's published outbound IP ranges from $SF_RANGES_URL ..."
+    SF_CIDRS=$(curl -fsS --max-time 20 "$SF_RANGES_URL" 2>/dev/null | python3 -c '
+import ipaddress, json, sys
+data = json.load(sys.stdin)
+nets = []
+for entry in data.get("prefixes", []):
+    for prefix in entry.get("ip_prefix", []):
+        net = str(ipaddress.IPv4Network(prefix, strict=True))
+        if net not in nets:
+            nets.append(net)
+if not nets:
+    sys.exit(1)
+print(",".join(nets))
+' 2>/dev/null || echo "")
+    if [ -n "$SF_CIDRS" ]; then
+      SF_COUNT=$(echo "$SF_CIDRS" | tr ',' '\n' | grep -c .)
+      echo "  ✓ $SF_COUNT Salesforce ranges fetched."
+    else
+      echo "  ! Could not fetch or parse Salesforce's IP range list."
+      echo "    Enter the ranges from $SF_RANGES_URL yourself, comma-separated."
+      read -p "Salesforce outbound IP ranges: " SF_CIDRS < /dev/tty
+    fi
     if [ -n "$MY_IP" ] && [ -n "$SF_CIDRS" ]; then
       ALLOWED_CIDR="${SF_CIDRS},${MY_IP}/32"
     elif [ -n "$SF_CIDRS" ]; then
@@ -415,7 +432,9 @@ case "$CRM_CHOICE" in
       read -p "Allowed CIDR (e.g. 203.0.113.0/24): " ALLOWED_CIDR < /dev/tty
     fi
     echo ""
-    echo "Setting ALB to accept traffic from Salesforce IP ranges and your admin IP only."
+    echo "Setting ALB to accept traffic from Salesforce's published outbound ranges and your admin IP."
+    echo "Salesforce's addresses are shared by all its customers, and the orchestrator does not"
+    echo "verify a signature for Salesforce webhooks — see ARCHITECTURE.md (Webhook ingress)."
     ;;
   *)
     CRM_TYPE="other"
