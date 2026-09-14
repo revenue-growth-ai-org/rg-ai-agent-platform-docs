@@ -382,7 +382,8 @@ case "$CRM_CHOICE" in
     ALLOWED_CIDR="0.0.0.0/0"
     echo ""
     echo "HubSpot uses dynamic outbound IPs — setting ALB to accept all traffic."
-    echo "Webhook signature validation (X-Hub-Signature-256) will be the security control."
+    echo "HubSpot's v3 request signature (X-HubSpot-Signature-v3), verified by the orchestrator,"
+    echo "will be the security control. It needs the HubSpot app client secret in SSM."
     ;;
   2)
     CRM_TYPE="salesforce"
