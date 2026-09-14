@@ -910,13 +910,31 @@ if [ "$ORCH_SKIPPED" = "true" ] || [ "$CHAT_SKIPPED" = "true" ] || [ "$BASE_SKIP
       echo "  ✓ Deleted target group: $TG_ARN" || true
   done
 
-  # --- RDS instance (final snapshot created normally; Step 6.5 below cleans it up) ---
+  # --- RDS instance ---
+  # delete-db-instance requires either --skip-final-snapshot or
+  # --final-db-snapshot-identifier; with neither, the API rejects the call.
+  # This path previously passed neither and discarded the error, so it never
+  # deleted anything and still printed success. A final snapshot is taken,
+  # matching the base repo's rds_skip_final_snapshot = false default. Its
+  # identifier contains the project name and it is created during this run,
+  # so Step 6.5 deletes it along with the instance's retained backup.
   FALLBACK_RDS_ID="${NAME_PREFIX_EXACT}-postgres"
   if aws rds describe-db-instances --db-instance-identifier "$FALLBACK_RDS_ID" --region "$AWS_REGION" > /dev/null 2>&1; then
-    aws rds delete-db-instance --db-instance-identifier "$FALLBACK_RDS_ID" --region "$AWS_REGION" > /dev/null 2>&1
-    echo "  Waiting for RDS instance to finish deleting (this can take several minutes)..."
-    aws rds wait db-instance-deleted --db-instance-identifier "$FALLBACK_RDS_ID" --region "$AWS_REGION" 2>/dev/null || true
-    echo "  ✓ RDS instance deleted: $FALLBACK_RDS_ID"
+    FALLBACK_RDS_FINAL_SNAPSHOT="${FALLBACK_RDS_ID}-destroy-$(date -u +%Y%m%d%H%M%S)"
+    if RDS_DELETE_ERR=$(aws rds delete-db-instance \
+        --db-instance-identifier "$FALLBACK_RDS_ID" \
+        --final-db-snapshot-identifier "$FALLBACK_RDS_FINAL_SNAPSHOT" \
+        --region "$AWS_REGION" 2>&1 > /dev/null); then
+      echo "  Final snapshot requested: $FALLBACK_RDS_FINAL_SNAPSHOT"
+      echo "  Waiting for RDS instance to finish deleting (this can take several minutes)..."
+      if aws rds wait db-instance-deleted --db-instance-identifier "$FALLBACK_RDS_ID" --region "$AWS_REGION" 2>/dev/null; then
+        echo "  ✓ RDS instance deleted: $FALLBACK_RDS_ID"
+      else
+        note_failure "RDS instance $FALLBACK_RDS_ID did not finish deleting within the waiter's limit — check it in the console"
+      fi
+    else
+      note_failure "RDS delete-db-instance failed for $FALLBACK_RDS_ID: $(echo "$RDS_DELETE_ERR" | tail -1)"
+    fi
   fi
 
   # --- RDS DB subnet group (created by the VPC module itself when
