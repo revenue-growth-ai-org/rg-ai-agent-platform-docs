@@ -324,10 +324,12 @@ cd "$AGENT_REPO"
 # ------------------------------------------------------------------------------
 
 if [ "$ACTION" = "enable" ]; then
+  AUDIT_ALARM_LINE=$(detect_audit_alarm_line "$AGENT_NAME" "$AGENT_REPO")
   SCAN_BLOCK="
 enable_scheduled_scan     = true
 scheduled_scan_expression = \"${CRON_EXPR}\"
-scheduled_scan_command    = ${SCAN_COMMAND}"
+scheduled_scan_command    = ${SCAN_COMMAND}${AUDIT_ALARM_LINE:+
+${AUDIT_ALARM_LINE}}"
 else
   SCAN_BLOCK="
 enable_scheduled_scan     = false"

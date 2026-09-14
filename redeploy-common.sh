@@ -460,6 +460,63 @@ tail_recent_logs() {
 }
 
 # ------------------------------------------------------------------------------
+# Decide enable_audit_log_alarm for a scan agent from its scan-task source
+# ------------------------------------------------------------------------------
+# The agent repo creates an audit-log-failure alarm for every scan agent unless
+# enable_audit_log_alarm = false. That alarm watches for events emitted by
+# scan_scaffolding.OrchestratorAuditLog, so it can only ever fire for a scan
+# task that constructs one. An agent whose scan task does not (daily-report
+# reads logs and emails a summary) needs false; otherwise every regenerated
+# prod.tfvars silently recreates an alarm that implies coverage it cannot give.
+#
+# This reads intent from code rather than from live AWS. A missing alarm is not
+# evidence the agent should have none — it may simply never have been applied.
+#
+# The check parses the file and looks for a call to OrchestratorAuditLog, so a
+# docstring or comment that merely names it does not count.
+#
+# Echoes "enable_audit_log_alarm = false" only when the scan task is present and
+# provably constructs no OrchestratorAuditLog; echoes nothing otherwise, leaving
+# the variable at its default of true — the safe direction (an extra alarm,
+# never a missing one). Diagnostics go to stderr so callers can capture stdout.
+detect_audit_alarm_line() {
+  local AGENT="$1"
+  local REPO_DIR="${2:-$PWD}"
+  local SCAN_FILE="$REPO_DIR/app/agents/${AGENT}_scan_task.py"
+  local RESULT
+
+  if [ ! -f "$SCAN_FILE" ]; then
+    echo "  ! ${SCAN_FILE#"$REPO_DIR"/} not found locally — leaving enable_audit_log_alarm at its default (true)" >&2
+    return 0
+  fi
+
+  RESULT=$(python3 -c '
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read(), sys.argv[1])
+for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+        f = node.func
+        if (isinstance(f, ast.Name) and f.id == "OrchestratorAuditLog") or \
+           (isinstance(f, ast.Attribute) and f.attr == "OrchestratorAuditLog"):
+            print("uses")
+            break
+else:
+    print("none")
+' "$SCAN_FILE" 2>/dev/null) || RESULT="error"
+
+  case "$RESULT" in
+    uses) ;;
+    none)
+      echo "  ✓ ${AGENT}_scan_task.py constructs no OrchestratorAuditLog — writing enable_audit_log_alarm = false" >&2
+      echo "enable_audit_log_alarm    = false"
+      ;;
+    *)
+      echo "  ! Could not parse ${SCAN_FILE#"$REPO_DIR"/} — leaving enable_audit_log_alarm at its default (true)" >&2
+      ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
 # Detect an EXISTING agent's topology from live AWS
 # ------------------------------------------------------------------------------
 # Every prod.tfvars this script writes is applied. Any variable it omits falls
@@ -480,6 +537,10 @@ tail_recent_logs() {
 # So: discover both from live AWS and emit them explicitly. Sets SCAN_BLOCK and
 # SERVICE_BLOCK for the caller to interpolate. Call only for an agent that
 # already exists — see add_agent() for why a new agent is different.
+#
+# For a scan agent, SCAN_BLOCK also carries enable_audit_log_alarm = false when
+# the scan task constructs no OrchestratorAuditLog (see
+# detect_audit_alarm_line). Every caller runs this from the agent repo root.
 #
 # Note this is discovery, not intent. It reproduces what the agent IS. That is
 # right for secret/describe/remove, which must not change an agent's shape as a
@@ -514,10 +575,13 @@ detect_topology_blocks() {
       echo "  ! Scan rule found but scan task definition '$SCAN_TD' was not readable;" >&2
       echo "    falling back to the default scan command. Verify before applying." >&2
     fi
+    local AUDIT_ALARM_LINE
+    AUDIT_ALARM_LINE=$(detect_audit_alarm_line "$AGENT" "$PWD")
     SCAN_BLOCK="
 enable_scheduled_scan     = true
 scheduled_scan_expression = \"${CRON}\"
-scheduled_scan_command    = ${CMD_JSON}"
+scheduled_scan_command    = ${CMD_JSON}${AUDIT_ALARM_LINE:+
+${AUDIT_ALARM_LINE}}"
     echo "  ✓ Scheduled scan detected: $CRON"
   else
     SCAN_BLOCK="
