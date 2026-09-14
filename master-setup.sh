@@ -857,13 +857,9 @@ cd "$ORCH_DIR"
 ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-orchestrator:latest"
 
 echo "Reading RDS security group from AWS..."
-RDS_SG_ID=$(aws ec2 describe-security-groups \
-  --filters "Name=tag:Name,Values=*${PROJECT_NAME}*rds*" \
-  --query 'SecurityGroups[0].GroupId' \
-  --output text \
-  --region "$AWS_REGION" 2>/dev/null || echo "")
+RDS_SG_ID=$(lookup_rds_sg_id)
 
-if [ -z "$RDS_SG_ID" ] || [ "$RDS_SG_ID" = "None" ]; then
+if [ -z "$RDS_SG_ID" ]; then
   echo "  Could not auto-detect RDS security group. You will be prompted during terraform apply."
 else
   echo "  ✓ RDS security group found: $RDS_SG_ID"
@@ -940,13 +936,9 @@ fi
 echo "  ✓ Agent directory: $AGENT_DIR"
 
 echo "Reading RDS security group from AWS..."
-RDS_SG_ID=$(aws ec2 describe-security-groups \
-  --filters "Name=tag:Name,Values=*${PROJECT_NAME}*rds*" \
-  --query 'SecurityGroups[0].GroupId' \
-  --output text \
-  --region "$AWS_REGION" 2>/dev/null || echo "")
+RDS_SG_ID=$(lookup_rds_sg_id)
 
-if [ -z "$RDS_SG_ID" ] || [ "$RDS_SG_ID" = "None" ]; then
+if [ -z "$RDS_SG_ID" ]; then
   echo "  Could not auto-detect RDS security group. You will be prompted during terraform apply."
 else
   echo "  ✓ RDS security group found: $RDS_SG_ID"

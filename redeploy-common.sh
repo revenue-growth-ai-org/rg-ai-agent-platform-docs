@@ -460,6 +460,51 @@ tail_recent_logs() {
 }
 
 # ------------------------------------------------------------------------------
+# Look up the base repo's RDS security group ID, non-interactively
+# ------------------------------------------------------------------------------
+# The base repo's rds_security_group module tags the group Name =
+# "<project>-<env>-rds" and is deliberately not gated on enable_rds, so the
+# group exists whether or not a database does. Every agent and orchestrator
+# state references it.
+#
+# Matches that tag EXACTLY and accepts exactly one result. A wildcard such as
+# *<project>*rds* can also match another environment of the same project, or
+# a project whose name merely contains this one; taking [0] of those results
+# would silently point an install at the wrong group. And with --output text a
+# miss comes back as the literal string "None", which callers then write into
+# prod.tfvars.
+#
+# Prints the group ID on success and nothing otherwise, so callers can test for
+# an empty string. The reason for a miss goes to stderr.
+lookup_rds_sg_id() {
+  local TAG_NAME="${PROJECT_NAME}-${ENVIRONMENT}-rds"
+  local MATCHES
+
+  if [ -z "$PROJECT_NAME" ] || [ -z "$ENVIRONMENT" ]; then
+    echo "  ! PROJECT_NAME and ENVIRONMENT must be set to look up the RDS security group" >&2
+    return 0
+  fi
+
+  if ! MATCHES=$(aws ec2 describe-security-groups \
+      --filters "Name=tag:Name,Values=${TAG_NAME}" \
+      --query 'SecurityGroups[].GroupId' \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null); then
+    echo "  ! describe-security-groups failed (credentials, permissions or region?)" >&2
+    return 0
+  fi
+
+  MATCHES=$(echo "$MATCHES" | tr -s '[:space:]' ' ' | sed -e 's/^ *//' -e 's/ *$//')
+  if [[ "$MATCHES" =~ ^sg-[0-9a-f]+$ ]]; then
+    echo "$MATCHES"
+  elif [ -z "$MATCHES" ] || [ "$MATCHES" = "None" ]; then
+    echo "  ! No security group tagged Name=${TAG_NAME}" >&2
+  else
+    echo "  ! More than one security group tagged Name=${TAG_NAME} (${MATCHES}) — refusing to guess" >&2
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # Decide enable_audit_log_alarm for a scan agent from its scan-task source
 # ------------------------------------------------------------------------------
 # The agent repo creates an audit-log-failure alarm for every scan agent unless
