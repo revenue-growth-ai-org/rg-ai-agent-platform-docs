@@ -105,7 +105,7 @@ fi
 # ALLOWED_CIDR -> HCL list for salesforce_webhook_allowed_cidrs
 #
 # install.sh stores several ranges in one comma-separated value (for example
-# Salesforce's regional ranges plus the installer's IP). Written verbatim as
+# Salesforce's published outbound ranges plus the installer's IP). Written verbatim as
 # ["$ALLOWED_CIDR"] that becomes ONE list element such as
 # "96.43.144.0/20,204.14.232.0/21,203.0.113.7/32", which the AWS provider
 # rejects at plan ("must be a valid IPv4 CIDR that represents a network").
