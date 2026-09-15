@@ -325,6 +325,7 @@ echo "  1. HubSpot"
 echo "  2. Salesforce"
 echo "  3. Other (I will configure manually)"
 read -p "Enter 1, 2, or 3: " CRM_CHOICE < /dev/tty
+SALESFORCE_ORG_IDS=""
 
 case "$CRM_CHOICE" in
   1)
@@ -346,9 +347,10 @@ case "$CRM_CHOICE" in
     # a snapshot taken at install time: re-run this step and re-apply the base
     # repo when Salesforce announces a change.
     #
-    # Note the orchestrator performs no signature check for Salesforce, and
-    # these addresses are shared by every Salesforce customer — the allowlist
-    # limits traffic to Salesforce, not to your org.
+    # These addresses are shared by every Salesforce customer — the allowlist
+    # limits traffic to Salesforce, not to your org. The orchestrator adds the
+    # per-deployment checks: the webhook secret in an X-Webhook-Token header,
+    # and an allowed org ID (asked for below) in each event's organizationId.
     SF_RANGES_URL="https://ip-ranges.salesforce.com/ip-ranges.json"
     echo "Fetching Salesforce's published outbound IP ranges from $SF_RANGES_URL ..."
     SF_CIDRS=$(curl -fsS --max-time 20 "$SF_RANGES_URL" 2>/dev/null | python3 -c '
@@ -383,8 +385,23 @@ print(",".join(nets))
     fi
     echo ""
     echo "Setting ALB to accept traffic from Salesforce's published outbound ranges and your admin IP."
-    echo "Salesforce's addresses are shared by all its customers, and the orchestrator does not"
-    echo "verify a signature for Salesforce webhooks — see ARCHITECTURE.md (Webhook ingress)."
+    echo "Those addresses are shared by all Salesforce customers, so the orchestrator also requires"
+    echo "this deployment's webhook secret in an X-Webhook-Token header and an allowed org ID in"
+    echo "each event's organizationId field — see ARCHITECTURE.md (Webhook ingress)."
+    echo ""
+    echo "Salesforce org ID(s) allowed to send webhooks (Setup > Company Information >"
+    echo "Salesforce.com Organization ID; starts with 00D). Separate several with commas."
+    while true; do
+      read -p "Salesforce org ID(s): " SALESFORCE_ORG_IDS < /dev/tty
+      if python3 -c '
+import re, sys
+ids = [p.strip() for p in sys.argv[1].split(",") if p.strip()]
+sys.exit(0 if ids and all(re.fullmatch(r"00D[0-9A-Za-z]{12}(?:[0-9A-Za-z]{3})?", i) for i in ids) else 1)
+' "$SALESFORCE_ORG_IDS"; then
+        break
+      fi
+      echo "  Invalid: enter one or more org IDs, each 00D followed by 12 or 15 letters and digits."
+    done
     ;;
   *)
     CRM_TYPE="other"
@@ -430,6 +447,8 @@ EXPECTED_ACCOUNT_ID="$AWS_ACCOUNT_ID"
 COST_CENTER="unallocated"
 OWNER="platform-engineering"
 CRM_TYPE="$CRM_TYPE"
+# Salesforce org IDs allowed to send webhooks (CRM_TYPE=salesforce only).
+SALESFORCE_ORG_IDS="$SALESFORCE_ORG_IDS"
 EOF
 
 echo ""

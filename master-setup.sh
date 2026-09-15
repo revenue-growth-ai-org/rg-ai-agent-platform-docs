@@ -147,6 +147,39 @@ if ! ALLOWED_CIDRS_HCL=$(format_cidr_list "$ALLOWED_CIDR"); then
 fi
 echo "  ✓ ALB webhook ingress CIDRs: $ALLOWED_CIDRS_HCL"
 
+# ------------------------------------------------------------------------------
+# SALESFORCE_ORG_IDS -> HCL list for the orchestrator's salesforce_allowed_org_ids
+#
+# A Salesforce deployment's orchestrator refuses to start without at least one
+# allowed org ID, and its plan fails without one, so require them here before
+# anything is applied.
+# ------------------------------------------------------------------------------
+SALESFORCE_ORG_IDS_HCL=""
+if [ "${CRM_TYPE:-}" = "salesforce" ]; then
+  if ! SALESFORCE_ORG_IDS_HCL=$(python3 -c '
+import re, sys
+ids, bad = [], []
+for part in re.split(r"[,\s]+", sys.argv[1].strip()):
+    if not part:
+        continue
+    if not re.fullmatch(r"00D[0-9A-Za-z]{12}(?:[0-9A-Za-z]{3})?", part):
+        bad.append(part)
+    elif part not in ids:
+        ids.append(part)
+for b in bad:
+    print(f"  ✗ invalid Salesforce org ID: {b}", file=sys.stderr)
+if bad or not ids:
+    sys.exit(1)
+print("[" + ", ".join(f"\"{i}\"" for i in ids) + "]")
+' "${SALESFORCE_ORG_IDS:-}"); then
+    echo ""
+    echo "ERROR: CRM_TYPE=salesforce requires SALESFORCE_ORG_IDS in defaults.env: one or more"
+    echo "Salesforce org IDs (00D followed by 12 or 15 letters and digits), separated by commas."
+    exit 1
+  fi
+  echo "  ✓ Salesforce org IDs allowed to send webhooks: $SALESFORCE_ORG_IDS_HCL"
+fi
+
 echo ""
 
 # Apply optional defaults
@@ -881,6 +914,16 @@ if [ -f "$ORCH_DIR/prod.tfvars" ] && [ -n "$RDS_SG_ID" ]; then
   echo "  ✓ rds_security_group_id updated: $RDS_SG_ID"
 fi
 
+# Salesforce deployments: the orchestrator needs crm_type and the org allowlist,
+# or it runs with its default crm_type = "other" and the Salesforce checks never
+# apply. Rewritten on every run so defaults.env stays the source of truth.
+if [ "${CRM_TYPE:-}" = "salesforce" ] && [ -f "$ORCH_DIR/prod.tfvars" ]; then
+  sed -i.bak -e '/^crm_type[[:space:]]*=/d' -e '/^salesforce_allowed_org_ids[[:space:]]*=/d' "$ORCH_DIR/prod.tfvars"
+  rm -f "$ORCH_DIR/prod.tfvars.bak"
+  printf 'crm_type                     = "salesforce"\nsalesforce_allowed_org_ids   = %s\n' "$SALESFORCE_ORG_IDS_HCL" >> "$ORCH_DIR/prod.tfvars"
+  echo "  ✓ crm_type and salesforce_allowed_org_ids written: $SALESFORCE_ORG_IDS_HCL"
+fi
+
 write_backend "$ORCH_DIR" "2-rg-ai-agent-platform-orchestrator/terraform.tfstate"
 
 make doctor
@@ -1292,6 +1335,17 @@ echo ""
 echo "       Once that record resolves (usually a few minutes), give your CRM"
 echo "       this as the webhook Target URL: https://webhook.${DOMAIN_NAME}/webhook"
 echo "       (substitute the hostname you actually chose above)."
+if [ "${CRM_TYPE:-}" = "salesforce" ]; then
+  echo ""
+  echo "       Salesforce requests must also carry both of these, or the"
+  echo "       orchestrator rejects them (401 without the token, 403 without an"
+  echo "       allowed org ID):"
+  echo "         - Header X-Webhook-Token set to the webhook secret. Add it as a"
+  echo "           custom header on the External Credential. Read the secret with:"
+  echo "           aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret --with-decryption --query Parameter.Value --output text --region ${AWS_REGION}"
+  echo "         - An organizationId field in every event, set to your org ID"
+  echo "           ({!\$Organization.Id} in a Flow). Allowed: ${SALESFORCE_ORG_IDS_HCL}"
+fi
 echo ""
 echo "    3. Test the platform by sending a webhook to the ALB:"
 echo "       bash test-webhook.sh"

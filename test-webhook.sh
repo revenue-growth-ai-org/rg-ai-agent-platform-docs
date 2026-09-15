@@ -315,6 +315,31 @@ WEBHOOK_SECRET=$(aws ssm get-parameter \
   --with-decryption \
   --query Parameter.Value --output text --region "$AWS_REGION")
 
+# Salesforce deployments authenticate every request with the webhook secret in
+# X-Webhook-Token and accept only events whose organizationId is allowlisted
+# (app/webhook.py in the orchestrator repo), so the scenarios add both. Other
+# CRM types ignore them, and their payloads — and so their HMAC signatures —
+# are left byte-for-byte unchanged.
+SF_AUTH_ARGS=()
+SF_ORG_ID=""
+if [ "${CRM_TYPE:-}" = "salesforce" ]; then
+  SF_ORG_ID=$(echo "${SALESFORCE_ORG_IDS:-}" | tr ', ' '\n\n' | grep -m1 . || true)
+  if [ -z "$SF_ORG_ID" ]; then
+    echo "ERROR: CRM_TYPE=salesforce but SALESFORCE_ORG_IDS is empty in defaults.env —"
+    echo "every test webhook would be rejected with 403. Add the org ID(s) and re-run."
+    exit 1
+  fi
+  SF_AUTH_ARGS=(-H "X-Webhook-Token: ${WEBHOOK_SECRET}")
+fi
+
+with_sf_org() {
+  if [ -n "$SF_ORG_ID" ]; then
+    python3 -c 'import json, sys; body = json.loads(sys.argv[1]); body["organizationId"] = sys.argv[2]; print(json.dumps(body, separators=(",", ":")))' "$1" "$SF_ORG_ID"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # Only fetched when relevant: not every customer runs CRM_TYPE=hubspot, and
 # this parameter may not exist at all for a Salesforce/generic deployment —
 # an unconditional fetch here would abort the whole script (set -e) for them
@@ -672,7 +697,7 @@ TEST_EXIT=1
 case "$SCENARIO" in
 
 happy)
-  PAYLOAD="{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"${TEST_RECORD_ID}\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
+  PAYLOAD=$(with_sf_org "{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"${TEST_RECORD_ID}\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
   SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
@@ -681,6 +706,7 @@ happy)
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
     -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
+    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
     -d "$PAYLOAD" \
     --insecure)
 
@@ -772,6 +798,7 @@ malformed)
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
     -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
+    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
     -d "$PAYLOAD" \
     --insecure --max-time 20 || echo "000")
 
@@ -834,7 +861,7 @@ wrong-event-type)
   echo "Scenario: wrong-event-type — using event_type with no matching routing rule: $TEST_EVENT_TYPE"
   echo ""
 
-  PAYLOAD="{\"event_type\":\"${TEST_EVENT_TYPE}\",\"contact_id\":\"test-wrong-event-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
+  PAYLOAD=$(with_sf_org "{\"event_type\":\"${TEST_EVENT_TYPE}\",\"contact_id\":\"test-wrong-event-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
   SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
@@ -843,6 +870,7 @@ wrong-event-type)
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
     -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
+    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
     -d "$PAYLOAD" \
     --insecure --max-time 20 || printf '\n000\n')
 
@@ -949,20 +977,19 @@ print(f\"{no_match}|{agent_call}|{route_error}\")
   ;;
 
 unauthorized)
-  echo "Scenario: unauthorized — sending a webhook with an invalid HMAC signature"
+  echo "Scenario: unauthorized — sending a webhook with an invalid credential"
   echo ""
 
+  # Salesforce deployments authenticate with X-Webhook-Token rather than an
+  # HMAC signature, so for them the invalid credential is a wrong token. The
+  # payload still names an allowed org, so the token alone causes the 401.
   if [ "${CRM_TYPE:-}" = "salesforce" ]; then
-    echo "  CRM_TYPE=salesforce: this orchestrator intentionally skips HMAC signature"
-    echo "  validation for Salesforce (the ALB security group is the control instead)."
-    echo "  There is no signature check to exercise here by design."
-    echo ""
-    echo "=================================================="
-    echo " RESULT: SKIPPED"
-    echo "=================================================="
-    TEST_EXIT=0
+    UNAUTH_ARGS=(-H "X-Webhook-Token: wrong-token-for-webhook-test")
   else
-    PAYLOAD="{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-unauthorized-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
+    UNAUTH_ARGS=()
+  fi
+  {
+    PAYLOAD=$(with_sf_org "{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-unauthorized-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
     BAD_SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "wrong-secret-for-webhook-test" | awk '{print $NF}')
 
     START_TIME=$(now_minus_30s)
@@ -975,6 +1002,7 @@ unauthorized)
       -X POST "https://${ALB_DNS_NAME}/webhook" \
       -H "Content-Type: application/json" \
       -H "X-Hub-Signature-256: sha256=${BAD_SIGNATURE}" \
+      ${UNAUTH_ARGS[@]+"${UNAUTH_ARGS[@]}"} \
       -H "X-Forwarded-For: 203.0.113.1" \
       -d "$PAYLOAD" \
       --insecure --max-time 15 || printf '\n000\n')
@@ -1076,10 +1104,10 @@ print(f\"{rejected}|{attempted}\")
       if [ "$RESPONSE" = "401" ]; then
         echo "  ✓ ALB/orchestrator returned HTTP 401"
       else
-        echo "  ✗ Expected HTTP 401 (invalid signature), got $RESPONSE"
+        echo "  ✗ Expected HTTP 401 (invalid credential), got $RESPONSE"
       fi
       if [ "$ORCHESTRATION_ATTEMPTED" = "true" ]; then
-        echo "  ✗ Found intake/routing/agent/orchestration log events — signature check did NOT stop orchestration"
+        echo "  ✗ Found intake/routing/agent/orchestration log events — credential check did NOT stop orchestration"
       else
         echo "  ✓ No orchestration events found"
       fi
@@ -1089,7 +1117,7 @@ print(f\"{rejected}|{attempted}\")
       TEST_EXIT=1
     fi
     echo ""
-  fi
+  }
   ;;
 
 hubspot-v3)
@@ -1238,7 +1266,7 @@ agent-timeout)
   echo "Scenario: agent-timeout — routing to $OVERRIDE_AGENT after scaling it to 0 tasks"
   echo ""
 
-  PAYLOAD="{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-agent-timeout-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}"
+  PAYLOAD=$(with_sf_org "{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-agent-timeout-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
   SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
@@ -1247,6 +1275,7 @@ agent-timeout)
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
     -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
+    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
     -d "$PAYLOAD" \
     --insecure --max-time 20 || printf '\n000\n')
 
