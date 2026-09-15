@@ -701,8 +701,6 @@ if [ -n "$AGENT_DIR" ] && [ -n "$STATE_BUCKET" ]; then
     --output text --region "$AWS_REGION" 2>/dev/null \
     | tr '\t' '\n' | awk -F'/' 'NF >= 3 {print $2}' | sort -u)
 
-  DEPLOY_ROLE_ARN_FOR_DESTROY="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
-
   for AGENT_NAME in $AGENT_NAMES; do
     [ -z "$AGENT_NAME" ] && continue
     echo ""
@@ -727,7 +725,6 @@ step2_ssm_prefix = ""
 
 rds_security_group_id  = "sg-000000000000destroy"
 agent_image            = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
-deployment_role_arn    = "$DEPLOY_ROLE_ARN_FOR_DESTROY"
 enable_external_egress = false
 external_secrets       = {}
 EOF

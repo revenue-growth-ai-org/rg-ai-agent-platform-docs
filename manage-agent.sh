@@ -667,7 +667,6 @@ secret_agent() {
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
     --query Parameter.Value --output text --region "$AWS_REGION")
   detect_rds_sg
-  DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
 
   cd "$AGENT_DIR"
 
@@ -691,7 +690,6 @@ step2_ssm_prefix = ""
 
 rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "$AGENT_IMAGE"
-deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $NEW_MAP
@@ -815,7 +813,6 @@ describe_agent() {
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/bootstrap/terraform_state_lock_table" \
     --query Parameter.Value --output text --region "$AWS_REGION")
   detect_rds_sg
-  DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
 
   cd "$AGENT_DIR"
 
@@ -839,7 +836,6 @@ step2_ssm_prefix = ""
 
 rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "$AGENT_IMAGE"
-deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $CURRENT_MAP
@@ -990,7 +986,6 @@ step2_ssm_prefix = ""
 
 rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "${ECR_IMAGE}:latest"
-deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $EXTERNAL_SECRETS_MAP}
@@ -1128,7 +1123,6 @@ step2_ssm_prefix = ""
 
 rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "$ECR_IMAGE"
-deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = false
 external_secrets = {}
 $SCAN_BLOCK

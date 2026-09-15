@@ -43,7 +43,7 @@ Every data store and network channel in a platform deployment, with its encrypti
 
 ## Key management summary
 
-- **Customer-managed CMK** (customer account): the CloudTrail log bucket, and RDS storage when a database is enabled. Annual rotation enabled. The key policy grants use to the RDS service (condition-scoped) and an MFA-gated break-glass path for the account root, **and** grants the account root `kms:*` unconditionally, which delegates key use to IAM policies. So the deployment role (with its default `AdministratorAccess`) and account administrators **can** decrypt with this key; no task or build role can. See [Secrets Access Map](./secrets-access-map.md#kms-decrypt-access-customer-account-cmk).
+- **Customer-managed CMK** (customer account): the CloudTrail log bucket, and RDS storage when a database is enabled. Annual rotation enabled. The key policy grants use to the RDS service (condition-scoped) and an MFA-gated break-glass path for the account root, **and** grants the account root `kms:*` unconditionally, which delegates key use to IAM policies. So account administrators (for example an operator user with `AdministratorAccess`) **can** decrypt with this key; no task or build role can. See [Secrets Access Map](./secrets-access-map.md#kms-decrypt-access-customer-account-cmk).
 - **AWS-managed keys**: Secrets Manager secrets, CloudWatch Logs, S3 state and artifact buckets (SSE-S3).
 - **AWS-owned key**: DynamoDB lock table (metadata only).
 - No plaintext storage of any credential or customer data exists anywhere in the platform.

@@ -307,8 +307,6 @@ LOCK_TABLE=$(aws ssm get-parameter \
 
 detect_rds_sg
 
-DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
-
 if [ -z "$AGENT_REPO" ]; then
   echo "ERROR: Cannot find the agent repo in $PARENT_DIR"
   echo "Expected a directory matching *agent* (e.g. 3-rg-ai-agent-platform-agent)"
@@ -353,7 +351,6 @@ step2_ssm_prefix = ""
 
 rds_security_group_id  = "$RDS_SG_ID"
 agent_image             = "$AGENT_IMAGE"
-deployment_role_arn     = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress  = $ENABLE_EXTERNAL
 external_secrets = {
 $EXTERNAL_SECRETS_MAP}

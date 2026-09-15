@@ -33,13 +33,12 @@ is saved anywhere by this script — it's a one-time, throwaway check.
 
 This single command will:
 1. Install any missing tools (Terraform, AWS CLI, Docker, Git)
-2. Create the terraform-deploy IAM role automatically
-3. Clone all five platform repositories
-4. Ask for your project name, environment, organization name, and allowed CIDR
-5. Ask how many agents you want and their names
-6. Deploy all four steps in sequence (60-90 minutes unattended)
-7. Pause once to let you paste your Anthropic API key
-8. Verify all services are running and print a summary
+2. Clone all five platform repositories
+3. Ask for your project name, environment, organization name, and allowed CIDR
+4. Ask how many agents you want and their names
+5. Deploy all four steps in sequence (60-90 minutes unattended)
+6. Pause once to let you paste your Anthropic API key
+7. Verify all services are running and print a summary
 
 > **Note:** Agents are created WITHOUT external API credentials — every
 > agent deploys as an empty "shell" with no external egress and no

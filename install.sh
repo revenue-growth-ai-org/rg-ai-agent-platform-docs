@@ -201,54 +201,6 @@ install_terraform() {
 }
 
 # ------------------------------------------------------------------------------
-# Create terraform-deploy IAM role
-# ------------------------------------------------------------------------------
-
-create_iam_role() {
-  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-  echo "Checking terraform-deploy IAM role..."
-
-  EXISTING_ROLE=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
-
-  if [ "$EXISTING_ROLE" != "NOT_FOUND" ]; then
-    echo "  ✓ terraform-deploy role already exists: $EXISTING_ROLE"
-    return 0
-  fi
-
-  echo "  Creating terraform-deploy IAM role..."
-
-  cat > /tmp/trust-policy.json << EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::${AWS_ACCOUNT_ID}:root"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-EOF
-
-  aws iam create-role \
-    --role-name terraform-deploy \
-    --assume-role-policy-document file:///tmp/trust-policy.json \
-    --description "Terraform deployment role for AWS Agent Platform" \
-    > /dev/null
-
-  aws iam attach-role-policy \
-    --role-name terraform-deploy \
-    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
-
-  rm /tmp/trust-policy.json
-
-  ROLE_ARN=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text)
-  echo "  ✓ terraform-deploy role created: $ROLE_ARN"
-}
-
-# ------------------------------------------------------------------------------
 # Clone repositories (into the per-project INSTALL_DIR)
 # ------------------------------------------------------------------------------
 
@@ -322,7 +274,6 @@ install_git
 install_aws_cli
 verify_aws_credentials
 install_terraform
-create_iam_role
 
 echo ""
 echo "Step 2 of 6 — Naming the project and cloning repositories..."
@@ -361,7 +312,6 @@ DEFAULTS_FILE="$DOCS_DIR/defaults.env"
 # Auto-populate what we already know
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AWS_REGION=$(aws configure get region 2>/dev/null || echo "us-east-1")
-DEPLOY_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
 MY_IP=$(curl -s https://checkip.amazonaws.com 2>/dev/null || echo "")
 
 # Prompt for the remaining values
@@ -473,7 +423,6 @@ PROJECT_NAME="$PROJECT_NAME"
 ENVIRONMENT="$ENVIRONMENT"
 DOMAIN_NAME="$DOMAIN_NAME"
 ALLOWED_CIDR="$ALLOWED_CIDR"
-DEPLOYMENT_ROLE_ARN="$DEPLOY_ROLE_ARN"
 AWS_REGION="$AWS_REGION"
 # Account this platform was installed into. destroy.sh refuses to run against
 # any other account (guard added 2026-08-04 after a wrong-account near-miss).

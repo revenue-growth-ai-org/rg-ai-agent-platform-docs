@@ -59,23 +59,17 @@ wait for you to start it.
 
 ---
 
-## Step 4 — terraform-deploy IAM role
+## Step 4 — AWS permissions for the installer
 
-This step is now automated. Both install.sh and master-setup.sh will
-create the terraform-deploy IAM role automatically if it does not exist.
+No deployment role is needed. install.sh, master-setup.sh and Terraform run
+with the AWS credentials in your shell (the identity Step 1 returned), so that
+identity needs permission to create the platform's resources — in practice
+AdministratorAccess, or the scoped policy described under Enterprise
+deployment notes.
 
-If you prefer to create it manually run:
-
-    aws iam create-role \
-      --role-name terraform-deploy \
-      --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::YOUR_ACCOUNT_ID:root"},"Action":"sts:AssumeRole"}]}' \
-      --description "Terraform deployment role for AWS Agent Platform"
-
-    aws iam attach-role-policy \
-      --role-name terraform-deploy \
-      --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
-
-Replace YOUR_ACCOUNT_ID with your AWS account ID from Step 1.
+Earlier versions of the setup created a `terraform-deploy` IAM role with
+AdministratorAccess. Nothing assumed it. If your account has one, see
+"Removing an old terraform-deploy role" below.
 
 ---
 
@@ -125,7 +119,6 @@ Fill in the following required values:
 | PROJECT_NAME | Short identifier for this deployment, lowercase hyphens only | acme-corp |
 | ENVIRONMENT | Deployment environment | prod |
 | ALLOWED_CIDR | Your office or VPN IP range that can access the platform | 203.0.113.0/24 |
-| DEPLOYMENT_ROLE_ARN | The terraform-deploy role ARN from Step 4 | arn:aws:iam::123456789012:role/terraform-deploy |
 
 To find your current IP address for ALLOWED_CIDR:
 
@@ -162,11 +155,10 @@ Before running master-setup.sh confirm all of the following:
 - [ ] aws sts get-caller-identity returns your account ID
 - [ ] terraform version returns 1.5.0 or higher
 - [ ] docker info returns no errors and Docker is running
-- [ ] terraform-deploy IAM role exists and ARN is copied
 - [ ] All five repos are cloned into the same parent folder
-- [ ] defaults.env is filled in with all five required values
+- [ ] defaults.env is filled in with all three required values
 
-If all six boxes are checked run bash master-setup.sh and the platform
+If all five boxes are checked run bash master-setup.sh and the platform
 will deploy automatically.
 
 ---
@@ -175,10 +167,30 @@ will deploy automatically.
 
 ### Replacing AdministratorAccess with a scoped IAM policy
 
-The default terraform-deploy role uses AdministratorAccess for simplicity.
-If your organization requires least-privilege IAM policies contact
-Michael@revenue-growth.ai for a scoped policy document that grants only
-the permissions required by each Terraform step.
+The installer runs as the identity in your shell, which in practice holds
+AdministratorAccess. If your organization requires least-privilege IAM
+policies contact Michael@revenue-growth.ai for a scoped policy document that
+grants only the permissions required by each Terraform step.
+
+### Removing an old terraform-deploy role
+
+Earlier setup versions created a `terraform-deploy` role with
+AdministratorAccess and named it in the platform KMS key policy. To remove it:
+
+1. Check it was never used. `aws iam get-role --role-name terraform-deploy`
+   shows `RoleLastUsed`; empty means IAM has no record of it being assumed.
+2. Delete the `deployment_role_arn` line from the base repo's prod.tfvars and
+   re-apply base. The plan should update only the KMS key policy, removing the
+   `DeploymentRoleKeyAdministration` statement. Do this first: KMS rejects a
+   key policy that names a role that no longer exists.
+3. Detach the policy and delete the role:
+
+       aws iam detach-role-policy --role-name terraform-deploy \
+         --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+       aws iam delete-role --role-name terraform-deploy
+
+The `deployment_role_arn` line in the orchestrator and agent prod.tfvars files
+is now unused and can be left or deleted.
 
 ### Bypassing the curl installer
 
