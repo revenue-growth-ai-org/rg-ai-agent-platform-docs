@@ -119,6 +119,7 @@ Fill in the following required values:
 | PROJECT_NAME | Short identifier for this deployment, lowercase hyphens only | acme-corp |
 | ENVIRONMENT | Deployment environment | prod |
 | ALLOWED_CIDR | Your office or VPN IP range that can access the platform | 203.0.113.0/24 |
+| CRM_TYPE | The CRM that sends webhooks: hubspot, salesforce or other | hubspot |
 
 To find your current IP address for ALLOWED_CIDR:
 
@@ -128,6 +129,20 @@ Add /32 to the end of the IP address returned. For example if the command
 returns 203.0.113.45 use 203.0.113.45/32 in defaults.env.
 
 Save the file with Ctrl+X then Y then Enter.
+
+If CRM_TYPE is hubspot, also store your HubSpot app's client secret (HubSpot
+developer account > your app > Auth tab) in SSM before running
+master-setup.sh. The orchestrator verifies HubSpot's request signature with it
+and will not start without it, and master-setup.sh stops early if it is
+missing. install.sh asks for it; on this manual path run the following, pasting
+the secret at the hidden prompt:
+
+    read -rs HUBSPOT_APP_CLIENT_SECRET
+    aws ssm put-parameter --name /PROJECT_NAME/prod/orchestrator/hubspot_app_client_secret \
+      --type SecureString --value "$HUBSPOT_APP_CLIENT_SECRET"
+
+Replace PROJECT_NAME with your value. If CRM_TYPE is salesforce, also set
+SALESFORCE_ORG_IDS in defaults.env to your Salesforce org ID(s).
 
 ---
 
@@ -156,7 +171,8 @@ Before running master-setup.sh confirm all of the following:
 - [ ] terraform version returns 1.5.0 or higher
 - [ ] docker info returns no errors and Docker is running
 - [ ] All five repos are cloned into the same parent folder
-- [ ] defaults.env is filled in with all three required values
+- [ ] defaults.env is filled in with all four required values (and, for
+      HubSpot, the client secret is stored in SSM)
 
 If all five boxes are checked run bash master-setup.sh and the platform
 will deploy automatically.

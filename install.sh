@@ -326,6 +326,7 @@ echo "  2. Salesforce"
 echo "  3. Other (I will configure manually)"
 read -p "Enter 1, 2, or 3: " CRM_CHOICE < /dev/tty
 SALESFORCE_ORG_IDS=""
+HUBSPOT_APP_CLIENT_SECRET=""
 
 case "$CRM_CHOICE" in
   1)
@@ -334,7 +335,19 @@ case "$CRM_CHOICE" in
     echo ""
     echo "HubSpot uses dynamic outbound IPs — setting ALB to accept all traffic."
     echo "HubSpot's v3 request signature (X-HubSpot-Signature-v3), verified by the orchestrator,"
-    echo "will be the security control. It needs the HubSpot app client secret in SSM."
+    echo "will be the security control. The orchestrator checks it with your HubSpot app's client"
+    echo "secret, stored in SSM as a SecureString, and will not start without it."
+    echo ""
+    echo "HubSpot app client secret (HubSpot developer account > your app > Auth tab)."
+    echo "Input is hidden."
+    while true; do
+      read -rs -p "HubSpot app client secret: " HUBSPOT_APP_CLIENT_SECRET < /dev/tty
+      echo ""
+      if [ -n "$HUBSPOT_APP_CLIENT_SECRET" ]; then
+        break
+      fi
+      echo "  A client secret is required for a HubSpot deployment."
+    done
     ;;
   2)
     CRM_TYPE="salesforce"
@@ -467,6 +480,26 @@ echo "  NOTE: A random webhook secret has been generated and stored in SSM."
 echo "  If your CRM webhook sender supports HMAC signature verification,"
 echo "  configure it with this secret. Retrieve it at any time with:"
 echo "  aws ssm get-parameter --name /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret --with-decryption --query Parameter.Value --output text"
+
+if [ "$CRM_TYPE" = "hubspot" ]; then
+  HUBSPOT_SECRET_PARAM="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/hubspot_app_client_secret"
+  # Passed to the AWS CLI as JSON on stdin rather than with --value, so the
+  # secret never appears in this machine's process list.
+  if HUBSPOT_APP_CLIENT_SECRET="$HUBSPOT_APP_CLIENT_SECRET" python3 -c '
+import json, os, sys
+print(json.dumps({"Name": sys.argv[1], "Value": os.environ["HUBSPOT_APP_CLIENT_SECRET"], "Type": "SecureString", "Overwrite": True}))
+' "$HUBSPOT_SECRET_PARAM" | aws ssm put-parameter --cli-input-json file:///dev/stdin --region "$AWS_REGION" > /dev/null; then
+    echo ""
+    echo "  ✓ HubSpot app client secret stored in SSM: $HUBSPOT_SECRET_PARAM"
+  else
+    echo ""
+    echo "  ✗ Could not store the HubSpot app client secret in SSM. Store it before deploying:"
+    echo "    read -rs HUBSPOT_APP_CLIENT_SECRET"
+    echo "    aws ssm put-parameter --name $HUBSPOT_SECRET_PARAM --type SecureString --value \"\$HUBSPOT_APP_CLIENT_SECRET\" --region $AWS_REGION"
+    exit 1
+  fi
+  unset HUBSPOT_APP_CLIENT_SECRET
+fi
 
 # SSM SecureString parameters reject empty values ("Member must have length
 # greater than or equal to 1"), so there is no way to store "" here. The

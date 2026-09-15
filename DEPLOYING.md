@@ -34,7 +34,9 @@ is saved anywhere by this script — it's a one-time, throwaway check.
 This single command will:
 1. Install any missing tools (Terraform, AWS CLI, Docker, Git)
 2. Clone all five platform repositories
-3. Ask for your project name, environment, organization name, and allowed CIDR
+3. Ask for your project name, environment, organization name, allowed CIDR, and
+   CRM — plus your HubSpot app's client secret for HubSpot, or your org ID(s)
+   for Salesforce
 4. Ask how many agents you want and their names
 5. Deploy all four steps in sequence (60-90 minutes unattended)
 6. Pause once to let you paste your Anthropic API key
