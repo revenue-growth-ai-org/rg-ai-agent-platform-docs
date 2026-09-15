@@ -823,24 +823,27 @@ EOF
   fi
 
   if [ "$DIR" = "$ORCH_DIR" ]; then
-    # webhook_secret is seeded by install.sh/master-setup.sh outside Terraform
-    # (bootstrap.tf no longer creates it) — delete it explicitly here.
-    WEBHOOK_SECRET_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/webhook_secret"
-    if DELETE_OUTPUT=$(aws ssm delete-parameter \
-      --name "$WEBHOOK_SECRET_PATH" \
-      --region "$AWS_REGION" 2>&1); then
-      DELETE_STATUS=0
-    else
-      DELETE_STATUS=$?
-    fi
-    if [ $DELETE_STATUS -eq 0 ]; then
-      echo "  ✓ Deleted SSM parameter: $WEBHOOK_SECRET_PATH"
-    elif echo "$DELETE_OUTPUT" | grep -q "ParameterNotFound"; then
-      echo "  ✓ SSM parameter already absent: $WEBHOOK_SECRET_PATH"
-    else
-      echo "  ⚠ WARNING: Failed to delete $WEBHOOK_SECRET_PATH — real error:"
-      echo "    $DELETE_OUTPUT"
-    fi
+    # webhook_secret and hubspot_app_client_secret are stored by install.sh (or
+    # ci-e2e-test.sh) outside Terraform — bootstrap.tf no longer creates the
+    # webhook secret — so delete them explicitly here.
+    for ORCH_SECRET_NAME in webhook_secret hubspot_app_client_secret; do
+      ORCH_SECRET_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/${ORCH_SECRET_NAME}"
+      if DELETE_OUTPUT=$(aws ssm delete-parameter \
+        --name "$ORCH_SECRET_PATH" \
+        --region "$AWS_REGION" 2>&1); then
+        DELETE_STATUS=0
+      else
+        DELETE_STATUS=$?
+      fi
+      if [ $DELETE_STATUS -eq 0 ]; then
+        echo "  ✓ Deleted SSM parameter: $ORCH_SECRET_PATH"
+      elif echo "$DELETE_OUTPUT" | grep -q "ParameterNotFound"; then
+        echo "  ✓ SSM parameter already absent: $ORCH_SECRET_PATH"
+      else
+        echo "  ⚠ WARNING: Failed to delete $ORCH_SECRET_PATH — real error:"
+        echo "    $DELETE_OUTPUT"
+      fi
+    done
   fi
 
   if [ "$DIR" = "$BASE_DIR" ]; then

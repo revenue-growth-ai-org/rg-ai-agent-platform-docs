@@ -180,6 +180,33 @@ print("[" + ", ".join(f"\"{i}\"" for i in ids) + "]")
   echo "  ✓ Salesforce org IDs allowed to send webhooks: $SALESFORCE_ORG_IDS_HCL"
 fi
 
+# ------------------------------------------------------------------------------
+# HubSpot app client secret
+#
+# With crm_type = "hubspot" the orchestrator verifies HubSpot's v3 request
+# signature with this secret and refuses to start without it, so check it
+# exists before anything is applied. Only the parameter's name is read, never
+# its value. install.sh stores it; ci-e2e-test.sh seeds a test value.
+# ------------------------------------------------------------------------------
+if [ "${CRM_TYPE:-}" = "hubspot" ]; then
+  HUBSPOT_SECRET_PARAM="/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/hubspot_app_client_secret"
+  FOUND_PARAM=$(aws ssm describe-parameters \
+    --parameter-filters "Key=Name,Values=${HUBSPOT_SECRET_PARAM}" \
+    --query 'Parameters[0].Name' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ "$FOUND_PARAM" != "$HUBSPOT_SECRET_PARAM" ]; then
+    echo ""
+    echo "ERROR: CRM_TYPE=hubspot but SSM parameter ${HUBSPOT_SECRET_PARAM} does not exist."
+    echo "The orchestrator verifies HubSpot's v3 request signature with your HubSpot app's"
+    echo "client secret (HubSpot developer account > your app > Auth tab) and will not start"
+    echo "without it. Store it, then re-run master-setup.sh:"
+    echo "  read -rs HUBSPOT_APP_CLIENT_SECRET"
+    echo "  aws ssm put-parameter --name ${HUBSPOT_SECRET_PARAM} --type SecureString \\"
+    echo "    --value \"\$HUBSPOT_APP_CLIENT_SECRET\" --region ${AWS_REGION}"
+    exit 1
+  fi
+  echo "  ✓ HubSpot app client secret present in SSM: ${HUBSPOT_SECRET_PARAM}"
+fi
+
 echo ""
 
 # Apply optional defaults
@@ -914,14 +941,22 @@ if [ -f "$ORCH_DIR/prod.tfvars" ] && [ -n "$RDS_SG_ID" ]; then
   echo "  ✓ rds_security_group_id updated: $RDS_SG_ID"
 fi
 
-# Salesforce deployments: the orchestrator needs crm_type and the org allowlist,
-# or it runs with its default crm_type = "other" and the Salesforce checks never
-# apply. Rewritten on every run so defaults.env stays the source of truth.
-if [ "${CRM_TYPE:-}" = "salesforce" ] && [ -f "$ORCH_DIR/prod.tfvars" ]; then
+# The orchestrator's crm_type defaults to "other", which checks an
+# X-Hub-Signature-256 HMAC that neither HubSpot nor Salesforce sends, so write
+# this deployment's CRM type into its prod.tfvars — plus the org allowlist for
+# Salesforce. Base gets crm_type above; before this, the orchestrator never did,
+# and a HubSpot install rejected every real HubSpot webhook. Rewritten on every
+# run so defaults.env stays the source of truth.
+if [ -n "${CRM_TYPE:-}" ] && [ -f "$ORCH_DIR/prod.tfvars" ]; then
   sed -i.bak -e '/^crm_type[[:space:]]*=/d' -e '/^salesforce_allowed_org_ids[[:space:]]*=/d' "$ORCH_DIR/prod.tfvars"
   rm -f "$ORCH_DIR/prod.tfvars.bak"
-  printf 'crm_type                     = "salesforce"\nsalesforce_allowed_org_ids   = %s\n' "$SALESFORCE_ORG_IDS_HCL" >> "$ORCH_DIR/prod.tfvars"
-  echo "  ✓ crm_type and salesforce_allowed_org_ids written: $SALESFORCE_ORG_IDS_HCL"
+  printf 'crm_type                     = "%s"\n' "$CRM_TYPE" >> "$ORCH_DIR/prod.tfvars"
+  if [ "$CRM_TYPE" = "salesforce" ]; then
+    printf 'salesforce_allowed_org_ids   = %s\n' "$SALESFORCE_ORG_IDS_HCL" >> "$ORCH_DIR/prod.tfvars"
+    echo "  ✓ crm_type = salesforce and salesforce_allowed_org_ids written: $SALESFORCE_ORG_IDS_HCL"
+  else
+    echo "  ✓ crm_type written to orchestrator prod.tfvars: $CRM_TYPE"
+  fi
 fi
 
 write_backend "$ORCH_DIR" "2-rg-ai-agent-platform-orchestrator/terraform.tfstate"

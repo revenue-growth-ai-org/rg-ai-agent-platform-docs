@@ -94,6 +94,19 @@ aws ssm put-parameter \
   --overwrite \
   --region "$AWS_REGION" > /dev/null
 echo "  ✓ Webhook secret stored in SSM"
+
+# HubSpot app client secret (normally stored by install.sh). This run deploys
+# CRM_TYPE=hubspot, whose orchestrator refuses to start without it. No real
+# HubSpot app is involved: test-webhook.sh signs its requests with this same
+# value, so the scenarios exercise the orchestrator's real v3 signature check.
+HUBSPOT_APP_CLIENT_SECRET=$(openssl rand -hex 32)
+aws ssm put-parameter \
+  --name "/${CI_PROJECT_NAME}/prod/orchestrator/hubspot_app_client_secret" \
+  --value "$HUBSPOT_APP_CLIENT_SECRET" \
+  --type SecureString \
+  --overwrite \
+  --region "$AWS_REGION" > /dev/null
+echo "  ✓ HubSpot app client secret stored in SSM"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -109,10 +122,12 @@ teardown() {
   # Delete the CI webhook secret BEFORE destroy runs: it's created by this
   # harness (not the install), so verify-destroy — which runs inside
   # destroy.sh — will flag it as a leftover and fail the run if it still
-  # exists (seen in CI run #85).
-  aws ssm delete-parameter \
-    --name "/${CI_PROJECT_NAME}/prod/orchestrator/webhook_secret" \
-    --region "$AWS_REGION" > /dev/null 2>&1
+  # exists (seen in CI run #85). The HubSpot client secret is seeded the same way.
+  for P in webhook_secret hubspot_app_client_secret; do
+    aws ssm delete-parameter \
+      --name "/${CI_PROJECT_NAME}/prod/orchestrator/${P}" \
+      --region "$AWS_REGION" > /dev/null 2>&1
+  done
   if [ "$INSTALL_STARTED" = "true" ]; then
     echo ""
     echo "=================================================="
@@ -125,10 +140,12 @@ teardown() {
       echo "::error::destroy.sh exited nonzero ($DESTROY_EXIT) — resources may remain in account $AWS_ACCOUNT_ID. Check the AWS console."
     fi
   fi
-  # Always remove the CI webhook secret parameter (created above, outside install)
-  aws ssm delete-parameter \
-    --name "/${CI_PROJECT_NAME}/prod/orchestrator/webhook_secret" \
-    --region "$AWS_REGION" > /dev/null 2>&1
+  # Always remove the CI-seeded secret parameters (created above, outside install)
+  for P in webhook_secret hubspot_app_client_secret; do
+    aws ssm delete-parameter \
+      --name "/${CI_PROJECT_NAME}/prod/orchestrator/${P}" \
+      --region "$AWS_REGION" > /dev/null 2>&1
+  done
   if [ "$DESTROY_EXIT" -eq 0 ]; then
     # Belt-and-suspenders: final sweep in case destroy.sh left orphans behind
     AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/ci-cleanup-citest.sh"

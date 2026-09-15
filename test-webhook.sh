@@ -20,8 +20,9 @@ set -e
 #   wrong-event-type  — valid JSON with an event_type that matches no routing
 #                      rule; expects a graceful route_complete with agents: []
 #                      and no agent call.
-#   unauthorized      — invalid HMAC signature; expects a 401 before routing
-#                      logic runs and no orchestration attempted.
+#   unauthorized      — an invalid credential for this deployment's CRM type;
+#                      expects a 401 before routing logic runs and no
+#                      orchestration attempted.
 #   agent-timeout     — routes to an agent scaled to 0 tasks; expects a
 #                      graceful agent_error and orchestration_complete NOT
 #                      reporting status success (this exercises a known gap
@@ -29,10 +30,15 @@ set -e
 #   hubspot-v3        — a HubSpot-shaped webhook (array payload with
 #                      subscriptionType/objectId/portalId/etc.) signed with
 #                      HubSpot's native v3 scheme (X-HubSpot-Signature-v3 +
-#                      X-HubSpot-Request-Timestamp), exercising the real
-#                      CRM_TYPE=hubspot validation path end-to-end instead of
-#                      the generic X-Hub-Signature-256 path the other
-#                      scenarios use. Skips gracefully unless CRM_TYPE=hubspot.
+#                      X-HubSpot-Request-Timestamp) and a HubSpot-shaped
+#                      payload, end-to-end through the HubSpot adapter.
+#                      Skips gracefully unless CRM_TYPE=hubspot.
+#
+# Every scenario authenticates the way this deployment's CRM_TYPE requires
+# (build_auth_args): HubSpot's v3 signature for hubspot (needs
+# hubspot_app_client_secret in SSM), X-Webhook-Token plus an allowlisted
+# organizationId for salesforce, and an X-Hub-Signature-256 HMAC with the
+# webhook secret otherwise.
 #
 # Requires defaults.env in the same directory (created by install.sh).
 #
@@ -315,12 +321,9 @@ WEBHOOK_SECRET=$(aws ssm get-parameter \
   --with-decryption \
   --query Parameter.Value --output text --region "$AWS_REGION")
 
-# Salesforce deployments authenticate every request with the webhook secret in
-# X-Webhook-Token and accept only events whose organizationId is allowlisted
-# (app/webhook.py in the orchestrator repo), so the scenarios add both. Other
-# CRM types ignore them, and their payloads — and so their HMAC signatures —
-# are left byte-for-byte unchanged.
-SF_AUTH_ARGS=()
+# Salesforce deployments accept only events whose organizationId is allowlisted
+# (app/webhook.py in the orchestrator repo), so the scenarios add it. Payloads
+# for other CRM types are left byte-for-byte unchanged.
 SF_ORG_ID=""
 if [ "${CRM_TYPE:-}" = "salesforce" ]; then
   SF_ORG_ID=$(echo "${SALESFORCE_ORG_IDS:-}" | tr ', ' '\n\n' | grep -m1 . || true)
@@ -329,7 +332,6 @@ if [ "${CRM_TYPE:-}" = "salesforce" ]; then
     echo "every test webhook would be rejected with 403. Add the org ID(s) and re-run."
     exit 1
   fi
-  SF_AUTH_ARGS=(-H "X-Webhook-Token: ${WEBHOOK_SECRET}")
 fi
 
 with_sf_org() {
@@ -340,29 +342,63 @@ with_sf_org() {
   fi
 }
 
-# Only fetched when relevant: not every customer runs CRM_TYPE=hubspot, and
-# this parameter may not exist at all for a Salesforce/generic deployment —
-# an unconditional fetch here would abort the whole script (set -e) for them
-# on every scenario, not just hubspot-v3.
+# A hubspot orchestrator verifies HubSpot's v3 signature on every request (and
+# refuses to start without this secret), so every scenario needs it. Only
+# fetched for hubspot: the parameter need not exist for other CRM types.
+HUBSPOT_APP_CLIENT_SECRET=""
 if [ "${CRM_TYPE:-}" = "hubspot" ]; then
   HUBSPOT_APP_CLIENT_SECRET=$(aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/hubspot_app_client_secret" \
     --with-decryption \
     --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-else
-  HUBSPOT_APP_CLIENT_SECRET=""
+  if [ -z "$HUBSPOT_APP_CLIENT_SECRET" ]; then
+    echo "ERROR: CRM_TYPE=hubspot but /${PROJECT_NAME}/${ENVIRONMENT}/orchestrator/hubspot_app_client_secret"
+    echo "could not be read from SSM. The orchestrator verifies HubSpot's v3 signature with it,"
+    echo "so every test webhook would be rejected with 401."
+    exit 1
+  fi
 fi
+
+# build_auth_args PAYLOAD [invalid]
+# Sets AUTH_ARGS to the curl headers that authenticate PAYLOAD the way this
+# deployment's orchestrator checks it (validate_webhook_signature in
+# app/webhook.py). With "invalid", the same kind of credential is computed with
+# a wrong secret, for the unauthorized scenario. Call it right before curl: the
+# HubSpot signature carries a timestamp the orchestrator rejects after 5 minutes.
+build_auth_args() {
+  local payload="$1" secret ts sig
+  AUTH_ARGS=()
+  case "${CRM_TYPE:-}" in
+    hubspot)
+      secret="$HUBSPOT_APP_CLIENT_SECRET"
+      if [ "${2:-}" = "invalid" ]; then secret="wrong-secret-for-webhook-test"; fi
+      ts=$(date -u +%s000)
+      # Source string per HubSpot's v3 spec: method + URI + body + timestamp.
+      # The orchestrator builds the URI from the Host header, which curl sets
+      # to ALB_DNS_NAME, so it has to be this exact host, path and scheme.
+      sig=$(printf '%s' "POSThttps://${ALB_DNS_NAME}/webhook${payload}${ts}" | openssl dgst -sha256 -hmac "$secret" -binary | base64 | tr -d '\n')
+      AUTH_ARGS=(-H "X-HubSpot-Signature-v3: ${sig}" -H "X-HubSpot-Request-Timestamp: ${ts}")
+      ;;
+    salesforce)
+      secret="$WEBHOOK_SECRET"
+      if [ "${2:-}" = "invalid" ]; then secret="wrong-token-for-webhook-test"; fi
+      AUTH_ARGS=(-H "X-Webhook-Token: ${secret}")
+      ;;
+    *)
+      secret="$WEBHOOK_SECRET"
+      if [ "${2:-}" = "invalid" ]; then secret="wrong-secret-for-webhook-test"; fi
+      sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$secret" | awk '{print $NF}')
+      AUTH_ARGS=(-H "X-Hub-Signature-256: sha256=${sig}")
+      ;;
+  esac
+}
 
 echo "  ✓ ALB DNS:       $ALB_DNS_NAME"
 echo "  ✓ VPC ID:        $VPC_ID"
 echo "  ✓ ALB SG:        $ALB_SG_ID"
 echo "  ✓ Webhook secret retrieved"
 if [ "${CRM_TYPE:-}" = "hubspot" ]; then
-  if [ -n "$HUBSPOT_APP_CLIENT_SECRET" ]; then
-    echo "  ✓ HubSpot app client secret retrieved"
-  else
-    echo "  WARNING: Could not retrieve hubspot_app_client_secret from SSM (only needed for --scenario hubspot-v3)"
-  fi
+  echo "  ✓ HubSpot app client secret retrieved"
 fi
 echo ""
 
@@ -698,15 +734,14 @@ case "$SCENARIO" in
 
 happy)
   PAYLOAD=$(with_sf_org "{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"${TEST_RECORD_ID}\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
-  SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
 
+  build_auth_args "$PAYLOAD"
   RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
-    -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
-    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
+    "${AUTH_ARGS[@]}" \
     -d "$PAYLOAD" \
     --insecure)
 
@@ -790,15 +825,14 @@ malformed)
   echo ""
 
   PAYLOAD='{"event_type": "contact.created", "contact_id": "test-malformed-001",,, invalid}'
-  SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
 
+  build_auth_args "$PAYLOAD"
   RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
-    -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
-    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
+    "${AUTH_ARGS[@]}" \
     -d "$PAYLOAD" \
     --insecure --max-time 20 || echo "000")
 
@@ -862,15 +896,14 @@ wrong-event-type)
   echo ""
 
   PAYLOAD=$(with_sf_org "{\"event_type\":\"${TEST_EVENT_TYPE}\",\"contact_id\":\"test-wrong-event-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
-  SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
 
+  build_auth_args "$PAYLOAD"
   HTTP_RESULT=$(curl -s -w "\n%{http_code}" \
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
-    -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
-    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
+    "${AUTH_ARGS[@]}" \
     -d "$PAYLOAD" \
     --insecure --max-time 20 || printf '\n000\n')
 
@@ -980,29 +1013,21 @@ unauthorized)
   echo "Scenario: unauthorized — sending a webhook with an invalid credential"
   echo ""
 
-  # Salesforce deployments authenticate with X-Webhook-Token rather than an
-  # HMAC signature, so for them the invalid credential is a wrong token. The
-  # payload still names an allowed org, so the token alone causes the 401.
-  if [ "${CRM_TYPE:-}" = "salesforce" ]; then
-    UNAUTH_ARGS=(-H "X-Webhook-Token: wrong-token-for-webhook-test")
-  else
-    UNAUTH_ARGS=()
-  fi
   {
     PAYLOAD=$(with_sf_org "{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-unauthorized-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
-    BAD_SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "wrong-secret-for-webhook-test" | awk '{print $NF}')
 
     START_TIME=$(now_minus_30s)
     SENT_TIME_MS=$(date -u +%s000)
 
-    echo "  Note: spoofing X-Forwarded-For to a non-admin IP so this exercises real"
-    echo "  signature validation even when CRM_TYPE=hubspot and ADMIN_IP would"
-    echo "  otherwise skip validation for requests from this machine."
+    # The credential this deployment's CRM type uses, computed with a wrong
+    # secret: a bad HubSpot v3 signature, a wrong X-Webhook-Token, or a bad
+    # HMAC. For Salesforce the payload still names an allowed org, so the
+    # token alone causes the 401.
+    build_auth_args "$PAYLOAD" invalid
     HTTP_RESULT=$(curl -s -w "\n%{http_code}" \
       -X POST "https://${ALB_DNS_NAME}/webhook" \
       -H "Content-Type: application/json" \
-      -H "X-Hub-Signature-256: sha256=${BAD_SIGNATURE}" \
-      ${UNAUTH_ARGS[@]+"${UNAUTH_ARGS[@]}"} \
+      "${AUTH_ARGS[@]}" \
       -H "X-Forwarded-For: 203.0.113.1" \
       -d "$PAYLOAD" \
       --insecure --max-time 15 || printf '\n000\n')
@@ -1267,15 +1292,14 @@ agent-timeout)
   echo ""
 
   PAYLOAD=$(with_sf_org "{\"event_type\":\"${EVENT_TYPE}\",\"contact_id\":\"test-agent-timeout-001\",\"object_type\":\"customer\",\"email\":\"test@example.com\",\"name\":\"Test Contact\"}")
-  SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
 
   START_TIME=$(now_minus_30s)
 
+  build_auth_args "$PAYLOAD"
   HTTP_RESULT=$(curl -s -w "\n%{http_code}" \
     -X POST "https://${ALB_DNS_NAME}/webhook" \
     -H "Content-Type: application/json" \
-    -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
-    ${SF_AUTH_ARGS[@]+"${SF_AUTH_ARGS[@]}"} \
+    "${AUTH_ARGS[@]}" \
     -d "$PAYLOAD" \
     --insecure --max-time 20 || printf '\n000\n')
 
