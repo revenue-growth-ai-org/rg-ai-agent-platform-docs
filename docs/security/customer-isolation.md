@@ -42,13 +42,13 @@ The only components Revenue-Growth.AI operates are the source repositories and D
 
 **Network containment.** Application tasks run in private subnets with no public IPs. Traffic to AWS services (Secrets Manager, SSM, ECR, CloudWatch Logs) uses VPC interface endpoints (PrivateLink); S3 and DynamoDB use gateway endpoints. Outbound internet access is limited to HTTPS (port 443) via NAT for the Anthropic API and customer-designated SaaS APIs, plus AWS Cost Explorer and SES for the daily-report agent, which have no VPC endpoint. Inbound webhook traffic authenticates via HMAC signature verification at the application layer.
 
-**Customer-controlled lifecycle.** Because everything lives in the customer's account, the customer retains ultimate control: they can audit all resources with their own tooling (CloudTrail is enabled by the platform), revoke Revenue-Growth.AI's deployment access at any time, and destroy the deployment entirely — deletion is a Terraform destroy in their own account, not a request to a vendor (see [Retention & Deletion Policy](./retention-deletion.md)).
+**Customer-controlled lifecycle.** Because everything lives in the customer's account, the customer retains ultimate control: they can audit all resources with their own tooling (CloudTrail is enabled by the platform), revoke Revenue-Growth.AI's access at any time, and destroy the deployment entirely — deletion is a Terraform destroy in their own account, not a request to a vendor (see [Retention & Deletion Policy](./retention-deletion.md)).
 
 ## What this means for a security review
 
 - **Data residency:** customer data resides in the customer's chosen AWS account and region.
 - **Blast radius:** a compromise of one customer deployment is contained to that customer's account; there is no shared component through which it could propagate to another customer.
-- **Vendor access:** Revenue-Growth.AI's access is limited to a deployment role the customer provisions and can revoke; it is used for install, upgrade, and support operations, not for data processing.
+- **Vendor access:** Revenue-Growth.AI works through IAM identities the customer issues in its own account (in the first production deployment, a single IAM user) and can disable or delete; they are used for install, upgrade, and support operations, not for data processing. No cross-account role grants Revenue-Growth.AI access.
 - **Subprocessors:** the platform's data path involves the customer's AWS account and the Anthropic API; see the [Subprocessor List](./subprocessors.md).
 
 ## Honest boundaries of this claim

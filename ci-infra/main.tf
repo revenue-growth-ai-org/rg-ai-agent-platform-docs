@@ -80,10 +80,10 @@ resource "aws_iam_role" "github_actions_ci" {
 }
 
 # The e2e cycle runs the real installer, which creates VPCs, RDS, ECS, IAM
-# roles, ACM, S3, CodeBuild, etc. — the same scope as the existing
-# terraform-deploy role (which install.sh itself creates with
-# AdministratorAccess). Scoping this to least-privilege would mean
-# enumerating every action the full platform install performs; deferred.
+# roles, ACM, S3, CodeBuild, etc. — the same scope an operator running
+# install.sh needs, since the installer and Terraform run with the caller's
+# own credentials. Scoping this to least-privilege would mean enumerating
+# every action the full platform install performs; deferred.
 resource "aws_iam_role_policy_attachment" "ci_admin" {
   role       = aws_iam_role.github_actions_ci.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"

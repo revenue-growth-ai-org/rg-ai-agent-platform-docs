@@ -92,7 +92,6 @@ echo "Validating defaults.env..."
 check_required "PROJECT_NAME"       "$PROJECT_NAME"
 check_required "ENVIRONMENT"        "$ENVIRONMENT"
 check_required "ALLOWED_CIDR"       "$ALLOWED_CIDR"
-check_required "DEPLOYMENT_ROLE_ARN" "$DEPLOYMENT_ROLE_ARN"
 
 if [ "$MISSING" -gt 0 ]; then
   echo ""
@@ -156,61 +155,6 @@ COST_CENTER="${COST_CENTER:-unallocated}"
 OWNER="${OWNER:-platform-engineering}"
 
 # ------------------------------------------------------------------------------
-# Helper — create terraform-deploy IAM role if it does not exist
-# ------------------------------------------------------------------------------
-
-create_iam_role_if_missing() {
-  echo "[ Checking terraform-deploy IAM role... ]"
-  AWS_ACCOUNT_ID_LOCAL=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
-  EXISTING=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
-
-  if [ "$EXISTING" != "NOT_FOUND" ]; then
-    echo "  ✓ terraform-deploy role exists: $EXISTING"
-    PASS=$((PASS+1))
-    return 0
-  fi
-
-  echo "  terraform-deploy role not found. Creating automatically..."
-
-  cat > /tmp/trust-policy.json << EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::${AWS_ACCOUNT_ID_LOCAL}:root"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-EOF
-
-  aws iam create-role \
-    --role-name terraform-deploy \
-    --assume-role-policy-document file:///tmp/trust-policy.json \
-    --description "Terraform deployment role for AWS Agent Platform" \
-    > /dev/null
-
-  aws iam attach-role-policy \
-    --role-name terraform-deploy \
-    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
-
-  rm -f /tmp/trust-policy.json
-
-  CREATED_ARN=$(aws iam get-role --role-name terraform-deploy --query 'Role.Arn' --output text)
-  echo "  ✓ terraform-deploy role created automatically: $CREATED_ARN"
-
-  # Update DEPLOYMENT_ROLE_ARN in prod.tfvars if it still has a placeholder
-  if echo "$DEPLOYMENT_ROLE_ARN" | grep -q "terraform-deploy"; then
-    DEPLOYMENT_ROLE_ARN="$CREATED_ARN"
-  fi
-
-  PASS=$((PASS+1))
-}
-
-# ------------------------------------------------------------------------------
 # Pre-flight environment checks
 # ------------------------------------------------------------------------------
 
@@ -265,15 +209,6 @@ if command -v terraform > /dev/null 2>&1; then
   fi
 else
   preflight_fail "Terraform is not installed — install from https://developer.hashicorp.com/terraform/install"
-fi
-
-# IAM role — create automatically if missing
-PASS=0
-create_iam_role_if_missing
-if [ "$PASS" -gt 0 ]; then
-  PREFLIGHT_PASS=$((PREFLIGHT_PASS+1))
-else
-  PREFLIGHT_FAIL=$((PREFLIGHT_FAIL+1))
 fi
 
 # Git
@@ -810,7 +745,6 @@ public_subnet_cidrs   = ["10.0.101.0/24", "10.0.102.0/24"]
 
 alb_certificate_arn                  = "$ACM_CERT_ARN"
 salesforce_webhook_allowed_cidrs     = $ALLOWED_CIDRS_HCL
-deployment_role_arn       = "$DEPLOYMENT_ROLE_ARN"
 
 rds_database_name   = "agentdb"
 rds_master_username = "agentadmin"
@@ -929,7 +863,6 @@ default_tags = {
 step1_ssm_prefix             = ""
 orchestrator_image           = "$ECR_IMAGE"
 anthropic_api_key_secret_arn = "$ANTHROPIC_SECRET_ARN"
-deployment_role_arn          = "$DEPLOYMENT_ROLE_ARN"
 rds_security_group_id        = "$RDS_SG_ID"
 EOF
 fi
@@ -1051,7 +984,6 @@ step2_ssm_prefix = ""
 
 rds_security_group_id  = "$RDS_SG_ID"
 agent_image            = "$ECR_AGENT_IMAGE"
-deployment_role_arn    = "$DEPLOYMENT_ROLE_ARN"
 enable_external_egress = $ENABLE_EXTERNAL
 external_secrets = {
 $AGENT_SECRETS_MAP}

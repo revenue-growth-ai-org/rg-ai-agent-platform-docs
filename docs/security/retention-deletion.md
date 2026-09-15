@@ -35,7 +35,7 @@ Because every deployment lives entirely in the customer's own AWS account, delet
 
 - **Full deployment teardown:** running the platform's `destroy.sh` (or the equivalent Terraform destroy sequence) removes all platform-created infrastructure from the customer's account, including S3 buckets, Secrets Manager entries, log groups, networking and, if present, RDS. It deletes the RDS snapshots and retained backups its own teardown produces, but keeps any that already existed when it started, such as a final snapshot retained after removing a database; set `DESTROY_DELETE_KEPT_RDS_SNAPSHOTS=true` to delete those as well. This has been validated end-to-end in CI (install → test → destroy) as part of this platform's regular development cycle.
 - **Partial deletion:** the customer can independently delete or expire any CloudWatch log group, S3 object, or Secrets Manager secret at any time using their own AWS tooling, since all of it lives in their account under their IAM permissions. Deleting a log group or changing its retention raises an alert to the deployment's alarm topic.
-- **Revoking Revenue-Growth.AI's access:** the customer can revoke the deployment role at any time, immediately ending Revenue-Growth.AI's ability to operate or update the deployment, independent of whether the customer chooses to also destroy the infrastructure.
+- **Revoking Revenue-Growth.AI's access:** the customer can disable or delete the IAM identities it issued to Revenue-Growth.AI at any time, ending Revenue-Growth.AI's ability to operate or update the deployment, independent of whether the customer chooses to also destroy the infrastructure.
 
 ## What this means for data subject requests
 

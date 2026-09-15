@@ -69,7 +69,6 @@ PROJECT_NAME="$CI_PROJECT_NAME"
 ENVIRONMENT="prod"
 DOMAIN_NAME="$CI_DOMAIN_NAME"
 ALLOWED_CIDR="0.0.0.0/0"
-DEPLOYMENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy"
 AWS_REGION="$AWS_REGION"
 # destroy.sh account guard: CI_MODE hard-requires this (no human to eyeball
 # the account). Set to the OIDC-assumed account this run is operating in.

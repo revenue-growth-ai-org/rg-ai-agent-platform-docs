@@ -22,7 +22,7 @@ What a vendor-side disruption would actually pause: new installs, platform updat
 | GitHub (source hosting) outage | None — deployed code is already built into images in customer ECR | Installs/updates wait out the outage |
 | Cloudflare (DNS) outage | None for webhook processing — customer webhook endpoints resolve via the customer's ALB; `*.revenue-growth.ai` DNS is not in the runtime data path for deployed installs | Waits out the outage |
 | AWS regional outage (customer's chosen region) | Deployment affected as any single-region workload would be | Infrastructure is fully code-defined: a deployment can be re-created from scratch in ~22 minutes by scripted install, exercised continuously in CI (install→test→destroy every cycle). Multi-region operation is not currently offered and is not claimed. |
-| Company ceases operations | None immediately — deployments keep running; the customer can revoke the deployment role and operate or wind down on their own timeline | The customer already holds everything needed: their infrastructure, their data, their account |
+| Company ceases operations | None immediately — deployments keep running; the customer can disable the IAM identities it issued to Revenue-Growth.AI and operate or wind down on their own timeline | The customer already holds everything needed: their infrastructure, their data, their account |
 
 ## Backups and restore
 
