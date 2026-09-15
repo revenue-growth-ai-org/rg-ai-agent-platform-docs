@@ -73,7 +73,11 @@ get_ecr_digest() {
 # Zip an app directory into a source artifact for CodeBuild, excluding files
 # that should never leave the local machine or aren't needed for the build:
 # local env/secret files, real tfvars, prior deploy-agent.sh backups, any
-# stray Terraform state/cache, and node_modules (JS tooling, if ever added).
+# stray Terraform state/cache, node_modules (JS tooling, if ever added), and
+# local Python virtualenvs and bytecode caches. A venv in the app directory
+# (the local-test flow creates app/venv) would otherwise be uploaded and, via
+# the Dockerfile's `COPY . .`, baked into the image; the app repos'
+# .dockerignore files exclude it at build time too.
 #
 # Args: APP_DIR DEST_ZIP_PATH
 # ------------------------------------------------------------------------------
@@ -94,7 +98,13 @@ zip_source_for_build() {
     -x ".terraform/*" \
     -x "*.tfstate*" \
     -x "node_modules/*" \
-    -x ".git/*"
+    -x ".git/*" \
+    -x "venv/*" \
+    -x ".venv/*" \
+    -x ".venv-*" \
+    -x "*/__pycache__/*" \
+    -x "__pycache__/*" \
+    -x "*.pyc"
   cd "$ORIGINAL_DIR"
 
   if [ ! -f "$DEST_ZIP" ]; then
