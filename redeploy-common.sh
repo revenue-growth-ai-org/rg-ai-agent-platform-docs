@@ -505,6 +505,56 @@ lookup_rds_sg_id() {
 }
 
 # ------------------------------------------------------------------------------
+# Resolve RDS_SG_ID for an agent's prod.tfvars (manage-agent.sh, manage-scan.sh)
+# ------------------------------------------------------------------------------
+# Sets the global RDS_SG_ID. Resolution order:
+#   1. SSM parameter /<project>/<env>/rds_security_group_id (written by base)
+#   2. The group tagged Name=<project>-<env>-rds, via lookup_rds_sg_id above.
+#      That group exists whether or not RDS is enabled, so this is the step
+#      that resolves it on a deployment with no database (enable_rds = false,
+#      the default). manage-scan.sh used to keep its own copy of this function
+#      without this step, and stopped to prompt on such deployments.
+#   3. The RDS instance's own security group, for older deployments that still
+#      have one
+#   4. Prompt the operator
+#
+# NEVER writes an invalid value into prod.tfvars: the AWS CLI returns the
+# literal string "None" (not empty) for missing [0] results with --output
+# text, which previously slipped past empty-string checks and produced
+# rds_security_group_id = "None" — failing terraform validation. Every path
+# here is gated on a ^sg- format check instead.
+detect_rds_sg() {
+  RDS_SG_ID=$(aws ssm get-parameter \
+    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+    RDS_SG_ID=$(lookup_rds_sg_id)
+  fi
+
+  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+    RDS_SG_ID=$(aws rds describe-db-instances \
+      --db-instance-identifier "${PROJECT_NAME}-${ENVIRONMENT}-postgres" \
+      --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' \
+      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  fi
+
+  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+    echo ""
+    echo "ERROR: Could not auto-detect the RDS security group ID (got: '${RDS_SG_ID:-empty}')."
+    echo "Find it manually with:"
+    echo "  aws ec2 describe-security-groups --filters Name=tag:Name,Values=${PROJECT_NAME}-${ENVIRONMENT}-rds \\"
+    echo "    --query 'SecurityGroups[].GroupId' --output text --region ${AWS_REGION}"
+    read -p "Enter the RDS security group ID (sg-...): " RDS_SG_ID < /dev/tty
+    if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
+      echo "ERROR: '$RDS_SG_ID' is not a valid security group ID. Aborting before writing prod.tfvars."
+      exit 1
+    fi
+  fi
+  echo "  ✓ RDS security group: $RDS_SG_ID"
+}
+
+# ------------------------------------------------------------------------------
 # Decide enable_audit_log_alarm for a scan agent from its scan-task source
 # ------------------------------------------------------------------------------
 # The agent repo creates an audit-log-failure alarm for every scan agent unless

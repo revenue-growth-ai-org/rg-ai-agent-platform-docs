@@ -211,35 +211,9 @@ if [ -n "$AGENT_REPO" ] && [ "$ACTION" = "enable" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# Detect the RDS security group ID (same resolution order as manage-agent.sh)
+# RDS security group detection (detect_rds_sg) is shared with manage-agent.sh
+# and lives in redeploy-common.sh, sourced above.
 # ------------------------------------------------------------------------------
-
-detect_rds_sg() {
-  RDS_SG_ID=$(aws ssm get-parameter \
-    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-
-  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
-    RDS_SG_ID=$(aws rds describe-db-instances \
-      --db-instance-identifier "${PROJECT_NAME}-${ENVIRONMENT}-postgres" \
-      --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  fi
-
-  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
-    echo ""
-    echo "ERROR: Could not auto-detect the RDS security group ID (got: '${RDS_SG_ID:-empty}')."
-    echo "Find it manually with:"
-    echo "  aws rds describe-db-instances --db-instance-identifier ${PROJECT_NAME}-${ENVIRONMENT}-postgres \\"
-    echo "    --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' --output text --region ${AWS_REGION}"
-    read -p "Enter the RDS security group ID (sg-...): " RDS_SG_ID < /dev/tty
-    if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
-      echo "ERROR: '$RDS_SG_ID' is not a valid security group ID. Aborting before writing prod.tfvars."
-      exit 1
-    fi
-  fi
-  echo "  ✓ RDS security group: $RDS_SG_ID"
-}
 
 # ------------------------------------------------------------------------------
 # Pull live values so this apply cannot drift the agent's image, description,

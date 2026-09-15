@@ -47,66 +47,10 @@ source "$DEFAULTS_FILE"
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 # ------------------------------------------------------------------------------
-# Detect the RDS security group ID — shared by secret/describe/add flows.
-#
-# Resolution order:
-#   1. SSM parameter (written by base install)
-#   2. Ask the RDS instance directly (deterministic — the instance knows its SG)
-#   3. Prompt the operator
-#
-# NEVER writes an invalid value into prod.tfvars: the AWS CLI returns the
-# literal string "None" (not empty) for missing [0] results with --output
-# text, which previously slipped past empty-string checks and produced
-# rds_security_group_id = "None" — failing terraform validation. Every path
-# here is gated on a ^sg- format check instead.
+# RDS security group detection (detect_rds_sg), used by the secret, describe
+# and add flows, is shared with manage-scan.sh and lives in redeploy-common.sh.
 # ------------------------------------------------------------------------------
 
-detect_rds_sg() {
-  RDS_SG_ID=$(aws ssm get-parameter \
-    --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
-    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-
-  # Look the group up by the Name tag base's rds_security_group module sets
-  # ("<project>-<env>-rds"). That module is deliberately NOT gated on
-  # enable_rds — other security groups reference it — so the group outlives
-  # the database. Without this, a deployment with no RDS instance
-  # (enable_rds = false, now the default) falls through to the
-  # describe-db-instances probe below, which cannot succeed, and every agent
-  # operation stops to prompt. Exact tag match, and only a single result is
-  # accepted, so a look-alike group is never picked silently.
-  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
-    local TAG_MATCHES
-    TAG_MATCHES=$(aws ec2 describe-security-groups \
-      --filters "Name=tag:Name,Values=${PROJECT_NAME}-${ENVIRONMENT}-rds" \
-      --query 'SecurityGroups[].GroupId' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    if [[ "$TAG_MATCHES" =~ ^sg-[0-9a-f]+$ ]]; then
-      RDS_SG_ID="$TAG_MATCHES"
-    fi
-  fi
-
-  # Older deployments that still have the instance: read it off the database.
-  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
-    RDS_SG_ID=$(aws rds describe-db-instances \
-      --db-instance-identifier "${PROJECT_NAME}-${ENVIRONMENT}-postgres" \
-      --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' \
-      --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  fi
-
-  if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
-    echo ""
-    echo "ERROR: Could not auto-detect the RDS security group ID (got: '${RDS_SG_ID:-empty}')."
-    echo "Find it manually with:"
-    echo "  aws rds describe-db-instances --db-instance-identifier ${PROJECT_NAME}-${ENVIRONMENT}-postgres \\"
-    echo "    --query 'DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId' --output text --region ${AWS_REGION}"
-    read -p "Enter the RDS security group ID (sg-...): " RDS_SG_ID < /dev/tty
-    if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
-      echo "ERROR: '$RDS_SG_ID' is not a valid security group ID. Aborting before writing prod.tfvars."
-      exit 1
-    fi
-  fi
-  echo "  ✓ RDS security group: $RDS_SG_ID"
-}
 AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
 
 CODEBUILD_PROJECT_NAME=$(aws ssm get-parameter \
