@@ -29,7 +29,7 @@ flowchart TB
     subgraph CUSTACCT["Customer AWS Account (trust boundary: AWS account)"]
         subgraph VPC["VPC (trust boundary: network)"]
             subgraph PUB["Public subnets"]
-                ALB["Application Load Balancer<br/>HTTPS :443 · TLS 1.2 min / 1.3<br/>ACM public cert<br/>HMAC verified at app layer"]
+                ALB["Application Load Balancer<br/>HTTPS :443 · TLS 1.2 min / 1.3<br/>ACM public cert<br/>request authenticated at app layer<br/>(scheme depends on crm_type — see hop 1)"]
                 NAT["NAT Gateway(s)"]
             end
             subgraph PRIV["Private subnets (no public IPs)"]
@@ -62,7 +62,7 @@ flowchart TB
         MAIL["Email recipients"]
     end
 
-    SAAS -- "1 · HTTPS 443<br/>HMAC-signed webhook" --> ALB
+    SAAS -- "1 · HTTPS 443<br/>authenticated webhook<br/>(signature or token — see hop 1)" --> ALB
     ALB -- "2 · HTTP 5678<br/>SG-paired, in-VPC" --> ORCH
     ORCH -- "3 · HTTP 5678 via Cloud Map DNS<br/>SG-paired, in-VPC" --> AGENTS
     ORCH -- "4 · HTTPS 443 via NAT" --> ANTH
