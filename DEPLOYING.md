@@ -80,6 +80,8 @@ from where it left off:
 
     cd rg-ai-agent-platform-docs
     bash manage-agent.sh add
+    # headless / MCP (no TTY):
+    bash manage-agent.sh add <agent_name> --description "..." --yes
 
 ### Removing an agent
 
@@ -235,6 +237,21 @@ and deploys automatically as an empty "shell" — no external credentials,
 no external internet egress. Attach credentials separately, whenever
 they're actually needed (see "Managing agent credentials" below).
 
+Headless / MCP (no TTY — every prompt has a flag or env var):
+
+    bash manage-agent.sh add <agent_name> \
+      --description "Researches contacts using external APIs" \
+      --yes
+
+Equivalent env form: `AGENT_NAME`, `AGENT_DESCRIPTION` (or `AGENT_DESC`),
+`CONFIRM=yes`. If auto-detect cannot find the RDS security group, pass
+`--rds-sg sg-...` or `RDS_SG_ID`. `bash manage-agent.sh add --help` prints
+the full flag list. Interactive `add` with no args is unchanged when a
+terminal is available.
+
+Agents are deployed onto the ECS cluster named
+`${PROJECT_NAME}-${ENVIRONMENT}-ecs` (the `-ecs` suffix is required).
+
 ### Remove an existing agent
 
     cd rg-ai-agent-platform-docs
@@ -249,11 +266,11 @@ to type the agent name to confirm, then destroys all associated resources cleanl
     bash manage-agent.sh list
 
 Prints two sections. **Deployed (ECS)** is the live/deployed list — only
-agent services in the cluster (orchestrator excluded), with running-task
-counts. That count is the only deployed total. **Configured · not running
-(SSM)** is a second view: names under `/{project}/{environment}/agents/`
-that have no matching ECS service. Agents present in both appear only
-under Deployed (ECS).
+agent services in the cluster `${PROJECT_NAME}-${ENVIRONMENT}-ecs`
+(orchestrator excluded), with running-task counts. That count is the only
+deployed total. **Configured · not running (SSM)** is a second view: names
+under `/{project}/{environment}/agents/` that have no matching ECS service.
+Agents present in both appear only under Deployed (ECS).
 
 ### Interactive mode
 

@@ -462,6 +462,8 @@ OWNER="platform-engineering"
 CRM_TYPE="$CRM_TYPE"
 # Salesforce org IDs allowed to send webhooks (CRM_TYPE=salesforce only).
 SALESFORCE_ORG_IDS="$SALESFORCE_ORG_IDS"
+# OBSOLETE — terraform-deploy role deleted; no script reads this. Do not set.
+# DEPLOYMENT_ROLE_ARN=
 EOF
 
 echo ""

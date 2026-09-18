@@ -38,7 +38,7 @@ The platform is split across four infrastructure repositories deployed in sequen
 | Repo | Name | Purpose |
 |---|---|---|
 | 0 | 0-rg-ai-agent-platform-bootstrap | AWS account prerequisites — run once per account |
-| 1 | 1-rg-ai-agent-platform-base | VPC, ALB, ECS cluster, security (RDS optional, off by default) |
+| 1 | 1-rg-ai-agent-platform-base | VPC, ALB, ECS cluster (`${PROJECT_NAME}-${ENVIRONMENT}-ecs`), security (RDS optional, off by default) |
 | 2 | 2-rg-ai-agent-platform-orchestrator | Master Orchestrator ECS service |
 | 3 | 3-rg-ai-agent-platform-agent | Single agent node — repeat per agent type |
 

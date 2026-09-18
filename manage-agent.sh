@@ -9,17 +9,47 @@ set -e
 #
 # Usage:
 #   bash manage-agent.sh          — interactive mode (menu)
-#   bash manage-agent.sh add      — add a new agent
+#   bash manage-agent.sh add      — add a new agent (prompts if a TTY is present)
+#   bash manage-agent.sh add <agent_name> --description "..." --yes
+#                                 — headless add (no /dev/tty; for MCP / CI)
 #   bash manage-agent.sh remove   — remove an existing agent
 #   bash manage-agent.sh list     — list ECS-deployed agents; SSM-only configs
 #                                   appear in a separate not-running section
 #   bash manage-agent.sh redeploy <agent_name> — rebuild + push an agent's
 #                                   logic changes (wraps redeploy-agent.sh)
+#
+# ECS cluster name is always ${PROJECT_NAME}-${ENVIRONMENT}-ecs
+# (not ${PROJECT_NAME}-${ENVIRONMENT}).
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
+
+print_add_usage() {
+  cat <<'EOF'
+Usage:
+  bash manage-agent.sh add
+  bash manage-agent.sh add <agent_name> --description "..." --yes
+  bash manage-agent.sh add --agent <name> --description "..." --yes [--rds-sg sg-...]
+
+Headless add (no TTY / MCP): every interactive prompt has a flag or env var.
+  Agent name:        positional <agent_name>, --agent, or AGENT_NAME
+  Description:       --description / --desc, or AGENT_DESCRIPTION / AGENT_DESC
+  Proceed/redeploy:  --yes / -y, or CONFIRM=yes (and REDEPLOY=yes if already deployed)
+  RDS security group: --rds-sg, or RDS_SG_ID (only if auto-detect fails)
+
+Interactive menu is unchanged: bash manage-agent.sh  or  bash manage-agent.sh add
+with no args still prompts when a controlling terminal is available.
+
+Cluster name is ${PROJECT_NAME}-${ENVIRONMENT}-ecs (the -ecs suffix is required).
+EOF
+}
+
+if [ "${1:-}" = "add" ] && { [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; }; then
+  print_add_usage
+  exit 0
+fi
 
 source "$SCRIPT_DIR/redeploy-common.sh"
 
@@ -41,6 +71,7 @@ if [ ! -f "$DEFAULTS_FILE" ]; then
 fi
 
 source "$DEFAULTS_FILE"
+comment_out_obsolete_deployment_role_arn "$DEFAULTS_FILE"
 
 # ------------------------------------------------------------------------------
 # Auto-detect AWS values
@@ -906,7 +937,64 @@ EOF
   echo "    --query 'services[0].[runningCount,deployments[0].rolloutState]' --output text --region $AWS_REGION"
 }
 
+# ------------------------------------------------------------------------------
+# Parse flags/env for add. Full args must work with no TTY (MCP):
+#   bash manage-agent.sh add <agent> --description "..." --yes
+# ------------------------------------------------------------------------------
+parse_add_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --agent)
+        [ -n "${2:-}" ] || { echo "ERROR: --agent requires a value."; exit 1; }
+        AGENT_NAME="$2"
+        shift 2
+        ;;
+      --description|--desc)
+        [ -n "${2:-}" ] || { echo "ERROR: --description requires a value."; exit 1; }
+        AGENT_DESC="$2"
+        shift 2
+        ;;
+      --yes|-y)
+        MANAGE_AGENT_YES=1
+        CONFIRM=yes
+        REDEPLOY=yes
+        shift
+        ;;
+      --rds-sg)
+        [ -n "${2:-}" ] || { echo "ERROR: --rds-sg requires a value."; exit 1; }
+        RDS_SG_ID="$2"
+        shift 2
+        ;;
+      --help|-h)
+        print_add_usage
+        exit 0
+        ;;
+      --*)
+        echo "Unknown argument: $1"
+        print_add_usage
+        exit 1
+        ;;
+      *)
+        if [ -z "${AGENT_NAME:-}" ]; then
+          AGENT_NAME="$1"
+        else
+          echo "Unexpected argument: $1"
+          print_add_usage
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [ -z "${AGENT_DESC:-}" ] && [ -n "${AGENT_DESCRIPTION:-}" ]; then
+    AGENT_DESC="$AGENT_DESCRIPTION"
+  fi
+}
+
 add_agent() {
+  parse_add_args "$@"
+
   echo "=================================================="
   echo " Add New Agent"
   echo "=================================================="
@@ -914,12 +1002,28 @@ add_agent() {
 
   list_deployed_agents
 
-  read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
-  AGENT_DESC=""
-  while [ -z "$AGENT_DESC" ]; do
-    read -p "Agent description (required — e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
-    [ -z "$AGENT_DESC" ] && echo "  ✗ Description cannot be empty."
-  done
+  if [ -z "${AGENT_NAME:-}" ]; then
+    if have_controlling_tty; then
+      read -p "Agent name (lowercase, hyphens only, e.g. researcher): " AGENT_NAME < /dev/tty
+    else
+      echo "ERROR: agent name is required without a TTY."
+      print_add_usage
+      exit 1
+    fi
+  fi
+
+  if [ -z "${AGENT_DESC:-}" ]; then
+    if have_controlling_tty; then
+      while [ -z "${AGENT_DESC:-}" ]; do
+        read -p "Agent description (required — e.g. 'Researches contacts using external APIs'): " AGENT_DESC < /dev/tty
+        [ -z "$AGENT_DESC" ] && echo "  ✗ Description cannot be empty."
+      done
+    else
+      echo "ERROR: --description is required without a TTY."
+      print_add_usage
+      exit 1
+    fi
+  fi
 
   # ----------------------------------------------------------------------
   # Credentials are NOT collected at creation time. Agents are always
@@ -977,10 +1081,18 @@ add_agent() {
 
   if [ "$EXISTING_SERVICE" = "ACTIVE" ]; then
     echo "WARNING: Agent '$AGENT_NAME' is already deployed."
-    read -p "Do you want to redeploy it? (yes/no): " REDEPLOY < /dev/tty
-    if [ "$REDEPLOY" != "yes" ]; then
-      echo "Cancelled."
-      exit 0
+    if [ "${MANAGE_AGENT_YES:-}" = "1" ] || [ "${REDEPLOY:-}" = "yes" ]; then
+      echo "Redeploying (--yes / REDEPLOY=yes)."
+    elif have_controlling_tty; then
+      read -p "Do you want to redeploy it? (yes/no): " REDEPLOY < /dev/tty
+      if [ "$REDEPLOY" != "yes" ]; then
+        echo "Cancelled."
+        exit 0
+      fi
+    else
+      echo "ERROR: Agent '$AGENT_NAME' is already deployed and no TTY is available."
+      echo "Re-run with --yes (or REDEPLOY=yes) to redeploy."
+      exit 1
     fi
   fi
 
@@ -991,11 +1103,20 @@ add_agent() {
   echo "  Description:     $AGENT_DESC"
   echo "  External egress: $ENABLE_EXTERNAL"
   echo "  Image:           $ECR_IMAGE"
+  echo "  Cluster:         ${PROJECT_NAME}-${ENVIRONMENT}-ecs"
   echo ""
-  read -p "Proceed? (yes/no): " CONFIRM < /dev/tty
-  if [ "$CONFIRM" != "yes" ]; then
-    echo "Cancelled."
-    exit 0
+  if [ "${MANAGE_AGENT_YES:-}" = "1" ] || [ "${CONFIRM:-}" = "yes" ]; then
+    echo "Proceeding (--yes / CONFIRM=yes)."
+  elif have_controlling_tty; then
+    read -p "Proceed? (yes/no): " CONFIRM < /dev/tty
+    if [ "$CONFIRM" != "yes" ]; then
+      echo "Cancelled."
+      exit 0
+    fi
+  else
+    echo "ERROR: Pass --yes or CONFIRM=yes to proceed without a TTY."
+    print_add_usage
+    exit 1
   fi
 
   cd "$AGENT_DIR"
@@ -1044,6 +1165,11 @@ region         = "$AWS_REGION"
 dynamodb_table = "$LOCK_TABLE"
 encrypt        = true
 EOF
+
+  if [ "${MANAGE_AGENT_DRY_RUN:-}" = "1" ]; then
+    echo "DRY RUN: wrote prod.tfvars and backend.hcl; skipping CodeBuild / terraform apply."
+    exit 0
+  fi
 
   # Build and push image (via CodeBuild — no local Docker required)
   echo ""
@@ -1318,7 +1444,7 @@ if [ -z "$ACTION" ]; then
 fi
 
 case $ACTION in
-  add)      add_agent ;;
+  add)      add_agent "${@:2}" ;;
   remove)   remove_agent ;;
   list)     list_deployed_agents ;;
   secret)   secret_agent "${2:-}" "${3:-}" ;;
@@ -1326,6 +1452,7 @@ case $ACTION in
   redeploy) redeploy_agent_menu "${2:-}" ;;
   *)
     echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|secret list|describe <agent_name>|redeploy <agent_name>]"
+    echo "       bash manage-agent.sh add <agent_name> --description \"...\" --yes"
     exit 1
     ;;
 esac

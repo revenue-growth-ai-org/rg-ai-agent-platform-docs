@@ -53,7 +53,9 @@ schedule. This path:
 - VPC interface endpoints for ECR, SSM, Secrets Manager, CloudWatch (no internet required for AWS API calls)
 
 ### Compute layer (Steps 2 and 3)
-- ECS Fargate cluster — all services run serverless, no EC2 to manage
+- ECS Fargate cluster named `${PROJECT_NAME}-${ENVIRONMENT}-ecs` (the `-ecs`
+  suffix is required — the cluster is not `${PROJECT_NAME}-${ENVIRONMENT}`) —
+  all services run serverless, no EC2 to manage
 - Master Orchestrator: always-on, handles all inbound webhook traffic
 - Agent nodes: isolated ECS services, one per agent type
 - Each agent has its own IAM role and security group — zero shared permissions

@@ -315,9 +315,16 @@ build_tag_push_and_verify() {
     echo "  $NEW_DIGEST"
     echo "This usually means either there were no code changes, or the build silently"
     echo "reused a cached layer instead of picking up your changes."
-    read -p "Continue and force a new ECS deployment anyway? (yes/no): " DIGEST_CONFIRM < /dev/tty
-    if [ "$DIGEST_CONFIRM" != "yes" ]; then
-      echo "Aborted. Nothing has been deployed."
+    if [ "${MANAGE_AGENT_YES:-}" = "1" ]; then
+      echo "  Continuing despite identical digest (--yes / MANAGE_AGENT_YES=1)."
+    elif have_controlling_tty; then
+      read -p "Continue and force a new ECS deployment anyway? (yes/no): " DIGEST_CONFIRM < /dev/tty
+      if [ "$DIGEST_CONFIRM" != "yes" ]; then
+        echo "Aborted. Nothing has been deployed."
+        exit 1
+      fi
+    else
+      echo "ERROR: identical digest and no TTY. Re-run with --yes to continue."
       exit 1
     fi
   else
@@ -515,9 +522,46 @@ lookup_rds_sg_id() {
 }
 
 # ------------------------------------------------------------------------------
+# TTY helper — scripts that must also run headless (MCP, CI) should prompt
+# only when a controlling terminal exists, and fail with a flag/env hint
+# otherwise. Never open /dev/tty unless this returns 0.
+# ------------------------------------------------------------------------------
+have_controlling_tty() {
+  # /dev/tty exists as a device node even without a controlling terminal;
+  # opening it is the real test. A subshell keeps the redirect off the caller.
+  ( exec <> /dev/tty ) 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# Leftover DEPLOYMENT_ROLE_ARN in defaults.env is unused (terraform-deploy
+# role deleted; no script reads the variable). Comment the assignment out
+# in-place so operators and MCP do not treat it as live config.
+# ------------------------------------------------------------------------------
+comment_out_obsolete_deployment_role_arn() {
+  local defaults_file="${1:-}"
+  [ -n "$defaults_file" ] && [ -f "$defaults_file" ] || return 0
+  grep -qE '^[[:space:]]*DEPLOYMENT_ROLE_ARN=' "$defaults_file" || return 0
+
+  local tmp
+  tmp=$(mktemp)
+  awk '
+    /^[[:space:]]*DEPLOYMENT_ROLE_ARN=/ && !done {
+      print "# OBSOLETE — terraform-deploy role deleted; no script reads this. Was:"
+      print "# " $0
+      done = 1
+      next
+    }
+    { print }
+  ' "$defaults_file" > "$tmp" && mv "$tmp" "$defaults_file"
+  unset DEPLOYMENT_ROLE_ARN
+  echo "Note: commented out obsolete DEPLOYMENT_ROLE_ARN in $defaults_file (unused)."
+}
+
+# ------------------------------------------------------------------------------
 # Resolve RDS_SG_ID for an agent's prod.tfvars (manage-agent.sh, manage-scan.sh)
 # ------------------------------------------------------------------------------
 # Sets the global RDS_SG_ID. Resolution order:
+#   0. A valid RDS_SG_ID already set (flag / env) — never overwrite it
 #   1. SSM parameter /<project>/<env>/rds_security_group_id (written by base)
 #   2. The group tagged Name=<project>-<env>-rds, via lookup_rds_sg_id above.
 #      That group exists whether or not RDS is enabled, so this is the step
@@ -526,7 +570,8 @@ lookup_rds_sg_id() {
 #      without this step, and stopped to prompt on such deployments.
 #   3. The RDS instance's own security group, for older deployments that still
 #      have one
-#   4. Prompt the operator
+#   4. Prompt the operator when a TTY is available; otherwise fail and ask
+#      for --rds-sg / RDS_SG_ID (headless / MCP must not block on /dev/tty)
 #
 # NEVER writes an invalid value into prod.tfvars: the AWS CLI returns the
 # literal string "None" (not empty) for missing [0] results with --output
@@ -534,6 +579,11 @@ lookup_rds_sg_id() {
 # rds_security_group_id = "None" — failing terraform validation. Every path
 # here is gated on a ^sg- format check instead.
 detect_rds_sg() {
+  if [[ "${RDS_SG_ID:-}" =~ ^sg- ]]; then
+    echo "  ✓ RDS security group: $RDS_SG_ID"
+    return 0
+  fi
+
   RDS_SG_ID=$(aws ssm get-parameter \
     --name "/${PROJECT_NAME}/${ENVIRONMENT}/rds_security_group_id" \
     --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
@@ -555,7 +605,12 @@ detect_rds_sg() {
     echo "Find it manually with:"
     echo "  aws ec2 describe-security-groups --filters Name=tag:Name,Values=${PROJECT_NAME}-${ENVIRONMENT}-rds \\"
     echo "    --query 'SecurityGroups[].GroupId' --output text --region ${AWS_REGION}"
-    read -p "Enter the RDS security group ID (sg-...): " RDS_SG_ID < /dev/tty
+    if have_controlling_tty; then
+      read -p "Enter the RDS security group ID (sg-...): " RDS_SG_ID < /dev/tty
+    else
+      echo "No TTY available. Pass --rds-sg sg-... or set RDS_SG_ID."
+      exit 1
+    fi
     if [[ ! "$RDS_SG_ID" =~ ^sg- ]]; then
       echo "ERROR: '$RDS_SG_ID' is not a valid security group ID. Aborting before writing prod.tfvars."
       exit 1
