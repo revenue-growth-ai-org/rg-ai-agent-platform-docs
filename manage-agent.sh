@@ -11,7 +11,8 @@ set -e
 #   bash manage-agent.sh          — interactive mode (menu)
 #   bash manage-agent.sh add      — add a new agent
 #   bash manage-agent.sh remove   — remove an existing agent
-#   bash manage-agent.sh list     — list ECS-deployed and SSM-configured agents
+#   bash manage-agent.sh list     — list ECS-deployed agents; SSM-only configs
+#                                   appear in a separate not-running section
 #   bash manage-agent.sh redeploy <agent_name> — rebuild + push an agent's
 #                                   logic changes (wraps redeploy-agent.sh)
 # =============================================================================
@@ -230,10 +231,11 @@ ssm_agent_description() {
 }
 
 # ------------------------------------------------------------------------------
-# List agents — union of live ECS services and SSM configs under
-# /<project>/<env>/agents/. ECS-only agents (e.g. chat with no SSM tree)
-# and SSM-only leftovers (config present, no service) both appear.
-# Orchestrator is excluded from both sources.
+# List agents. The live/deployed list is ECS services only — that is the
+# ops truth. SSM names under /<project>/<env>/agents/ that have no matching
+# ECS service appear in a second "configured · not running" section and
+# are never counted as deployed. An agent in both sources is shown once,
+# in the ECS section. Orchestrator is excluded from both.
 # ------------------------------------------------------------------------------
 
 list_deployed_agents() {
@@ -245,7 +247,7 @@ list_deployed_agents() {
   local AGENTS_SSM_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/agents"
   local WORK SERVICES SERVICE_ARN SERVICE_NAME AGENT_NAME SERVICE_INFO
   local RUNNING TASK_DEF_ARN PARAMS PARAM_NAME DESCRIPTION INTERNAL_URL
-  local AGENT_COUNT ECS_COUNT SSM_COUNT
+  local ECS_COUNT SSM_COUNT
 
   WORK=$(mktemp -d)
 
@@ -280,7 +282,7 @@ list_deployed_agents() {
     TASK_DEF_ARN=$(echo "$SERVICE_INFO" | awk '{print $2}')
     [ -z "$RUNNING" ] && RUNNING="0"
     printf '%s\t%s\n' "$RUNNING" "$TASK_DEF_ARN" > "$WORK/ecs.$AGENT_NAME"
-    echo "$AGENT_NAME" >> "$WORK/names"
+    echo "$AGENT_NAME" >> "$WORK/ecs.names"
   done <<< "$SERVICES"
 
   PARAMS=$(aws ssm get-parameters-by-path \
@@ -299,28 +301,21 @@ list_deployed_agents() {
     if echo "$AGENT_NAME" | grep -q "orchestrator"; then
       continue
     fi
-    echo "$AGENT_NAME" >> "$WORK/names"
-    : > "$WORK/ssm.$AGENT_NAME"
+    # Dual-source agents stay in the ECS section only.
+    if [ -f "$WORK/ecs.$AGENT_NAME" ]; then
+      continue
+    fi
+    echo "$AGENT_NAME" >> "$WORK/ssm.names"
   done <<< "$PARAMS"
 
-  if [ ! -s "$WORK/names" ]; then
-    echo "  No agents found in cluster $CLUSTER_NAME or under ${AGENTS_SSM_PATH}/"
-    echo ""
-    rm -rf "$WORK"
-    return
-  fi
-
-  AGENT_COUNT=0
   ECS_COUNT=0
-  SSM_COUNT=0
-
-  while IFS= read -r AGENT_NAME; do
-    [ -z "$AGENT_NAME" ] && continue
-    DESCRIPTION=""
-    if [ -f "$WORK/ecs.$AGENT_NAME" ]; then
+  if [ -s "$WORK/ecs.names" ]; then
+    while IFS= read -r AGENT_NAME; do
+      [ -z "$AGENT_NAME" ] && continue
       RUNNING=$(awk -F'\t' '{print $1}' "$WORK/ecs.$AGENT_NAME")
       TASK_DEF_ARN=$(awk -F'\t' '{print $2}' "$WORK/ecs.$AGENT_NAME")
       [ -z "$RUNNING" ] && RUNNING="0"
+      DESCRIPTION=""
       if [ -n "$TASK_DEF_ARN" ] && [ "$TASK_DEF_ARN" != "None" ]; then
         DESCRIPTION=$(aws ecs describe-task-definition \
           --task-definition "$TASK_DEF_ARN" \
@@ -337,33 +332,38 @@ list_deployed_agents() {
         echo ""
       } >> "$WORK/out.ecs"
       ECS_COUNT=$((ECS_COUNT+1))
-    else
+    done < <(sort -u "$WORK/ecs.names")
+  fi
+
+  echo "  Deployed (ECS) — ${ECS_COUNT}:"
+  echo ""
+  if [ "$ECS_COUNT" -eq 0 ]; then
+    echo "  No agents deployed yet."
+    echo ""
+  else
+    cat "$WORK/out.ecs"
+  fi
+
+  SSM_COUNT=0
+  if [ -s "$WORK/ssm.names" ]; then
+    while IFS= read -r AGENT_NAME; do
+      [ -z "$AGENT_NAME" ] && continue
       DESCRIPTION=$(ssm_agent_description "$AGENT_NAME")
-      [ -z "$DESCRIPTION" ] || [ "$DESCRIPTION" = "None" ] && DESCRIPTION="(no description set)"
       {
-        echo "  • $AGENT_NAME — no ECS service"
-        echo "      Description: $DESCRIPTION"
-        echo "      URL: n/a"
+        echo "  • $AGENT_NAME"
+        if [ -n "$DESCRIPTION" ] && [ "$DESCRIPTION" != "None" ]; then
+          echo "      Description: $DESCRIPTION"
+        fi
         echo ""
       } >> "$WORK/out.ssm"
       SSM_COUNT=$((SSM_COUNT+1))
-    fi
-    AGENT_COUNT=$((AGENT_COUNT+1))
-  done < <(sort -u "$WORK/names")
+    done < <(sort -u "$WORK/ssm.names")
+  fi
 
-  if [ "$AGENT_COUNT" -eq 0 ]; then
-    echo "  No agents deployed yet."
-  else
-    if [ -s "$WORK/out.ecs" ]; then
-      echo "  Deployed (ECS) — ${ECS_COUNT}:"
-      echo ""
-      cat "$WORK/out.ecs"
-    fi
-    if [ -s "$WORK/out.ssm" ]; then
-      echo "  SSM config only (not deployed) — ${SSM_COUNT}:"
-      echo ""
-      cat "$WORK/out.ssm"
-    fi
+  if [ -s "$WORK/out.ssm" ]; then
+    echo "  Configured · not running (SSM) — ${SSM_COUNT}:"
+    echo ""
+    cat "$WORK/out.ssm"
   fi
 
   rm -rf "$WORK"
