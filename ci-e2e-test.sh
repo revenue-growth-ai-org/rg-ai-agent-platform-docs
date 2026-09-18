@@ -77,6 +77,8 @@ COST_CENTER="ci-testing"
 OWNER="github-actions"
 CRM_TYPE="hubspot"
 ADMIN_IP=""
+# OBSOLETE — terraform-deploy role deleted; no script reads this. Do not set.
+# DEPLOYMENT_ROLE_ARN=
 EOF
 
 echo "  ✓ defaults.env written"

@@ -121,6 +121,13 @@ Fill in the following required values:
 | ALLOWED_CIDR | Your office or VPN IP range that can access the platform | 203.0.113.0/24 |
 | CRM_TYPE | The CRM that sends webhooks: hubspot, salesforce or other | hubspot |
 
+`DEPLOYMENT_ROLE_ARN` is **obsolete** and is not a live setting. The
+`terraform-deploy` role was deleted; no installer or management script reads
+this variable. If an older `defaults.env` still has a `DEPLOYMENT_ROLE_ARN=...`
+assignment, comment it out or delete it (`# DEPLOYMENT_ROLE_ARN=`) so it is
+not mistaken for current config. `install.sh` writes that comment on new
+files; `manage-agent.sh` comments a leftover live line in-place.
+
 To find your current IP address for ALLOWED_CIDR:
 
     curl -s https://checkip.amazonaws.com

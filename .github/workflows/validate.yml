@@ -28,6 +28,7 @@ jobs:
             generate-routing-config.sh
             configure-orchestrator.sh
             manage-agent.sh
+            tests/test-manage-agent-add-nontty.sh
           )
 
           failed=0
@@ -84,3 +85,13 @@ jobs:
           fi
 
           echo "OK: $file has no committed rules."
+
+  manage-agent-add-nontty:
+    name: manage-agent add works without a TTY
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run headless add / cluster-name / obsolete-role checks
+        run: bash tests/test-manage-agent-add-nontty.sh
