@@ -11,6 +11,8 @@ set -e
 #   bash manage-agent.sh          — interactive mode (menu)
 #   bash manage-agent.sh add      — add a new agent
 #   bash manage-agent.sh remove   — remove an existing agent
+#   bash manage-agent.sh list     — list ECS-deployed agents; SSM-only configs
+#                                   appear in a separate not-running section
 #   bash manage-agent.sh redeploy <agent_name> — rebuild + push an agent's
 #                                   logic changes (wraps redeploy-agent.sh)
 # =============================================================================
@@ -206,24 +208,54 @@ apply_with_retry() {
 }
 
 # ------------------------------------------------------------------------------
-# List currently deployed agents
+# Description for an SSM-only agent (no live task definition to read).
+# Tries the conventional per-agent keys; anything else would be a secret or
+# an endpoint, which we must not print as a description.
+# ------------------------------------------------------------------------------
+
+ssm_agent_description() {
+  local AGENT="$1"
+  local KEY DESC
+  for KEY in description agent_description; do
+    DESC=$(aws ssm get-parameter \
+      --name "/${PROJECT_NAME}/${ENVIRONMENT}/agents/${AGENT}/${KEY}" \
+      --query Parameter.Value \
+      --output text \
+      --region "$AWS_REGION" 2>/dev/null || echo "")
+    if [ -n "$DESC" ] && [ "$DESC" != "None" ]; then
+      echo "$DESC"
+      return 0
+    fi
+  done
+  echo ""
+}
+
+# ------------------------------------------------------------------------------
+# List agents. The live/deployed list is ECS services only — that is the
+# ops truth. SSM names under /<project>/<env>/agents/ that have no matching
+# ECS service appear in a second "configured · not running" section and
+# are never counted as deployed. An agent in both sources is shown once,
+# in the ECS section. Orchestrator is excluded from both.
 # ------------------------------------------------------------------------------
 
 list_deployed_agents() {
   echo "Currently deployed agents:"
   echo ""
 
-  CLUSTER_NAME="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
+  local CLUSTER_NAME="${PROJECT_NAME}-${ENVIRONMENT}-ecs"
+  local PREFIX="${PROJECT_NAME}-${ENVIRONMENT}-"
+  local AGENTS_SSM_PATH="/${PROJECT_NAME}/${ENVIRONMENT}/agents"
+  local WORK SERVICES SERVICE_ARN SERVICE_NAME AGENT_NAME SERVICE_INFO
+  local RUNNING TASK_DEF_ARN PARAMS PARAM_NAME DESCRIPTION INTERNAL_URL
+  local ECS_COUNT SSM_COUNT
+
+  WORK=$(mktemp -d)
+
   SERVICES=$(aws ecs list-services \
     --cluster "$CLUSTER_NAME" \
     --query 'serviceArns[]' \
     --output text \
     --region "$AWS_REGION" 2>/dev/null || echo "")
-
-  if [ -z "$SERVICES" ]; then
-    echo "  No agents found in cluster $CLUSTER_NAME"
-    return
-  fi
 
   # aws --output text joins multiple values with tabs on a single line, not
   # newlines. Convert to one ARN per line so the while-read loop below
@@ -232,14 +264,14 @@ list_deployed_agents() {
   # service to be recognized).
   SERVICES=$(echo "$SERVICES" | tr '\t' '\n')
 
-  # Filter out orchestrator, show only agents
-  AGENT_COUNT=0
   while IFS= read -r SERVICE_ARN; do
+    [ -z "$SERVICE_ARN" ] && continue
     SERVICE_NAME=$(echo "$SERVICE_ARN" | awk -F'/' '{print $NF}')
     if echo "$SERVICE_NAME" | grep -q "orchestrator"; then
       continue
     fi
-    AGENT_NAME=$(echo "$SERVICE_NAME" | sed "s/${PROJECT_NAME}-${ENVIRONMENT}-//")
+    AGENT_NAME=$(echo "$SERVICE_NAME" | sed "s/${PREFIX}//")
+    [ -z "$AGENT_NAME" ] && continue
     SERVICE_INFO=$(aws ecs describe-services \
       --cluster "$CLUSTER_NAME" \
       --services "$SERVICE_NAME" \
@@ -249,26 +281,92 @@ list_deployed_agents() {
     RUNNING=$(echo "$SERVICE_INFO" | awk '{print $1}')
     TASK_DEF_ARN=$(echo "$SERVICE_INFO" | awk '{print $2}')
     [ -z "$RUNNING" ] && RUNNING="0"
-    DESCRIPTION=""
-    if [ -n "$TASK_DEF_ARN" ]; then
-      DESCRIPTION=$(aws ecs describe-task-definition \
-        --task-definition "$TASK_DEF_ARN" \
-        --query "taskDefinition.containerDefinitions[0].environment[?name=='AGENT_DESCRIPTION'].value | [0]" \
-        --output text \
-        --region "$AWS_REGION" 2>/dev/null || echo "")
-    fi
-    [ -z "$DESCRIPTION" ] || [ "$DESCRIPTION" = "None" ] && DESCRIPTION="(no description set)"
-    INTERNAL_URL="http://${AGENT_NAME}.${PROJECT_NAME}-${ENVIRONMENT}.internal/execute"
-    echo "  • $AGENT_NAME — $RUNNING task(s) running"
-    echo "      Description: $DESCRIPTION"
-    echo "      URL: $INTERNAL_URL"
-    AGENT_COUNT=$((AGENT_COUNT+1))
+    printf '%s\t%s\n' "$RUNNING" "$TASK_DEF_ARN" > "$WORK/ecs.$AGENT_NAME"
+    echo "$AGENT_NAME" >> "$WORK/ecs.names"
   done <<< "$SERVICES"
 
-  if [ "$AGENT_COUNT" -eq 0 ]; then
-    echo "  No agents deployed yet."
+  PARAMS=$(aws ssm get-parameters-by-path \
+    --path "$AGENTS_SSM_PATH" \
+    --recursive \
+    --query 'Parameters[].Name' \
+    --output text \
+    --region "$AWS_REGION" 2>/dev/null || echo "")
+  PARAMS=$(echo "$PARAMS" | tr '\t' '\n')
+
+  while IFS= read -r PARAM_NAME; do
+    [ -z "$PARAM_NAME" ] && continue
+    # /<project>/<env>/agents/<agent>/...
+    AGENT_NAME=$(echo "$PARAM_NAME" | awk -F'/' '{print $5}')
+    [ -z "$AGENT_NAME" ] && continue
+    if echo "$AGENT_NAME" | grep -q "orchestrator"; then
+      continue
+    fi
+    # Dual-source agents stay in the ECS section only.
+    if [ -f "$WORK/ecs.$AGENT_NAME" ]; then
+      continue
+    fi
+    echo "$AGENT_NAME" >> "$WORK/ssm.names"
+  done <<< "$PARAMS"
+
+  ECS_COUNT=0
+  if [ -s "$WORK/ecs.names" ]; then
+    while IFS= read -r AGENT_NAME; do
+      [ -z "$AGENT_NAME" ] && continue
+      RUNNING=$(awk -F'\t' '{print $1}' "$WORK/ecs.$AGENT_NAME")
+      TASK_DEF_ARN=$(awk -F'\t' '{print $2}' "$WORK/ecs.$AGENT_NAME")
+      [ -z "$RUNNING" ] && RUNNING="0"
+      DESCRIPTION=""
+      if [ -n "$TASK_DEF_ARN" ] && [ "$TASK_DEF_ARN" != "None" ]; then
+        DESCRIPTION=$(aws ecs describe-task-definition \
+          --task-definition "$TASK_DEF_ARN" \
+          --query "taskDefinition.containerDefinitions[0].environment[?name=='AGENT_DESCRIPTION'].value | [0]" \
+          --output text \
+          --region "$AWS_REGION" 2>/dev/null || echo "")
+      fi
+      [ -z "$DESCRIPTION" ] || [ "$DESCRIPTION" = "None" ] && DESCRIPTION="(no description set)"
+      INTERNAL_URL="http://${AGENT_NAME}.${PROJECT_NAME}-${ENVIRONMENT}.internal/execute"
+      {
+        echo "  • $AGENT_NAME — $RUNNING task(s) running"
+        echo "      Description: $DESCRIPTION"
+        echo "      URL: $INTERNAL_URL"
+        echo ""
+      } >> "$WORK/out.ecs"
+      ECS_COUNT=$((ECS_COUNT+1))
+    done < <(sort -u "$WORK/ecs.names")
   fi
+
+  echo "  Deployed (ECS) — ${ECS_COUNT}:"
   echo ""
+  if [ "$ECS_COUNT" -eq 0 ]; then
+    echo "  No agents deployed yet."
+    echo ""
+  else
+    cat "$WORK/out.ecs"
+  fi
+
+  SSM_COUNT=0
+  if [ -s "$WORK/ssm.names" ]; then
+    while IFS= read -r AGENT_NAME; do
+      [ -z "$AGENT_NAME" ] && continue
+      DESCRIPTION=$(ssm_agent_description "$AGENT_NAME")
+      {
+        echo "  • $AGENT_NAME"
+        if [ -n "$DESCRIPTION" ] && [ "$DESCRIPTION" != "None" ]; then
+          echo "      Description: $DESCRIPTION"
+        fi
+        echo ""
+      } >> "$WORK/out.ssm"
+      SSM_COUNT=$((SSM_COUNT+1))
+    done < <(sort -u "$WORK/ssm.names")
+  fi
+
+  if [ -s "$WORK/out.ssm" ]; then
+    echo "  Configured · not running (SSM) — ${SSM_COUNT}:"
+    echo ""
+    cat "$WORK/out.ssm"
+  fi
+
+  rm -rf "$WORK"
 }
 
 # ------------------------------------------------------------------------------
