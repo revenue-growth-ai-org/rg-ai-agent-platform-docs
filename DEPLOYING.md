@@ -248,6 +248,12 @@ to type the agent name to confirm, then destroys all associated resources cleanl
     cd rg-ai-agent-platform-docs
     bash manage-agent.sh list
 
+Prints the union of live ECS agent services (orchestrator excluded) and
+agent names configured under `/{project}/{environment}/agents/` in SSM.
+ECS-deployed agents show running-task count, task-definition description,
+and internal URL. SSM-only names (config present, no service) are grouped
+separately and marked as not deployed.
+
 ### Interactive mode
 
     cd rg-ai-agent-platform-docs
