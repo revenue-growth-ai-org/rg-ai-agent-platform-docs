@@ -17,6 +17,20 @@ set -e
 #   --project      Project name (overrides PROJECT_NAME from defaults.env)
 #   --environment  Environment name (overrides ENVIRONMENT from defaults.env)
 #   --region       AWS region (overrides AWS_REGION from defaults.env)
+#
+# Headless (no TTY / MCP / CI): the interactive per-agent prompt loop below
+# reads from /dev/tty, which doesn't exist on a shared MCP host. Skip it by
+# supplying the routing rules directly instead of answering prompts:
+#   --rules-json <json>   or RULES_JSON env var — a JSON array of rule
+#                          objects: [{"event_type":"...", "agents":["..."],
+#                          "match_field":"...", "match_value":"..."}, ...]
+#                          ("match_field"/"match_value" optional per rule)
+#   --yes / -y             or YES=1 env var — skip the overwrite confirmation
+#                          for system_prompt.txt / routing_config.json
+#
+# Example:
+#   RULES_JSON='[{"event_type":"contact.created","agents":["csm-call-prep"]}]' \
+#     bash generate-routing-config.sh --yes
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +49,8 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 PROJECT_OVERRIDE=""
 ENVIRONMENT_OVERRIDE=""
 REGION_OVERRIDE=""
+RULES_JSON="${RULES_JSON:-}"
+YES="${YES:-}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -50,9 +66,17 @@ while [[ $# -gt 0 ]]; do
       REGION_OVERRIDE="$2"
       shift 2
       ;;
+    --rules-json)
+      RULES_JSON="$2"
+      shift 2
+      ;;
+    --yes|-y)
+      YES=1
+      shift
+      ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: bash generate-routing-config.sh [--project <name>] [--environment <env>] [--region <region>]"
+      echo "Usage: bash generate-routing-config.sh [--project <name>] [--environment <env>] [--region <region>] [--rules-json <json>] [--yes]"
       exit 1
       ;;
   esac
@@ -221,6 +245,30 @@ else:
 # Interactively build routing rules — one prompt per deployed agent
 # ------------------------------------------------------------------------------
 
+if [ -n "$RULES_JSON" ]; then
+  echo "Headless mode: using rules from --rules-json / RULES_JSON (no prompts)."
+  echo ""
+
+  RULES_JSON=$(RULES_JSON="$RULES_JSON" DEPLOYED_AGENTS_CSV="$(IFS=,; echo "${DEPLOYED_AGENTS[*]}")" python3 -c "
+import json, os, sys
+
+rules = json.loads(os.environ['RULES_JSON'])
+if not isinstance(rules, list):
+    sys.exit('ERROR: --rules-json / RULES_JSON must be a JSON array of rule objects.')
+
+deployed = set(os.environ['DEPLOYED_AGENTS_CSV'].split(','))
+for rule in rules:
+    if 'event_type' not in rule or 'agents' not in rule:
+        sys.exit('ERROR: each rule needs \"event_type\" and \"agents\".')
+    unknown = [a for a in rule['agents'] if a not in deployed]
+    if unknown:
+        sys.exit('ERROR: rule references agent(s) not currently deployed: %s (deployed: %s)' % (unknown, sorted(deployed)))
+    rule.setdefault('description', 'Route %s events to %s.' % (rule['event_type'], ', '.join(rule['agents'])))
+
+print(json.dumps(rules))
+")
+else
+
 echo "For each deployed agent, choose the event_type it should handle."
 echo "Press Enter to accept the suggested default. For conditional routing,"
 echo "provide a match_field; press Enter at that prompt to skip and route the"
@@ -288,6 +336,8 @@ print(json.dumps(rules))
 
   echo ""
 done
+
+fi
 
 NEW_ROUTING_JSON=$(RULES_JSON="$RULES_JSON" python3 -c "
 import json, os
@@ -364,7 +414,12 @@ confirm_and_write() {
     echo ""
     diff -u "$target_path" "$new_content_path" || true
     echo ""
-    read -p "Overwrite $target_path with the version above? (y/N): " CONFIRM < /dev/tty
+    if [ -n "$YES" ]; then
+      echo "Overwriting (--yes / YES=1)."
+      CONFIRM="y"
+    else
+      read -p "Overwrite $target_path with the version above? (y/N): " CONFIRM < /dev/tty
+    fi
     if [ "$CONFIRM" != "y" ]; then
       echo "Skipped: $target_path was not changed."
       return 1
