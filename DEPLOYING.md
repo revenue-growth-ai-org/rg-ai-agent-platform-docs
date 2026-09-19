@@ -310,6 +310,22 @@ An agent with one or more credentials automatically gets external
 internet egress enabled; an agent with zero credentials keeps egress
 disabled. This is automatic — there's no separate question for it.
 
+Headless / MCP (no TTY) — attach an *already-existing* Secrets Manager
+secret without prompting and without passing the secret value on the CLI:
+
+    bash manage-agent.sh secret <agent_name> add \
+      --secret-name <name> --attach-existing --yes
+
+Equivalent env form: `SECRET_NAME=<name>` and `ATTACH_EXISTING=1`.
+`--yes` is optional; `--attach-existing` already means reuse the stored
+value. The shared secret name is `${PROJECT_NAME}-${ENVIRONMENT}-<name>`
+(store-once). If that secret is missing, the command exits non-zero and
+does **not** create one. There is no headless path that accepts a raw
+secret value via flags or environment variables — MCP should call the
+flag form so the value never appears in tool args. Interactive `secret
+<agent> add` (no `--attach-existing`) is unchanged when a terminal is
+available. `bash manage-agent.sh secret --help` prints the full flag list.
+
 ### Remove a credential from an agent
 
     cd rg-ai-agent-platform-docs

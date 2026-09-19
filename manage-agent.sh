@@ -17,6 +17,11 @@ set -e
 #                                   appear in a separate not-running section
 #   bash manage-agent.sh redeploy <agent_name> — rebuild + push an agent's
 #                                   logic changes (wraps redeploy-agent.sh)
+#   bash manage-agent.sh secret <agent_name> add --secret-name <name> \
+#                                   --attach-existing [--yes]
+#                                 — headless attach of an already-existing
+#                                   Secrets Manager secret (no /dev/tty;
+#                                   never accepts the secret value on CLI)
 #
 # ECS cluster name is always ${PROJECT_NAME}-${ENVIRONMENT}-ecs
 # (not ${PROJECT_NAME}-${ENVIRONMENT}).
@@ -46,8 +51,43 @@ Cluster name is ${PROJECT_NAME}-${ENVIRONMENT}-ecs (the -ecs suffix is required)
 EOF
 }
 
+print_secret_usage() {
+  cat <<'EOF'
+Usage:
+  bash manage-agent.sh secret <agent_name> add
+  bash manage-agent.sh secret <agent_name> add --secret-name <name> --attach-existing [--yes]
+  bash manage-agent.sh secret <agent_name> remove
+  bash manage-agent.sh secret list
+
+Headless attach-existing (no TTY / MCP): reuse a secret already in Secrets
+Manager. The stored value is never read, written, or accepted on the CLI.
+  Credential name:   --secret-name, or SECRET_NAME
+  Attach existing:   --attach-existing, or ATTACH_EXISTING=1
+  Proceed:           --yes / -y (optional; attach-existing already means reuse)
+  RDS security group: --rds-sg, or RDS_SG_ID (only if auto-detect fails)
+
+MCP should call the flag form so the secret *value* never appears in tool args:
+  bash manage-agent.sh secret <agent_name> add --secret-name hubspot --attach-existing --yes
+
+If ${PROJECT_NAME}-${ENVIRONMENT}-<name> is missing, attach-existing exits
+non-zero and refuses to create a secret. There is no headless path that
+accepts a raw secret value via flags or environment variables.
+
+Interactive `bash manage-agent.sh secret <agent_name> add` (no attach-existing)
+still prompts on a controlling terminal — name, reuse/update/abort, and value.
+
+Equivalent env form:
+  ATTACH_EXISTING=1 SECRET_NAME=hubspot bash manage-agent.sh secret <agent_name> add
+EOF
+}
+
 if [ "${1:-}" = "add" ] && { [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; }; then
   print_add_usage
+  exit 0
+fi
+
+if [ "${1:-}" = "secret" ] && { [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; }; then
+  print_secret_usage
   exit 0
 fi
 
@@ -512,8 +552,15 @@ secrets_list() {
 # rebuild, no CodeBuild round trip. Terraform + Secrets Manager only.
 #
 #   bash manage-agent.sh secret <agent_name> add
+#   bash manage-agent.sh secret <agent_name> add --secret-name <name> --attach-existing [--yes]
 #   bash manage-agent.sh secret <agent_name> remove
 #   bash manage-agent.sh secret list
+#
+# Headless attach-existing (MCP / CI — no /dev/tty, no secret value on CLI):
+#   --secret-name / SECRET_NAME plus --attach-existing / ATTACH_EXISTING=1
+#   If the SM secret exists: reuse/attach (choice 1); value is not changed.
+#   If it does not exist: exit non-zero; refuse to create. There is no
+#   headless path that accepts a raw secret value via flags or env.
 #
 # STORAGE MODEL (store-once / grant-per-agent):
 #   Credentials are stored ONCE per account under the shared name
@@ -530,11 +577,72 @@ secrets_list() {
 #   - Detach NEVER deletes the stored secret (shared naming would destroy
 #     it for every other referencing agent at runtime). Zero-reference
 #     orphans are surfaced by `secret list` with an explicit delete command.
+#   - Attach-existing NEVER creates a secret and NEVER reads a value from
+#     flags/env (keeps credentials out of MCP / Claude tool args).
 # ------------------------------------------------------------------------------
 
+# ATTACH_EXISTING=1 or --attach-existing. Accept yes/true as aliases of 1.
+attach_existing_requested() {
+  case "${ATTACH_EXISTING:-}" in
+    1|yes|true|YES|TRUE) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Parse flags/env for secret add|remove. Attach-existing must work with no TTY
+# (MCP): name + attach-existing only — never a secret value.
+parse_secret_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --secret-name)
+        [ -n "${2:-}" ] || { echo "ERROR: --secret-name requires a value."; exit 1; }
+        SECRET_NAME="$2"
+        shift 2
+        ;;
+      --attach-existing)
+        ATTACH_EXISTING=1
+        shift
+        ;;
+      --yes|-y)
+        MANAGE_AGENT_YES=1
+        shift
+        ;;
+      --rds-sg)
+        [ -n "${2:-}" ] || { echo "ERROR: --rds-sg requires a value."; exit 1; }
+        RDS_SG_ID="$2"
+        shift 2
+        ;;
+      --help|-h)
+        print_secret_usage
+        exit 0
+        ;;
+      --*)
+        echo "Unknown argument: $1"
+        print_secret_usage
+        exit 1
+        ;;
+      *)
+        if [ -z "${SECRET_AGENT_POS:-}" ]; then
+          SECRET_AGENT_POS="$1"
+        elif [ -z "${SECRET_ACTION:-}" ]; then
+          SECRET_ACTION="$1"
+        else
+          echo "Unexpected argument: $1"
+          print_secret_usage
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+}
+
 secret_agent() {
-  local AGENT_NAME="$1"
-  local SECRET_ACTION="$2"
+  SECRET_AGENT_POS=""
+  SECRET_ACTION=""
+  parse_secret_args "$@"
+
+  local AGENT_NAME="${SECRET_AGENT_POS:-}"
 
   if [ "$AGENT_NAME" = "list" ] && [ -z "$SECRET_ACTION" ]; then
     secrets_list
@@ -543,7 +651,9 @@ secret_agent() {
 
   if [ -z "$AGENT_NAME" ] || { [ "$SECRET_ACTION" != "add" ] && [ "$SECRET_ACTION" != "remove" ]; }; then
     echo "Usage: bash manage-agent.sh secret <agent_name> add|remove"
+    echo "       bash manage-agent.sh secret <agent_name> add --secret-name <name> --attach-existing [--yes]"
     echo "       bash manage-agent.sh secret list"
+    print_secret_usage
     exit 1
   fi
 
@@ -580,7 +690,21 @@ secret_agent() {
   echo ""
 
   if [ "$SECRET_ACTION" = "add" ]; then
-    read -p "Credential name (e.g. hubspot, zoom): " SECRET_NAME < /dev/tty
+    if [ -z "${SECRET_NAME:-}" ]; then
+      if attach_existing_requested; then
+        echo "ERROR: --secret-name (or SECRET_NAME) is required with --attach-existing."
+        print_secret_usage
+        exit 1
+      elif have_controlling_tty; then
+        read -p "Credential name (e.g. hubspot, zoom): " SECRET_NAME < /dev/tty
+      else
+        echo "ERROR: credential name is required without a TTY."
+        echo "Headless secret add only attaches an already-existing Secrets Manager secret."
+        print_secret_usage
+        exit 1
+      fi
+    fi
+
     if ! echo "$SECRET_NAME" | grep -Eq '^[a-z0-9_-]+$'; then
       echo "ERROR: Use lowercase letters, digits, hyphens, underscores only."
       exit 1
@@ -603,80 +727,107 @@ secret_agent() {
       else
         echo "Currently referenced by: (no agents)"
       fi
-      echo ""
-      echo "  1) Attach the EXISTING stored value to '$AGENT_NAME' (default)"
-      echo "  2) UPDATE the stored value (affects every referencing agent)"
-      echo "  3) Abort"
-      read -p "Choose (1-3) [1]: " EXIST_CHOICE < /dev/tty
-      EXIST_CHOICE="${EXIST_CHOICE:-1}"
 
-      case "$EXIST_CHOICE" in
-        1)
-          SECRET_ARN="$EXISTING_ARN"
-          echo "  ✓ Reusing existing secret (value untouched): $FULL_SECRET_NAME"
-          ;;
-        2)
-          echo ""
-          echo "  ⚠ This REPLACES the stored value for EVERY agent listed above."
-          echo "  Each will pick up the new value at its next task start."
-          read -p "  Type the credential name ('$SECRET_NAME') to confirm the update: " UPDATE_CONFIRM < /dev/tty
-          if [ "$UPDATE_CONFIRM" != "$SECRET_NAME" ]; then
-            echo "Confirmation did not match. Nothing changed."
+      if attach_existing_requested; then
+        # Headless / MCP: force reuse (choice 1). Do not prompt; do not change the value.
+        SECRET_ARN="$EXISTING_ARN"
+        echo "  Attach-existing: reusing stored value (not prompting, value untouched)."
+        echo "  ✓ Reusing existing secret (value untouched): $FULL_SECRET_NAME"
+      elif have_controlling_tty; then
+        echo ""
+        echo "  1) Attach the EXISTING stored value to '$AGENT_NAME' (default)"
+        echo "  2) UPDATE the stored value (affects every referencing agent)"
+        echo "  3) Abort"
+        read -p "Choose (1-3) [1]: " EXIST_CHOICE < /dev/tty
+        EXIST_CHOICE="${EXIST_CHOICE:-1}"
+
+        case "$EXIST_CHOICE" in
+          1)
+            SECRET_ARN="$EXISTING_ARN"
+            echo "  ✓ Reusing existing secret (value untouched): $FULL_SECRET_NAME"
+            ;;
+          2)
+            echo ""
+            echo "  ⚠ This REPLACES the stored value for EVERY agent listed above."
+            echo "  Each will pick up the new value at its next task start."
+            read -p "  Type the credential name ('$SECRET_NAME') to confirm the update: " UPDATE_CONFIRM < /dev/tty
+            if [ "$UPDATE_CONFIRM" != "$SECRET_NAME" ]; then
+              echo "Confirmation did not match. Nothing changed."
+              exit 0
+            fi
+            echo "  Single API tokens: paste the token as-is."
+            echo "  Multi-field credentials: paste a JSON object."
+            echo "  TIP: validate first with: bash test-api-credential.sh"
+            read -s -p "  New value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
+            echo ""
+            if [ -z "$SECRET_VALUE" ]; then
+              echo "ERROR: Empty value. Nothing changed."
+              exit 1
+            fi
+            aws secretsmanager put-secret-value \
+              --secret-id "$FULL_SECRET_NAME" \
+              --secret-string "$SECRET_VALUE" \
+              --region "$AWS_REGION" > /dev/null
+            SECRET_ARN="$EXISTING_ARN"
+            echo "  ✓ Value updated: $FULL_SECRET_NAME"
+            ;;
+          *)
+            echo "Aborted. Nothing changed."
             exit 0
-          fi
-          echo "  Single API tokens: paste the token as-is."
-          echo "  Multi-field credentials: paste a JSON object."
-          echo "  TIP: validate first with: bash test-api-credential.sh"
-          read -s -p "  New value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
-          echo ""
-          if [ -z "$SECRET_VALUE" ]; then
-            echo "ERROR: Empty value. Nothing changed."
-            exit 1
-          fi
-          aws secretsmanager put-secret-value \
-            --secret-id "$FULL_SECRET_NAME" \
-            --secret-string "$SECRET_VALUE" \
-            --region "$AWS_REGION" > /dev/null
-          SECRET_ARN="$EXISTING_ARN"
-          echo "  ✓ Value updated: $FULL_SECRET_NAME"
-          ;;
-        *)
-          echo "Aborted. Nothing changed."
-          exit 0
-          ;;
-      esac
+            ;;
+        esac
+      else
+        echo "ERROR: Secret already exists and no TTY is available."
+        echo "Re-run with --attach-existing to reuse the stored value without prompting."
+        echo "Secret values are never accepted via flags or environment variables."
+        exit 1
+      fi
     else
-      # ---- Secret does not exist yet: create it.
-      echo "  Single API tokens: paste the token as-is."
-      echo "  Multi-field credentials: paste a JSON object, e.g."
-      echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
-      echo "  TIP: validate first with: bash test-api-credential.sh"
-      read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
-      echo ""
-      if [ -z "$SECRET_VALUE" ]; then
-        echo "ERROR: Empty value."
+      # ---- Secret does not exist yet.
+      if attach_existing_requested; then
+        echo "ERROR: Attach-existing was requested but Secrets Manager has no secret named '$FULL_SECRET_NAME'."
+        echo "Refusing to create a new secret in attach-existing mode."
+        echo "Secret values are never accepted via flags or environment variables."
+        echo "Create the secret out of band, then re-run attach-existing, or use the interactive TTY path:"
+        echo "  bash manage-agent.sh secret $AGENT_NAME add"
         exit 1
-      fi
+      elif have_controlling_tty; then
+        echo "  Single API tokens: paste the token as-is."
+        echo "  Multi-field credentials: paste a JSON object, e.g."
+        echo '  {"account_id":"...","client_id":"...","client_secret":"..."}'
+        echo "  TIP: validate first with: bash test-api-credential.sh"
+        read -s -p "  Value for '$SECRET_NAME': " SECRET_VALUE < /dev/tty
+        echo ""
+        if [ -z "$SECRET_VALUE" ]; then
+          echo "ERROR: Empty value."
+          exit 1
+        fi
 
-      if ! aws secretsmanager create-secret \
-          --name "$FULL_SECRET_NAME" \
-          --secret-string "$SECRET_VALUE" \
-          --region "$AWS_REGION" > /dev/null 2>&1; then
-        echo "ERROR: Could not create secret '$FULL_SECRET_NAME'."
-        echo "It may have been created concurrently, or a same-named secret is"
-        echo "pending deletion (Secrets Manager holds deleted names for the"
-        echo "recovery window). Inspect with:"
-        echo "  aws secretsmanager describe-secret --secret-id \"$FULL_SECRET_NAME\" --region $AWS_REGION"
-        echo "Nothing was attached. Re-run once resolved."
-        exit 1
-      fi
-      echo "  ✓ Stored: $FULL_SECRET_NAME"
+        if ! aws secretsmanager create-secret \
+            --name "$FULL_SECRET_NAME" \
+            --secret-string "$SECRET_VALUE" \
+            --region "$AWS_REGION" > /dev/null 2>&1; then
+          echo "ERROR: Could not create secret '$FULL_SECRET_NAME'."
+          echo "It may have been created concurrently, or a same-named secret is"
+          echo "pending deletion (Secrets Manager holds deleted names for the"
+          echo "recovery window). Inspect with:"
+          echo "  aws secretsmanager describe-secret --secret-id \"$FULL_SECRET_NAME\" --region $AWS_REGION"
+          echo "Nothing was attached. Re-run once resolved."
+          exit 1
+        fi
+        echo "  ✓ Stored: $FULL_SECRET_NAME"
 
-      SECRET_ARN=$(aws secretsmanager describe-secret \
-        --secret-id "$FULL_SECRET_NAME" \
-        --query ARN --output text --region "$AWS_REGION")
-      if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
-        echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
+        SECRET_ARN=$(aws secretsmanager describe-secret \
+          --secret-id "$FULL_SECRET_NAME" \
+          --query ARN --output text --region "$AWS_REGION")
+        if [[ "$SECRET_ARN" != arn:aws:secretsmanager* ]]; then
+          echo "ERROR: Could not determine secret ARN for $FULL_SECRET_NAME."
+          exit 1
+        fi
+      else
+        echo "ERROR: Secret '$FULL_SECRET_NAME' does not exist and no TTY is available."
+        echo "Create the secret out of band, then attach it with --attach-existing."
+        echo "Secret values are never accepted via flags or environment variables."
         exit 1
       fi
     fi
@@ -778,6 +929,12 @@ region         = "$AWS_REGION"
 dynamodb_table = "$LOCK_TABLE"
 encrypt        = true
 EOF
+
+  if [ "${MANAGE_AGENT_DRY_RUN:-}" = "1" ]; then
+    echo "DRY RUN: wrote prod.tfvars and backend.hcl; skipping terraform apply."
+    echo "  Would ${SECRET_ACTION}: ${SECRET_NAME} -> ${SECRET_ARN:-detached}"
+    exit 0
+  fi
 
   echo ""
   echo "Applying credential change (no image rebuild)..."
@@ -1447,12 +1604,13 @@ case $ACTION in
   add)      add_agent "${@:2}" ;;
   remove)   remove_agent ;;
   list)     list_deployed_agents ;;
-  secret)   secret_agent "${2:-}" "${3:-}" ;;
+  secret)   secret_agent "${@:2}" ;;
   describe) describe_agent "${2:-}" ;;
   redeploy) redeploy_agent_menu "${2:-}" ;;
   *)
     echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|secret list|describe <agent_name>|redeploy <agent_name>]"
     echo "       bash manage-agent.sh add <agent_name> --description \"...\" --yes"
+    echo "       bash manage-agent.sh secret <agent_name> add --secret-name <name> --attach-existing [--yes]"
     exit 1
     ;;
 esac
