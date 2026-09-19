@@ -14,14 +14,30 @@ set -e
 #     --routing routing_config.json
 #
 # Arguments:
-#   --prompt   Path to a text file containing the system prompt
-#   --routing  Path to a JSON file containing the agent routing config
+#   --prompt        Path to a text file containing the system prompt
+#   --routing       Path to a JSON file containing the agent routing config
+#   --prompt-text   System prompt content directly (alternative to --prompt).
+#                    Also settable via the PROMPT_TEXT env var.
+#   --routing-json  Routing config JSON content directly (alternative to
+#                    --routing). Also settable via the ROUTING_JSON env var.
+#   --yes           Skip all interactive confirmations (headless / MCP / CI).
+#                    Also skips the Anthropic API key entry prompt below — a
+#                    secret value is never accepted headlessly. If the routing
+#                    config needs an LLM-routed rule and no key is already
+#                    stored, --yes proceeds anyway with a warning; set the key
+#                    out-of-band first (test-api-credential.sh) if needed.
 #
-# Both arguments are required. Files must exist before running this script.
+# A prompt and a routing config are both required, each as either a file path
+# or inline content (content is written to a temp file and cleaned up on exit
+# — useful on hosts where a prior script run's output file no longer exists,
+# e.g. the MCP connector, where each tool call gets its own temp workspace).
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
+
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 # ------------------------------------------------------------------------------
 # Parse arguments
@@ -29,6 +45,8 @@ DEFAULTS_FILE="$SCRIPT_DIR/defaults.env"
 
 PROMPT_FILE=""
 ROUTING_FILE=""
+PROMPT_TEXT="${PROMPT_TEXT:-}"
+ROUTING_JSON="${ROUTING_JSON:-}"
 ASSUME_YES="false"
 
 while [[ $# -gt 0 ]]; do
@@ -39,6 +57,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --routing)
       ROUTING_FILE="$2"
+      shift 2
+      ;;
+    --prompt-text)
+      PROMPT_TEXT="$2"
+      shift 2
+      ;;
+    --routing-json)
+      ROUTING_JSON="$2"
       shift 2
       ;;
     --yes)
@@ -54,11 +80,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ------------------------------------------------------------------------------
+# Materialize inline content (if given) to temp files
+# ------------------------------------------------------------------------------
+
+if [ -z "$PROMPT_FILE" ] && [ -n "$PROMPT_TEXT" ]; then
+  PROMPT_FILE="$WORK_DIR/system_prompt.txt"
+  printf '%s' "$PROMPT_TEXT" > "$PROMPT_FILE"
+fi
+
+if [ -z "$ROUTING_FILE" ] && [ -n "$ROUTING_JSON" ]; then
+  ROUTING_FILE="$WORK_DIR/routing_config.json"
+  printf '%s' "$ROUTING_JSON" > "$ROUTING_FILE"
+fi
+
+# ------------------------------------------------------------------------------
 # Validate arguments
 # ------------------------------------------------------------------------------
 
 if [ -z "$PROMPT_FILE" ] || [ -z "$ROUTING_FILE" ]; then
-  echo "ERROR: Both --prompt and --routing arguments are required."
+  echo "ERROR: A prompt and a routing config are both required — each as either"
+  echo "a file path (--prompt/--routing) or inline content (--prompt-text/--routing-json,"
+  echo "or the PROMPT_TEXT/ROUTING_JSON env vars)."
   echo "Usage: bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json"
   exit 1
 fi
@@ -154,10 +196,14 @@ echo "  Routing config: $ROUTING_FILE"
 echo "  Agents in routing rules: $ROUTING_AGENTS"
 echo ""
 
-read -p "Apply these changes to the orchestrator? (yes/no): " CONFIRM < /dev/tty
-if [ "$CONFIRM" != "yes" ]; then
-  echo "Cancelled."
-  exit 0
+if [ "$ASSUME_YES" = "true" ]; then
+  echo "  --yes supplied; applying without prompting."
+else
+  read -p "Apply these changes to the orchestrator? (yes/no): " CONFIRM < /dev/tty
+  if [ "$CONFIRM" != "yes" ]; then
+    echo "Cancelled."
+    exit 0
+  fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -297,26 +343,35 @@ if [ "$NEEDS_LLM" = "true" ]; then
       echo ""
       echo "  No Anthropic API key has been set yet, and this routing config"
       echo "  needs one for LLM-based routing to work."
-      echo ""
-      echo "  Enter your Anthropic API key now (or press enter to skip and"
-      echo "  set it later by re-running this script):"
-      read -s ANTHROPIC_KEY < /dev/tty
-      echo ""
-      if [ -z "$ANTHROPIC_KEY" ]; then
-        echo "  Skipped. LLM-based routing rules will fail until a key is set."
+      if [ "$ASSUME_YES" = "true" ]; then
+        # Headless (MCP/CI): never prompt for or accept a secret value here.
+        # Proceed with a warning; set the key out-of-band first if needed
+        # (e.g. bash test-api-credential.sh), then re-run this script.
+        echo "  --yes supplied; skipping key entry (secrets are never accepted"
+        echo "  headlessly). LLM-based routing rules will fail until a key is set."
         echo ""
-        read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
-        if [ "$LLM_CONFIRM" != "yes" ]; then
-          echo "Cancelled. Nothing has been pushed to SSM."
-          exit 0
-        fi
-        ANTHROPIC_KEY=""
       else
-        aws secretsmanager put-secret-value \
-          --secret-id "$ANTHROPIC_SECRET_ARN" \
-          --secret-string "$ANTHROPIC_KEY" \
-          --region "$AWS_REGION" > /dev/null
-        echo "  ✓ Anthropic API key stored"
+        echo ""
+        echo "  Enter your Anthropic API key now (or press enter to skip and"
+        echo "  set it later by re-running this script):"
+        read -s ANTHROPIC_KEY < /dev/tty
+        echo ""
+        if [ -z "$ANTHROPIC_KEY" ]; then
+          echo "  Skipped. LLM-based routing rules will fail until a key is set."
+          echo ""
+          read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
+          if [ "$LLM_CONFIRM" != "yes" ]; then
+            echo "Cancelled. Nothing has been pushed to SSM."
+            exit 0
+          fi
+          ANTHROPIC_KEY=""
+        else
+          aws secretsmanager put-secret-value \
+            --secret-id "$ANTHROPIC_SECRET_ARN" \
+            --secret-string "$ANTHROPIC_KEY" \
+            --region "$AWS_REGION" > /dev/null
+          echo "  ✓ Anthropic API key stored"
+        fi
       fi
     fi
 
@@ -334,10 +389,14 @@ if [ "$NEEDS_LLM" = "true" ]; then
         echo "  it may be invalid, expired, or revoked. LLM-based routing rules"
         echo "  will fail at runtime until this is fixed."
         echo ""
-        read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
-        if [ "$LLM_CONFIRM" != "yes" ]; then
-          echo "Cancelled. Nothing has been pushed to SSM."
-          exit 0
+        if [ "$ASSUME_YES" = "true" ]; then
+          echo "  --yes supplied; proceeding despite the invalid key check."
+        else
+          read -p "  Continue pushing this configuration anyway? (yes/no): " LLM_CONFIRM < /dev/tty
+          if [ "$LLM_CONFIRM" != "yes" ]; then
+            echo "Cancelled. Nothing has been pushed to SSM."
+            exit 0
+          fi
         fi
       fi
     fi
