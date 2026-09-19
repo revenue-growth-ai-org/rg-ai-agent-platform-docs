@@ -29,6 +29,7 @@ jobs:
             configure-orchestrator.sh
             manage-agent.sh
             tests/test-manage-agent-add-nontty.sh
+            tests/test-manage-agent-secret-attach-existing.sh
           )
 
           failed=0
@@ -95,3 +96,13 @@ jobs:
 
       - name: Run headless add / cluster-name / obsolete-role checks
         run: bash tests/test-manage-agent-add-nontty.sh
+
+  manage-agent-secret-attach-existing:
+    name: manage-agent secret attach-existing works without a TTY
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run headless secret attach-existing checks
+        run: bash tests/test-manage-agent-secret-attach-existing.sh
