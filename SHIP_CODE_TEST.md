@@ -1,0 +1,1 @@
+This is a throwaway test file created to verify the ship-code write path (github_create_branch, github_commit_files, github_open_pr) works end to end via the MCP connector's newly-configured GITHUB_TOKEN. Safe to delete this branch/PR immediately after confirming.
