@@ -2,9 +2,10 @@
 > software installation or requires security review before execution, skip
 > install.sh and follow the manual setup steps in this guide instead. All
 > prerequisites can be installed via your organization's approved software
-> management process before running master-setup.sh directly. Contact
-> Michael@revenue-growth.ai for an enterprise deployment package including
-> a scoped IAM policy document in place of AdministratorAccess.
+> management process before running master-setup.sh directly. A scoped IAM
+> policy document, for use in place of AdministratorAccess, is available at
+> [`docs/security/scoped-deployment-policy.md`](docs/security/scoped-deployment-policy.md) —
+> see the "Enterprise deployment notes" section below.
 
 # Customer Setup Guide
 
@@ -192,8 +193,17 @@ will deploy automatically.
 
 The installer runs as the identity in your shell, which in practice holds
 AdministratorAccess. If your organization requires least-privilege IAM
-policies contact Michael@revenue-growth.ai for a scoped policy document that
-grants only the permissions required by each Terraform step.
+policies, use [`docs/security/scoped-deployment-policy.json`](docs/security/scoped-deployment-policy.json)
+instead — it grants only the permissions required by each Terraform step
+(and the shell scripts' ECR calls), scoped to your `PROJECT_NAME` wherever
+AWS supports resource-level scoping. See
+[`docs/security/scoped-deployment-policy.md`](docs/security/scoped-deployment-policy.md)
+for the placeholders to fill in and known caveats before applying it — in
+particular, this policy has not yet been validated end-to-end with
+`terraform plan`/`apply` against a real account, so treat it as a strong
+starting point for your own security review rather than a guarantee of
+sufficiency. If you'd still prefer a package reviewed for your specific
+environment, contact Michael@revenue-growth.ai.
 
 ### Removing an old terraform-deploy role
 
