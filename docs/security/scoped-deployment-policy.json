@@ -121,6 +121,7 @@
         "ssm:GetParameters",
         "ssm:GetParametersByPath",
         "ssm:DeleteParameter",
+        "ssm:DeleteParameters",
         "ssm:AddTagsToResource",
         "ssm:RemoveTagsFromResource"
       ],
@@ -181,7 +182,8 @@
         "ecr:PutImage",
         "ecr:InitiateLayerUpload",
         "ecr:UploadLayerPart",
-        "ecr:CompleteLayerUpload"
+        "ecr:CompleteLayerUpload",
+        "ecr:DescribeImages"
       ],
       "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/${PROJECT_NAME}-*"
     },
@@ -202,7 +204,9 @@
         "logs:TagResource",
         "logs:PutMetricFilter",
         "logs:DeleteMetricFilter",
-        "logs:ListTagsForResource"
+        "logs:ListTagsForResource",
+        "logs:FilterLogEvents",
+        "logs:GetLogEvents"
       ],
       "Resource": "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/ecs/${PROJECT_NAME}-*"
     },
@@ -307,12 +311,16 @@
         "ecs:CreateService",
         "ecs:UpdateService",
         "ecs:DeleteService",
+        "ecs:ListServices",
         "ecs:DescribeServices",
         "ecs:RegisterTaskDefinition",
         "ecs:DeregisterTaskDefinition",
         "ecs:DescribeTaskDefinition",
+        "ecs:ListTaskDefinitions",
         "ecs:RunTask",
         "ecs:StopTask",
+        "ecs:ListTasks",
+        "ecs:DescribeTasks",
         "ecs:TagResource",
         "ecs:ListTagsForResource"
       ],
@@ -441,6 +449,36 @@
         "acm:AddTagsToCertificate"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "AccountWideListActionsUnscopable",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:ListClusters",
+        "iam:ListRoles",
+        "secretsmanager:ListSecrets",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LegacyTerraformDeployRoleCleanup",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:DeleteRole",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/terraform-deploy",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:instance-profile/terraform-deploy"
+      ]
     },
     {
       "Sid": "ReadOnlyAccountContext",
