@@ -12,7 +12,10 @@ set -e
 #   bash manage-agent.sh add      — add a new agent (prompts if a TTY is present)
 #   bash manage-agent.sh add <agent_name> --description "..." --yes
 #                                 — headless add (no /dev/tty; for MCP / CI)
-#   bash manage-agent.sh remove   — remove an existing agent
+#   bash manage-agent.sh remove   — remove an existing agent (prompts if a TTY is present)
+#   bash manage-agent.sh remove <agent_name> --yes
+#                                 — headless remove (no /dev/tty; for MCP / CI);
+#                                   permanently destroys the agent's infra, no undo
 #   bash manage-agent.sh list     — list ECS-deployed agents; SSM-only configs
 #                                   appear in a separate not-running section
 #   bash manage-agent.sh redeploy <agent_name> — rebuild + push an agent's
@@ -48,6 +51,28 @@ Interactive menu is unchanged: bash manage-agent.sh  or  bash manage-agent.sh ad
 with no args still prompts when a controlling terminal is available.
 
 Cluster name is ${PROJECT_NAME}-${ENVIRONMENT}-ecs (the -ecs suffix is required).
+EOF
+}
+
+print_remove_usage() {
+  cat <<'EOF'
+Usage:
+  bash manage-agent.sh remove
+  bash manage-agent.sh remove <agent_name> --yes
+  bash manage-agent.sh remove --agent <name> --yes
+
+Headless remove (no TTY / MCP): every interactive prompt has a flag or env var.
+  Agent name: positional <agent_name>, --agent, or AGENT_NAME
+  Confirm:    --yes / -y, or CONFIRM=yes
+              (replaces the interactive "type the agent name to confirm" prompt --
+               --yes on its own confirms removal of exactly the named agent)
+
+Interactive menu is unchanged: bash manage-agent.sh  or  bash manage-agent.sh remove
+with no args still prompts when a controlling terminal is available.
+
+This permanently destroys the agent's ECS service, security group, IAM role,
+SSM parameters, and ECR repository. --yes skips the typed-name confirmation
+and there is no undo once terraform destroy runs.
 EOF
 }
 
@@ -88,6 +113,11 @@ fi
 
 if [ "${1:-}" = "secret" ] && { [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; }; then
   print_secret_usage
+  exit 0
+fi
+
+if [ "${1:-}" = "remove" ] && { [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; }; then
+  print_remove_usage
   exit 0
 fi
 
@@ -1373,7 +1403,45 @@ EOF
 # Remove agent
 # ------------------------------------------------------------------------------
 
+parse_remove_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --agent)
+        [ -n "${2:-}" ] || { echo "ERROR: --agent requires a value."; exit 1; }
+        AGENT_NAME="$2"
+        shift 2
+        ;;
+      --yes|-y)
+        MANAGE_AGENT_YES=1
+        CONFIRM=yes
+        shift
+        ;;
+      --help|-h)
+        print_remove_usage
+        exit 0
+        ;;
+      --*)
+        echo "Unknown argument: $1"
+        print_remove_usage
+        exit 1
+        ;;
+      *)
+        if [ -z "${AGENT_NAME:-}" ]; then
+          AGENT_NAME="$1"
+        else
+          echo "Unexpected argument: $1"
+          print_remove_usage
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+}
+
 remove_agent() {
+  parse_remove_args "$@"
+
   echo "=================================================="
   echo " Remove Agent"
   echo "=================================================="
@@ -1381,7 +1449,15 @@ remove_agent() {
 
   list_deployed_agents
 
-  read -p "Agent name to remove: " AGENT_NAME < /dev/tty
+  if [ -z "${AGENT_NAME:-}" ]; then
+    if have_controlling_tty; then
+      read -p "Agent name to remove: " AGENT_NAME < /dev/tty
+    else
+      echo "ERROR: agent name is required without a TTY."
+      print_remove_usage
+      exit 1
+    fi
+  fi
 
   # Verify agent exists
   EXISTING_SERVICE=$(aws ecs describe-services \
@@ -1414,11 +1490,19 @@ remove_agent() {
   echo "The agent's ECS service, security group, IAM role, and SSM"
   echo "parameters will all be deleted."
   echo ""
-  read -p "Type the agent name to confirm removal: " CONFIRM_NAME < /dev/tty
 
-  if [ "$CONFIRM_NAME" != "$AGENT_NAME" ]; then
-    echo "Agent name does not match. Cancelled."
-    exit 0
+  if [ "${MANAGE_AGENT_YES:-}" = "1" ] || [ "${CONFIRM:-}" = "yes" ]; then
+    echo "Confirmed via --yes: removing '$AGENT_NAME'."
+  elif have_controlling_tty; then
+    read -p "Type the agent name to confirm removal: " CONFIRM_NAME < /dev/tty
+    if [ "$CONFIRM_NAME" != "$AGENT_NAME" ]; then
+      echo "Agent name does not match. Cancelled."
+      exit 0
+    fi
+  else
+    echo "ERROR: removal requires --yes (or CONFIRM=yes) without a TTY."
+    print_remove_usage
+    exit 1
   fi
 
   ECR_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}:latest"
@@ -1462,6 +1546,11 @@ region         = "$AWS_REGION"
 dynamodb_table = "$LOCK_TABLE"
 encrypt        = true
 EOF
+
+  if [ "${MANAGE_AGENT_DRY_RUN:-}" = "1" ]; then
+    echo "DRY RUN: wrote prod.tfvars and backend.hcl; skipping terraform destroy / ECR cleanup."
+    exit 0
+  fi
 
   echo ""
   echo "Destroying agent $AGENT_NAME..."
@@ -1602,7 +1691,7 @@ fi
 
 case $ACTION in
   add)      add_agent "${@:2}" ;;
-  remove)   remove_agent ;;
+  remove)   remove_agent "${@:2}" ;;
   list)     list_deployed_agents ;;
   secret)   secret_agent "${@:2}" ;;
   describe) describe_agent "${2:-}" ;;
@@ -1610,6 +1699,7 @@ case $ACTION in
   *)
     echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|secret list|describe <agent_name>|redeploy <agent_name>]"
     echo "       bash manage-agent.sh add <agent_name> --description \"...\" --yes"
+    echo "       bash manage-agent.sh remove <agent_name> --yes"
     echo "       bash manage-agent.sh secret <agent_name> add --secret-name <name> --attach-existing [--yes]"
     exit 1
     ;;
