@@ -123,7 +123,8 @@
         "ssm:DeleteParameter",
         "ssm:DeleteParameters",
         "ssm:AddTagsToResource",
-        "ssm:RemoveTagsFromResource"
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource"
       ],
       "Resource": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${PROJECT_NAME}/*"
     },
