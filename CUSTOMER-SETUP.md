@@ -193,10 +193,14 @@ will deploy automatically.
 
 The installer runs as the identity in your shell, which in practice holds
 AdministratorAccess. If your organization requires least-privilege IAM
-policies, use [`docs/security/scoped-deployment-policy.json`](docs/security/scoped-deployment-policy.json)
-instead — it grants only the permissions required by each Terraform step
-(and the shell scripts' ECR calls), scoped to your `PROJECT_NAME` wherever
-AWS supports resource-level scoping. See
+policies, attach
+[`docs/security/scoped-deployment-policy-part-1.json`](docs/security/scoped-deployment-policy-part-1.json)
+and
+[`docs/security/scoped-deployment-policy-part-2.json`](docs/security/scoped-deployment-policy-part-2.json)
+instead — split into two because the combined policy exceeds AWS's
+single-managed-policy size limit. Together they grant only the permissions
+required by each Terraform step (and the shell scripts' ECR calls), scoped
+to your `PROJECT_NAME` wherever AWS supports resource-level scoping. See
 [`docs/security/scoped-deployment-policy.md`](docs/security/scoped-deployment-policy.md)
 for the placeholders to fill in and known caveats before applying it — in
 particular, this policy has not yet been validated end-to-end with
