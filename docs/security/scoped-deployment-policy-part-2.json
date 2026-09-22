@@ -118,7 +118,8 @@
         "servicediscovery:CreateService",
         "servicediscovery:DeleteService",
         "servicediscovery:GetService",
-        "servicediscovery:TagResource"
+        "servicediscovery:TagResource",
+        "servicediscovery:ListTagsForResource"
       ],
       "Resource": "*"
     },
