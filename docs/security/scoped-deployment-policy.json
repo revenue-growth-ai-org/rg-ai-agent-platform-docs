@@ -140,7 +140,7 @@
         "secretsmanager:TagResource",
         "secretsmanager:UntagResource"
       ],
-      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${PROJECT_NAME}/*"
+      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${PROJECT_NAME}-*"
     },
     {
       "Sid": "SecretsManagerReadRdsManagedSecret",
