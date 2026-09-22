@@ -315,7 +315,6 @@
         "ecs:DescribeServices",
         "ecs:RegisterTaskDefinition",
         "ecs:DeregisterTaskDefinition",
-        "ecs:DescribeTaskDefinition",
         "ecs:ListTaskDefinitions",
         "ecs:RunTask",
         "ecs:StopTask",
@@ -455,6 +454,7 @@
       "Effect": "Allow",
       "Action": [
         "ecs:ListClusters",
+        "ecs:DescribeTaskDefinition",
         "iam:ListRoles",
         "secretsmanager:ListSecrets",
         "ssm:DescribeParameters"
