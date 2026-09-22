@@ -88,7 +88,21 @@ Terraform source alone.
 
 Derived by reading every `.tf` file across the four platform repos
 (`resource "aws_*"` / `data "aws_*"` blocks) plus the pinned Terraform
-Registry module versions in `1-rg-ai-agent-platform-base/main.tf`. Not yet
-validated with `terraform plan` against a real account — treat this as a
-strong starting point for your own security review, not a guarantee of
-sufficiency or minimality.
+Registry module versions in `1-rg-ai-agent-platform-base/main.tf`, then
+cross-checked against every `aws <service> <subcommand>` call in this repo's
+`*.sh` scripts (`manage-agent.sh`, `redeploy-*.sh`, `list-all-projects.sh`,
+etc.) to catch read/list actions Terraform itself never calls. Live-tested
+against a real linked account (`platform_status`, `list_projects`), which
+surfaced a first round of gaps — missing `ecs:ListServices`,
+`ecs:ListClusters`, `ecs:ListTaskDefinitions`, `ecs:ListTasks`,
+`ecs:DescribeTasks`, `ecr:DescribeImages`, `iam:ListRoles`,
+`logs:FilterLogEvents`/`GetLogEvents`, `secretsmanager:ListSecrets`,
+`ssm:DescribeParameters`/`DeleteParameters`, and the legacy
+`terraform-deploy` role/instance-profile cleanup actions described in
+`CUSTOMER-SETUP.md` — now added. Still treat this as a strong starting
+point rather than a guarantee of sufficiency or minimality: it has not been
+exercised through a full `master-setup.sh` run (bootstrap → base →
+orchestrator → agent deploy) end to end. If a future run hits
+`AccessDenied`, add the missing action to the narrowest matching statement
+here (or a new one, following the existing scoping pattern) rather than
+widening an existing wildcard.
