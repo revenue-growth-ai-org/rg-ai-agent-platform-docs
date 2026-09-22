@@ -25,6 +25,13 @@ set -e
 #                                 — headless attach of an already-existing
 #                                   Secrets Manager secret (no /dev/tty;
 #                                   never accepts the secret value on CLI)
+#   bash manage-agent.sh secret <agent_name> remove --secret-name <name> --yes
+#                                 — headless credential removal (no /dev/tty);
+#                                   only detaches access, never deletes the
+#                                   stored secret
+#   bash manage-agent.sh describe <agent_name> --description "..." --yes
+#                                 — headless description update (no /dev/tty);
+#                                   rolls the ECS service, no image rebuild
 #
 # ECS cluster name is always ${PROJECT_NAME}-${ENVIRONMENT}-ecs
 # (not ${PROJECT_NAME}-${ENVIRONMENT}).
@@ -103,6 +110,39 @@ still prompts on a controlling terminal — name, reuse/update/abort, and value.
 
 Equivalent env form:
   ATTACH_EXISTING=1 SECRET_NAME=hubspot bash manage-agent.sh secret <agent_name> add
+
+Headless remove / detach (no TTY / MCP): this only removes the agent's
+access (SSM pointer + IAM grant) — the stored Secrets Manager value is
+never deleted, even if no other agent references it afterward.
+  Credential name: --secret-name, or SECRET_NAME
+  Confirm:         --yes / -y, or CONFIRM=yes (required without a TTY)
+
+  bash manage-agent.sh secret <agent_name> remove --secret-name hubspot --yes
+
+Interactive `bash manage-agent.sh secret <agent_name> remove` (no --secret-name)
+still prompts on a controlling terminal for the credential name only — same
+as before, no separate confirmation step.
+EOF
+}
+
+print_describe_usage() {
+  cat <<'EOF'
+Usage:
+  bash manage-agent.sh describe <agent_name>
+  bash manage-agent.sh describe <agent_name> --description "..." --yes
+  bash manage-agent.sh describe --agent <name> --description "..." --yes
+
+Headless description update (no TTY / MCP): every interactive prompt has a
+flag or env var.
+  Agent name:  positional <agent_name>, --agent, or AGENT_NAME
+  Description: --description / --desc, or AGENT_DESCRIPTION / AGENT_DESC
+  Confirm:     --yes / -y, or CONFIRM=yes (required without a TTY)
+
+Interactive menu is unchanged: bash manage-agent.sh  or  bash manage-agent.sh describe
+with no args still prompts when a controlling terminal is available.
+
+This rolls the agent's ECS service to pick up the new description — same
+image, same credentials, same routing. Not a code or config change.
 EOF
 }
 
@@ -118,6 +158,11 @@ fi
 
 if [ "${1:-}" = "remove" ] && { [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; }; then
   print_remove_usage
+  exit 0
+fi
+
+if [ "${1:-}" = "describe" ] && { [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; }; then
+  print_describe_usage
   exit 0
 fi
 
@@ -869,7 +914,20 @@ secret_agent() {
     NEW_MAP=$(echo "$NEW_MAP" | sed '/^$/d')
 
   else
-    read -p "Credential name to remove: " SECRET_NAME < /dev/tty
+    if [ -z "${SECRET_NAME:-}" ]; then
+      if have_controlling_tty; then
+        read -p "Credential name to remove: " SECRET_NAME < /dev/tty
+      else
+        echo "ERROR: credential name is required without a TTY. Pass --secret-name <name>."
+        print_secret_usage
+        exit 1
+      fi
+    elif [ "${MANAGE_AGENT_YES:-}" != "1" ] && [ "${CONFIRM:-}" != "yes" ] && ! have_controlling_tty; then
+      echo "ERROR: removal requires --yes (or CONFIRM=yes) without a TTY."
+      print_secret_usage
+      exit 1
+    fi
+
     if ! echo "$CURRENT_MAP" | grep -q "^  ${SECRET_NAME} = "; then
       echo "ERROR: No credential named '$SECRET_NAME' on agent '$AGENT_NAME'."
       exit 1
@@ -1010,11 +1068,59 @@ EOF
 # same way secret_agent() rolls credential changes without a CodeBuild run.
 # ------------------------------------------------------------------------------
 
+parse_describe_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --agent)
+        [ -n "${2:-}" ] || { echo "ERROR: --agent requires a value."; exit 1; }
+        AGENT_NAME="$2"
+        shift 2
+        ;;
+      --description|--desc)
+        [ -n "${2:-}" ] || { echo "ERROR: --description requires a value."; exit 1; }
+        NEW_DESC="$2"
+        shift 2
+        ;;
+      --yes|-y)
+        MANAGE_AGENT_YES=1
+        CONFIRM=yes
+        shift
+        ;;
+      --help|-h)
+        print_describe_usage
+        exit 0
+        ;;
+      --*)
+        echo "Unknown argument: $1"
+        print_describe_usage
+        exit 1
+        ;;
+      *)
+        if [ -z "${AGENT_NAME:-}" ]; then
+          AGENT_NAME="$1"
+        else
+          echo "Unexpected argument: $1"
+          print_describe_usage
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [ -z "${NEW_DESC:-}" ] && [ -n "${AGENT_DESCRIPTION:-}" ]; then
+    NEW_DESC="$AGENT_DESCRIPTION"
+  fi
+}
+
 describe_agent() {
-  local AGENT_NAME="$1"
+  AGENT_NAME=""
+  NEW_DESC=""
+  parse_describe_args "$@"
 
   if [ -z "$AGENT_NAME" ]; then
-    echo "Usage: bash manage-agent.sh describe <agent_name>"
+    echo "Usage: bash manage-agent.sh describe <agent_name> [--description \"...\"] [--yes]"
+    print_describe_usage
     exit 1
   fi
 
@@ -1053,11 +1159,22 @@ describe_agent() {
 
   echo "Current description: ${CURRENT_DESC:-(none set)}"
   echo ""
-  NEW_DESC=""
-  while [ -z "$NEW_DESC" ]; do
-    read -p "New description (required): " NEW_DESC < /dev/tty
-    [ -z "$NEW_DESC" ] && echo "  ✗ Description cannot be empty."
-  done
+  if [ -z "${NEW_DESC:-}" ]; then
+    if have_controlling_tty; then
+      while [ -z "$NEW_DESC" ]; do
+        read -p "New description (required): " NEW_DESC < /dev/tty
+        [ -z "$NEW_DESC" ] && echo "  ✗ Description cannot be empty."
+      done
+    else
+      echo "ERROR: --description is required without a TTY."
+      print_describe_usage
+      exit 1
+    fi
+  elif [ "${MANAGE_AGENT_YES:-}" != "1" ] && [ "${CONFIRM:-}" != "yes" ] && ! have_controlling_tty; then
+    echo "ERROR: description update requires --yes (or CONFIRM=yes) without a TTY."
+    print_describe_usage
+    exit 1
+  fi
 
   CURRENT_MAP=$(build_secrets_map_from_ssm "$AGENT_NAME")
   if [ -n "$CURRENT_MAP" ]; then
@@ -1111,6 +1228,11 @@ region         = "$AWS_REGION"
 dynamodb_table = "$LOCK_TABLE"
 encrypt        = true
 EOF
+
+  if [ "${MANAGE_AGENT_DRY_RUN:-}" = "1" ]; then
+    echo "DRY RUN: wrote prod.tfvars and backend.hcl; skipping terraform apply."
+    exit 0
+  fi
 
   echo ""
   echo "Applying description change (no image rebuild)..."
@@ -1694,13 +1816,15 @@ case $ACTION in
   remove)   remove_agent "${@:2}" ;;
   list)     list_deployed_agents ;;
   secret)   secret_agent "${@:2}" ;;
-  describe) describe_agent "${2:-}" ;;
+  describe) describe_agent "${@:2}" ;;
   redeploy) redeploy_agent_menu "${2:-}" ;;
   *)
     echo "Usage: bash manage-agent.sh [add|remove|list|secret <agent_name> add|remove|secret list|describe <agent_name>|redeploy <agent_name>]"
     echo "       bash manage-agent.sh add <agent_name> --description \"...\" --yes"
     echo "       bash manage-agent.sh remove <agent_name> --yes"
     echo "       bash manage-agent.sh secret <agent_name> add --secret-name <name> --attach-existing [--yes]"
+    echo "       bash manage-agent.sh secret <agent_name> remove --secret-name <name> --yes"
+    echo "       bash manage-agent.sh describe <agent_name> --description \"...\" --yes"
     exit 1
     ;;
 esac
