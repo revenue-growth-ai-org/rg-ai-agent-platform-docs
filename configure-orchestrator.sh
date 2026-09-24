@@ -26,6 +26,21 @@ set -e
 #                    config needs an LLM-routed rule and no key is already
 #                    stored, --yes proceeds anyway with a warning; set the key
 #                    out-of-band first (test-api-credential.sh) if needed.
+#   --allow-routing-removal
+#                    Required alongside --yes whenever the new routing config
+#                    would drop an event_type that currently has agents
+#                    routed to it in live SSM (i.e. this push is a genuine
+#                    removal, not just an addition/narrowing). Also settable
+#                    via ALLOW_ROUTING_REMOVAL=1. Without it, --yes still
+#                    refuses to push a routing removal — --yes only means
+#                    "no TTY available", not "I intend to drop live routes".
+#                    routing_config.json passed here (or via --routing-json /
+#                    ROUTING_JSON) MUST be the complete desired rule set for
+#                    every agent that should stay routed, not just the one
+#                    agent you're adding or changing right now — this script
+#                    fully replaces the live agent_routing SSM parameter, it
+#                    never merges. Passing only a new agent's rule wipes every
+#                    other agent's routing (this has happened twice live).
 #
 # A prompt and a routing config are both required, each as either a file path
 # or inline content (content is written to a temp file and cleaned up on exit
@@ -48,6 +63,7 @@ ROUTING_FILE=""
 PROMPT_TEXT="${PROMPT_TEXT:-}"
 ROUTING_JSON="${ROUTING_JSON:-}"
 ASSUME_YES="false"
+ALLOW_ROUTING_REMOVAL="${ALLOW_ROUTING_REMOVAL:-}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -71,9 +87,13 @@ while [[ $# -gt 0 ]]; do
       ASSUME_YES="true"
       shift
       ;;
+    --allow-routing-removal)
+      ALLOW_ROUTING_REMOVAL="1"
+      shift
+      ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json [--yes]"
+      echo "Usage: bash configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json [--yes] [--allow-routing-removal]"
       exit 1
       ;;
   esac
@@ -250,7 +270,9 @@ CURRENT_ROUTING_VALUE=$(aws ssm get-parameter \
 
 echo ""
 echo "Routing changes (event_type: current agents -> new agents):"
-CURRENT_ROUTING_VALUE="$CURRENT_ROUTING_VALUE" python3 -c "
+REMOVED_EVENTS_FILE="$WORK_DIR/removed_events.txt"
+: > "$REMOVED_EVENTS_FILE"
+CURRENT_ROUTING_VALUE="$CURRENT_ROUTING_VALUE" REMOVED_EVENTS_FILE="$REMOVED_EVENTS_FILE" python3 -c "
 import json, os
 
 def load(text):
@@ -272,6 +294,7 @@ if old is None:
     print('  (no valid current routing config in SSM — this will be the first push)')
     old = {}
 
+removed = []
 for et in sorted(set(old) | set(new)):
     old_agents = old.get(et)
     new_agents = new.get(et)
@@ -279,8 +302,39 @@ for et in sorted(set(old) | set(new)):
     new_str = ', '.join(new_agents) if new_agents else '(REMOVED)'
     marker = '  ' if old_agents == new_agents else '* '
     print('%s%s: %s -> %s' % (marker, et, old_str, new_str))
+    if old_agents and not new_agents:
+        removed.append('%s (was routed to: %s)' % (et, old_str))
+
+with open(os.environ['REMOVED_EVENTS_FILE'], 'w') as f:
+    f.write('\n'.join(removed))
 "
 echo ""
+
+# This is the guard against wholesale-overwrite footguns like generate-routing-config.sh's
+# RULES_JSON: --yes means "no TTY available", not "I intend to drop live routes". A routing
+# push that silently drops a previously-routed event_type gets refused here even headlessly,
+# unless the operator explicitly acknowledges it. This is the exact failure mode that wiped
+# researcher's and deal-coaching's routing rules when csm-call-prep was added (twice, live).
+if [ -s "$REMOVED_EVENTS_FILE" ]; then
+  if [ "$ASSUME_YES" = "true" ] && [ "$ALLOW_ROUTING_REMOVAL" != "1" ] && [ "$ALLOW_ROUTING_REMOVAL" != "true" ]; then
+    echo "ERROR: This routing config would remove live routing for:"
+    sed 's/^/  - /' "$REMOVED_EVENTS_FILE"
+    echo ""
+    echo "  routing_config.json fully REPLACES the live agent_routing SSM parameter —"
+    echo "  it does not merge. If you only meant to add or change one agent's rule,"
+    echo "  your routing config must still include every other agent's existing rules."
+    echo "  Re-generate it from the agents actually deployed right now:"
+    echo "    bash generate-routing-config.sh"
+    echo ""
+    echo "  If this removal is actually intentional, re-run with --allow-routing-removal"
+    echo "  (or ALLOW_ROUTING_REMOVAL=1)."
+    echo "  Aborting without touching SSM. Nothing has been pushed."
+    exit 1
+  else
+    echo "  ⚠ This push removes live routing for: $(tr '\n' ';' < "$REMOVED_EVENTS_FILE" | sed 's/;/; /g')"
+    echo ""
+  fi
+fi
 
 # 3. Require explicit confirmation before overwriting (unless --yes was passed).
 if [ "$ASSUME_YES" = "true" ]; then
