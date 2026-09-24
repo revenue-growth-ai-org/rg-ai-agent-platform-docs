@@ -28,9 +28,28 @@ set -e
 #   --yes / -y             or YES=1 env var — skip the overwrite confirmation
 #                          for system_prompt.txt / routing_config.json
 #
-# Example:
-#   RULES_JSON='[{"event_type":"contact.created","agents":["csm-call-prep"]}]' \
-#     bash generate-routing-config.sh --yes
+# IMPORTANT — RULES_JSON must be the COMPLETE desired routing set, not just
+# the one agent you're adding or changing. This script (and the
+# routing_config.json it writes) has no notion of "merge" — whatever you pass
+# here is the entire live routing config once pushed via
+# configure-orchestrator.sh. A RULES_JSON naming only one agent WILL drop
+# every other agent's routing rules when pushed (this has happened twice
+# live: Aug 21 and Sept 19, both times a single new agent's rule silently
+# wiped out routing for every other agent). Before writing RULES_JSON, check
+# what's currently live:
+#   aws ssm get-parameter --name /PROJECT/ENV/orchestrator/agent_routing --query Parameter.Value --output text
+# and include every rule from there that should still apply, plus your change.
+# configure-orchestrator.sh's own --yes path additionally refuses to push a
+# routing config that would remove a currently-routed event_type unless
+# --allow-routing-removal is also passed — but get it right here first rather
+# than relying on that guard to catch it.
+#
+# Example (a full set, not a single new rule):
+#   RULES_JSON='[
+#     {"event_type":"deal.creation","agents":["researcher"]},
+#     {"event_type":"deal.propertyChange","agents":["deal-coaching"]},
+#     {"event_type":"contact.created","agents":["csm-call-prep"]}
+#   ]' bash generate-routing-config.sh --yes
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
