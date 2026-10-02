@@ -6,7 +6,7 @@ Related documents: [Stage 0–2 Security Summary](./stage-0-2-security-summary.m
 
 ---
 
-Controls protecting the shared platform code across all five repositories. Because every customer deployment runs the same code from the same repositories, the supply chain of that code is a platform-wide concern — a compromise here would, in principle, affect every deployment (exploitable only within each account's boundary; see the [Customer Isolation Statement](./customer-isolation.md)).
+Controls protecting the shared platform code across all five repositories (bootstrap, base, orchestrator, agent, docs). Because every customer deployment runs that same scaffolding, the supply chain of that code is a platform-wide concern — a compromise here would, in principle, affect every deployment (exploitable only within each account's boundary; see the [Customer Isolation Statement](./customer-isolation.md)). Customer business logic is not in these repositories; it is staged from the private overlay `rg-ai-agent-platform-customers/<slug>/agents/` at image build.
 
 This document states each control precisely, including its actual coverage. These facts were verified against live GitHub and repository settings on 2026-07-12, not restated from earlier summaries.
 

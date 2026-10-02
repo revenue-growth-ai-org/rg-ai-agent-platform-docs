@@ -23,7 +23,8 @@ Most vendor isolation claims describe controls that *separate* tenants sharing i
 | KMS key (customer-managed; encrypts CloudTrail logs, and RDS storage if enabled) | Customer AWS account | Customer |
 | VPC, subnets, security groups, ALB, VPC endpoints | Customer AWS account | Customer |
 | Terraform state (S3 + DynamoDB lock) | Customer AWS account | Customer |
-| Source code (five repositories) | GitHub, Revenue-Growth.AI org | Revenue-Growth.AI |
+| Source code (five shared repositories) | GitHub, Revenue-Growth.AI org | Revenue-Growth.AI |
+| Customer agent logic (`rg-ai-agent-platform-customers/<slug>/agents/`) | Private overlay repo, staged into that customer's image | Per customer |
 | DNS for `*.revenue-growth.ai` endpoints | Cloudflare, Revenue-Growth.AI account | Revenue-Growth.AI |
 
 The only components Revenue-Growth.AI operates are the source repositories and DNS. Neither carries customer data.
@@ -55,6 +56,6 @@ The only components Revenue-Growth.AI operates are the source repositories and D
 
 In keeping with the evidence-based style of this documentation set:
 
-- Isolation between customers is absolute at the infrastructure layer, but all customers run the **same code** from the same repositories. A vulnerability in the platform code would be present in every deployment (though exploitable only within each account's boundary). Supply-chain controls on that shared code — branch protection, secret scanning coverage (stated precisely), SHA-pinned actions, Dependabot — are documented in Supply-Chain Controls.
+- Isolation between customers is absolute at the infrastructure layer, but all customers run the **same shared platform code** from the same five repositories. A vulnerability in that scaffolding would be present in every deployment (though exploitable only within each account's boundary). Customer business logic is not in those repositories; it is staged from `rg-ai-agent-platform-customers/<slug>/agents/` into that customer's agent image at redeploy. Supply-chain controls on the shared code — branch protection, secret scanning coverage (stated precisely), SHA-pinned actions, Dependabot — are documented in Supply-Chain Controls.
 - Traffic between services *inside* a deployment's VPC (ALB → orchestrator, orchestrator → agents) is HTTP within private subnets, restricted by paired security-group rules; TLS terminates at the ALB. There is no cross-tenant exposure from this — no other tenant exists on the network — but it is stated here for completeness. See the [Encryption Matrix](./encryption-matrix.md).
 - The Anthropic API is a shared external dependency across all deployments; each deployment authenticates with its own customer-resident API key.

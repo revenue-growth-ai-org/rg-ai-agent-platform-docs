@@ -195,40 +195,14 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Stage this agent's real logic, if it exists, into business_logic.py
+# Stage this agent's sources, then build
 # ------------------------------------------------------------------------------
-# business_logic.py is a build-time staging file, regenerated fresh before
-# every build — it should never be hand-edited or committed directly. This
-# is what makes editing app/agents/<agent_name>.py and running this script
-# actually take effect; skipping this step would just rebuild whatever was
-# last staged (commonly still the empty shell).
+# stage-agent-sources.sh (in the shared agent repo) writes the build context
+# from CUSTOMER_AGENTS_DIR or CUSTOMER_OVERLAY_DIR. Do not copy
+# app/agents/<name>.py afterward — that copy is what ships only _shell.py
+# once the agent repo no longer vendors customer modules.
 
-if [ -f "$APP_DIR/agents/${AGENT_NAME}.py" ]; then
-  cp "$APP_DIR/agents/${AGENT_NAME}.py" "$APP_DIR/business_logic.py"
-  echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
-else
-  cp "$APP_DIR/agents/_shell.py" "$APP_DIR/business_logic.py"
-  echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
-fi
-
-# ------------------------------------------------------------------------------
-# Stage this agent's scan-task logic, if it exists, into scan_task.py
-# ------------------------------------------------------------------------------
-# scan_task.py is a build-time staging file, just like business_logic.py
-# above — it should never be hand-edited or committed directly. Only agents
-# with enable_scheduled_scan = true need this; agents that don't have their
-# own app/agents/<agent_name>_scan_task.py fall through to removing any
-# stale scan_task.py instead, since different agents share this same
-# working tree across builds and a leftover file would silently apply to
-# the wrong agent.
-
-if [ -f "$APP_DIR/agents/${AGENT_NAME}_scan_task.py" ]; then
-  cp "$APP_DIR/agents/${AGENT_NAME}_scan_task.py" "$APP_DIR/scan_task.py"
-  echo "  ✓ Using app/agents/${AGENT_NAME}_scan_task.py as scan_task.py"
-else
-  rm -f "$APP_DIR/scan_task.py"
-  echo "  ✓ No app/agents/${AGENT_NAME}_scan_task.py found — removed any stale scan_task.py"
-fi
+stage_agent_sources "$AGENT_REPO" "$AGENT_NAME"
 
 # ------------------------------------------------------------------------------
 # Build, push, and verify the new image

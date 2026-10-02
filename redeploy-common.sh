@@ -55,6 +55,58 @@ find_platform_repo() {
 }
 
 # ------------------------------------------------------------------------------
+# Stage one agent's sources before the image build.
+#
+# The shared agent repo owns this. Its stage-agent-sources.sh reads either:
+#   CUSTOMER_AGENTS_DIR   — path to <slug>/agents
+#   CUSTOMER_OVERLAY_DIR  — alternate input accepted by that script
+# and writes the build context. Copying app/agents/<name>.py locally is not
+# enough: after that script is what the image build uses, skipping it ships
+# only _shell.py.
+#
+# CUSTOMER_SLUG is a docs shorthand. When neither env var is set and
+# CUSTOMER_SLUG is, this sets CUSTOMER_AGENTS_DIR to
+# $PARENT_DIR/rg-ai-agent-platform-customers/$CUSTOMER_SLUG/agents.
+# ------------------------------------------------------------------------------
+stage_agent_sources() {
+  local AGENT_REPO="$1"
+  local AGENT_NAME="$2"
+  local STAGE_SCRIPT="$AGENT_REPO/stage-agent-sources.sh"
+
+  if [ -z "${CUSTOMER_AGENTS_DIR:-}" ] && [ -z "${CUSTOMER_OVERLAY_DIR:-}" ] && [ -n "${CUSTOMER_SLUG:-}" ]; then
+    CUSTOMER_AGENTS_DIR="$PARENT_DIR/rg-ai-agent-platform-customers/${CUSTOMER_SLUG}/agents"
+  fi
+
+  if [ -n "${CUSTOMER_AGENTS_DIR:-}" ]; then
+    export CUSTOMER_AGENTS_DIR
+  fi
+  if [ -n "${CUSTOMER_OVERLAY_DIR:-}" ]; then
+    export CUSTOMER_OVERLAY_DIR
+  fi
+
+  if [ ! -f "$STAGE_SCRIPT" ]; then
+    echo "ERROR: $STAGE_SCRIPT not found."
+    echo "The shared agent repo must include stage-agent-sources.sh."
+    echo "Without it, the image build ships only _shell.py."
+    return 1
+  fi
+
+  echo "  Staging agent sources: bash stage-agent-sources.sh --agent $AGENT_NAME"
+  if [ -n "${CUSTOMER_AGENTS_DIR:-}" ]; then
+    echo "    CUSTOMER_AGENTS_DIR=$CUSTOMER_AGENTS_DIR"
+  fi
+  if [ -n "${CUSTOMER_OVERLAY_DIR:-}" ]; then
+    echo "    CUSTOMER_OVERLAY_DIR=$CUSTOMER_OVERLAY_DIR"
+  fi
+  if [ -z "${CUSTOMER_AGENTS_DIR:-}" ] && [ -z "${CUSTOMER_OVERLAY_DIR:-}" ]; then
+    echo "    Neither CUSTOMER_AGENTS_DIR nor CUSTOMER_OVERLAY_DIR is set."
+    echo "    The stage script will prepare the empty shell (_shell.py)."
+  fi
+
+  bash "$STAGE_SCRIPT" --agent "$AGENT_NAME"
+}
+
+# ------------------------------------------------------------------------------
 # Print the digest of an ECR image tag, or an empty string if the repository
 # or tag doesn't exist yet (e.g. the very first deploy).
 # ------------------------------------------------------------------------------

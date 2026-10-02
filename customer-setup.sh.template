@@ -36,8 +36,11 @@ if [ -z "$DOCS_DIR" ]; then
   exit 1
 fi
 
-# Find the agent platform repo (3-rg-ai-agent-platform-agent) — this is
-# where agents/<name>.py actually gets deployed FROM, not this repo.
+# Find the agent platform repo (3-rg-ai-agent-platform-agent). It stays
+# scaffolding. Customer modules are canonical in
+# rg-ai-agent-platform-customers/$CUSTOMER_SLUG/agents/<name>.py.
+# redeploy-agent.sh stages that overlay into the image when CUSTOMER_SLUG
+# is set. A copy into app/agents/ below is build input only — do not commit it.
 AGENT_REPO_DIR=$(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d -name "*agent*" | \
   grep -vE '/[^/]*orchestrator[^/]*$' | grep -vE '/[^/]*docs[^/]*$' | head -1)
 
@@ -83,11 +86,11 @@ bash "$DOCS_DIR/configure-orchestrator.sh" \
 # Step 2 — Deploy agent implementations
 # ------------------------------------------------------------------------------
 #
-# Each agents/<name>/agent.py is copied into
-# $AGENT_REPO_DIR/app/agents/<name>.py (exposing async def run(request,
-# logger) -> dict — NOT the old execute() contract), then that one agent
-# is rebuilt and redeployed via redeploy-agent.sh. Credentials are NOT
-# handled here — attach them separately, once, with:
+# Each agent is rebuilt by redeploy-agent.sh, which runs
+# $AGENT_REPO_DIR/stage-agent-sources.sh --agent <name> before the image
+# build. That script reads CUSTOMER_AGENTS_DIR (path to <slug>/agents) or
+# CUSTOMER_OVERLAY_DIR. Copying into app/agents/ does not change the image.
+# Credentials are NOT handled here — attach them separately, once, with:
 #   bash "$DOCS_DIR/manage-agent.sh" secret <name> add
 #
 # NOTE — shared requirements.txt: all agents in this platform build from
@@ -116,8 +119,6 @@ else
     echo ""
   fi
 
-  mkdir -p "$AGENT_REPO_DIR/app/agents"
-
   for AGENT_DIR in "$SCRIPT_DIR/agents"/*/; do
     AGENT_NAME=$(basename "$AGENT_DIR")
     AGENT_FILE="$AGENT_DIR/agent.py"
@@ -136,9 +137,11 @@ else
     fi
 
     echo "  Deploying agent: $AGENT_NAME"
-
-    cp "$AGENT_FILE" "$AGENT_REPO_DIR/app/agents/${AGENT_NAME}.py"
-    echo "    ✓ Copied to app/agents/${AGENT_NAME}.py"
+    if [ -z "${CUSTOMER_AGENTS_DIR:-}" ] && [ -z "${CUSTOMER_OVERLAY_DIR:-}" ] && [ -z "${CUSTOMER_SLUG:-}" ]; then
+      echo "    ERROR: set CUSTOMER_AGENTS_DIR (path to <slug>/agents) or CUSTOMER_OVERLAY_DIR."
+      echo "    Without that, stage-agent-sources.sh ships only _shell.py. Skipping $AGENT_NAME."
+      continue
+    fi
 
     if [ -f "$REQUIREMENTS_FILE" ]; then
       cp "$REQUIREMENTS_FILE" "$AGENT_REPO_DIR/app/requirements.txt"
@@ -164,8 +167,8 @@ echo ""
 echo "  To update orchestrator configuration:"
 echo "  bash $DOCS_DIR/configure-orchestrator.sh --prompt system_prompt.txt --routing routing_config.json"
 echo ""
-echo "  To update a specific agent: edit agents/<name>/agent.py, then run:"
-echo "  cp agents/<name>/agent.py $AGENT_REPO_DIR/app/agents/<name>.py"
+echo "  To update a specific agent: edit the overlay module"
+echo "  rg-ai-agent-platform-customers/\$CUSTOMER_SLUG/agents/<name>.py, then run:"
 echo "  bash $DOCS_DIR/redeploy-agent.sh --agent <name>"
 echo ""
 echo "  To add a credential to an agent:"

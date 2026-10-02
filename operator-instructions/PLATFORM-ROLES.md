@@ -97,9 +97,14 @@ section is a pointer to what to check, not a substitute for reading the current 
   alerts on DeleteLogGroup / DeleteLogStream / PutRetentionPolicy / DeleteRetentionPolicy. The
   preventive IAM deny (enable_log_delete_protection) is deliberately OFF platform-wide, and S3
   Object Lock was deliberately declined (docs#21).
+- The chat repo `4-rg-ai-agent-platform-chat` was deleted.
+- Customer agent logic lives in `rg-ai-agent-platform-customers/<slug>/agents/`. Before an
+  agent image build, docs scripts run the agent repo's `stage-agent-sources.sh --agent <name>`
+  with `CUSTOMER_AGENTS_DIR` (path to `<slug>/agents`) or `CUSTOMER_OVERLAY_DIR` set. Neither
+  set means the image is only `_shell.py`. The shared agent repo stays scaffolding.
 - Images: trivy is pinned (check the bootstrap CodeBuild buildspec for the current version) with
-  a checksum, and the build FAILS on any fixable CRITICAL. All three app Dockerfiles
-  (orchestrator, agent, chat) begin with an apt-get update && upgrade layer for this reason. The
+  a checksum, and the build FAILS on any fixable CRITICAL. Both app Dockerfiles
+  (orchestrator and agent) begin with an apt-get update && upgrade layer for this reason. The
   build zip and .dockerignore files exclude local virtualenvs, so app/venv does not ship into
   images.
 - e2e can only be dispatched from main. The CI role's OIDC trust is pinned to
@@ -159,14 +164,15 @@ non-negotiable):
   concurrency genuinely matters). If a third-party package is needed, output exact pinned lines
   for app/requirements.txt and note they take effect on next redeploy. All external HTTP calls
   get explicit timeouts.
-- Filename = deployed agent name exactly, hyphens included.
+- Filename = deployed agent name exactly, hyphens included. Canonical path is
+  rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py.
 
 SCHEDULED-SCAN CONTRACT (when the agent needs this path, from scan_task.EXAMPLE.py's shape —
 equally non-negotiable):
-- Filename = app/agents/<agent_name>_scan_task.py — never app/scan_task.py directly.
-  app/scan_task.py is a build-time GENERATED file (staged from this source by
-  master-setup.sh/redeploy-agent.sh, mirroring how app/agents/<agent_name>.py stages into
-  business_logic.py) and must never be committed to directly.
+- Filename = rg-ai-agent-platform-customers/<slug>/agents/<agent_name>_scan_task.py — never
+  app/scan_task.py directly. app/scan_task.py is a build-time GENERATED file (staged from this
+  source by master-setup.sh/redeploy-agent.sh, mirroring how the overlay <agent_name>.py stages
+  into business_logic.py) and must never be committed.
 - Imports OrchestratorAuditLog from scan_scaffolding (shared, do not modify) and calls into the
   SAME business_logic.py / per-record functions the webhook path uses — never duplicate agent
   logic between the two entry points.
@@ -232,13 +238,14 @@ Working process:
    Don't interrogate.
 2. Produce, in order:
    (a) the complete file(s), every TODO resolved, no placeholders —
-       app/agents/<agent_name>.py for webhook logic and/or
-       app/agents/<agent_name>_scan_task.py for scheduled-scan logic, per what was confirmed
-       in step 1;
-   (b) requirements.txt additions if any;
+       rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py for webhook logic and/or
+       rg-ai-agent-platform-customers/<slug>/agents/<agent_name>_scan_task.py for scheduled-scan
+       logic, per what was confirmed in step 1. The shared agent repo stays scaffolding;
+   (b) requirements.txt additions if any (shared agent repo `app/requirements.txt`);
    (c) deploy commands:
-       cp <business logic file> <CUSTOMER_REPO_ROOT>/3-rg-ai-agent-platform-agent/app/agents/<agent_name>.py
-       cp <scan file, if applicable> <CUSTOMER_REPO_ROOT>/3-rg-ai-agent-platform-agent/app/agents/<agent_name>_scan_task.py
+       save the file(s) under rg-ai-agent-platform-customers/<slug>/agents/ and set
+       CUSTOMER_AGENTS_DIR to that agents directory (or set CUSTOMER_OVERLAY_DIR).
+       CUSTOMER_SLUG alone is only the shorthand that fills CUSTOMER_AGENTS_DIR.
        (if scheduled-scan is new for this agent) the exact prod.tfvars additions from above,
        with placement shown
        cd <CUSTOMER_REPO_ROOT>/rg-ai-agent-platform-docs
@@ -271,9 +278,13 @@ up instead of assuming.
 
 Standard flow (full detail in the repo's redeploy-agent.sh, manage-agent.sh, test-webhook.sh —
 read them from main, not from any point-in-time snapshot):
-1. Confirm the agent's .py file is already at app/agents/<agent_name>.py — ask, don't assume. If
-   this agent also has a scheduled scan, also confirm app/agents/<agent_name>_scan_task.py
-   exists.
+1. Confirm the agent's module is already in the customer overlay at
+   rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py — ask, don't assume. If
+   this agent also has a scheduled scan, also confirm <agent_name>_scan_task.py is there.
+   Set CUSTOMER_AGENTS_DIR to that <slug>/agents directory, or set
+   CUSTOMER_OVERLAY_DIR. CUSTOMER_SLUG is only a shorthand for the sibling
+   overlay path. The shared agent repo is scaffolding. A redeploy with neither
+   variable set ships only _shell.py.
 2. Verify secrets: bash manage-agent.sh secret <agent_name> list
    Removing a credential (secret remove) only detaches the agent's SSM pointer + IAM grant — it
    never deletes the underlying Secrets Manager value, since other agents may reference the same
@@ -284,9 +295,10 @@ read them from main, not from any point-in-time snapshot):
    again later.
 3. Deploy: bash redeploy-agent.sh --agent <agent_name>
    IMPORTANT: this rebuilds and redeploys the container image ONLY — it does NOT run Terraform,
-   change infrastructure, or provision anything new. Confirm its output shows both staging lines
-   ("✓ Using app/agents/<agent_name>.py as business_logic.py" and, if applicable, "✓ Using
-   app/agents/<agent_name>_scan_task.py as scan_task.py") before proceeding.
+   change infrastructure, or provision anything new. Before the build it runs
+   bash <agent-repo>/stage-agent-sources.sh --agent <agent_name>
+   with CUSTOMER_AGENTS_DIR (path to <slug>/agents) or CUSTOMER_OVERLAY_DIR set.
+   Confirm that line ran. If neither variable is set, the image is only _shell.py.
 4. Confirm the new task started cleanly:
    aws logs tail /ecs/${PROJECT_NAME}-${ENVIRONMENT}/<agent_name> --follow --region <AWS_REGION>
    — look for a fresh agent_startup line.
@@ -305,8 +317,8 @@ read them from main, not from any point-in-time snapshot):
 7. On success, tell the user exactly what to visually verify in the CRM — a 200 response alone
    is not sufficient confirmation.
 8. Remind the user to Ctrl+C the local server, then ask before assuming they want to commit; if
-   yes, give:
-   git add .gitignore app/agents/<agent_name>.py app/business_logic.py && git commit -m "..." && git push
+   yes, commit in the overlay repo (not the shared agent repo, and never business_logic.py):
+   cd rg-ai-agent-platform-customers && git add <slug>/agents/<agent_name>.py && git commit -m "..." && git push
 
 SCHEDULED-SCAN DEPLOY (when this agent has enable_scheduled_scan set, whether newly added or
 already live) — this is a SEPARATE flow from steps 1-8 above, do both if both apply:
@@ -365,18 +377,19 @@ already live) — this is a SEPARATE flow from steps 1-8 above, do both if both 
    on the unattended schedule, or accept the first live scheduled run as the real test.
 
 Proactively check for these known gotchas before the user hits them:
-- business_logic.py is what a locally-run server actually executes, NOT app/agents/<agent_name>.py.
+- business_logic.py is what a locally-run server actually executes, not the overlay module.
   Local edits must go into business_logic.py to take effect live, and must also be copied back
-  into the canonical agents/<agent_name>.py before the next real deploy. The same applies to
-  app/scan_task.py vs app/agents/<agent_name>_scan_task.py.
+  into rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py before the next real deploy.
+  The same applies to app/scan_task.py vs the overlay <agent_name>_scan_task.py. Do not commit
+  either generated file, and do not commit customer logic into the shared agent repo.
 - redeploy-agent.sh does NOT run Terraform — a scheduled-scan agent needs BOTH a terraform apply
   (for infrastructure) AND a redeploy-agent.sh run (for code), and they are independent steps
   that can be missed separately.
 - A redeploy can fail at the image scan, not in your code: CodeBuild runs trivy (pinned version
-  — check the buildspec) and fails the build on any fixable CRITICAL. All three app Dockerfiles
-  already carry an apt-get upgrade layer for this; if a build fails this way, the fix is usually
-  a rebuild once upstream publishes the fix, not an agent code change. Read the CodeBuild log
-  before touching agent code.
+  — check the buildspec) and fails the build on any fixable CRITICAL. Both app Dockerfiles
+  (orchestrator and agent) already carry an apt-get upgrade layer for this; if a build fails
+  this way, the fix is usually a rebuild once upstream publishes the fix, not an agent code
+  change. Read the CodeBuild log before touching agent code.
 - AWS SSO sessions expire mid-session — NoCredentialsError usually means aws sso login is needed
   again.
 - Closing a terminal tab kills anything running in it (server, exported env vars) — both need to

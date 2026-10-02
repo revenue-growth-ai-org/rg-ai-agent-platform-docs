@@ -142,3 +142,51 @@ The platform is CRM-agnostic. The Master Orchestrator detects the CRM source fro
 | Outbound | Enqueues contacts in sequencing tools | Yes |
 
 These are the reference agent types. Any agent type can be deployed by running Step 3 with a different agent_name.
+
+---
+
+## Shared repositories
+
+The platform is five shared repositories.
+
+| | Repository | Role |
+|---|---|---|
+| 0 | `0-rg-ai-agent-platform-bootstrap` | AWS account prerequisites, once per account |
+| 1 | `1-rg-ai-agent-platform-base` | VPC, ALB, ECS cluster, security (RDS optional, off by default) |
+| 2 | `2-rg-ai-agent-platform-orchestrator` | Master Orchestrator |
+| 3 | `3-rg-ai-agent-platform-agent` | Agent scaffolding only |
+| — | `rg-ai-agent-platform-docs` | Install, deploy, and operator docs (this repository) |
+
+Operator instructions also refer to an MCP host repository, separate from this set. Install and destroy cover the five repositories above.
+
+---
+
+## Customer overlay
+
+Customer business logic lives in the private overlay repo. The shared agent repo stays scaffolding.
+
+```
+rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py
+rg-ai-agent-platform-customers/<slug>/agents/<agent_name>_scan_task.py
+```
+
+`<slug>` is that customer's directory in the overlay. The scan-task file is only present for an agent that has a scheduled scan.
+
+Clone `rg-ai-agent-platform-customers` next to the five platform repos. The shared agent repo stays scaffolding: `app/agent.py`, the empty shell, and the secrets helpers. Do not commit staged copies back into it.
+
+Before every agent image build, `redeploy-agent.sh`, `master-setup.sh`, and `manage-agent.sh add` run the agent repo's stager:
+
+```bash
+bash "$AGENT_REPO/stage-agent-sources.sh" --agent "$AGENT_NAME"
+```
+
+Set one of these for that command. `defaults.env` is sourced by those scripts, so either name there is enough:
+
+| Variable | Meaning |
+|---|---|
+| `CUSTOMER_AGENTS_DIR` | Path to `<slug>/agents` (the directory that contains `<agent_name>.py`) |
+| `CUSTOMER_OVERLAY_DIR` | Alternate input accepted by `stage-agent-sources.sh` |
+
+`CUSTOMER_SLUG` is a shorthand, not an install default. When neither variable above is set and `CUSTOMER_SLUG` is, the docs scripts set `CUSTOMER_AGENTS_DIR` to `rg-ai-agent-platform-customers/$CUSTOMER_SLUG/agents` next to the platform repos.
+
+With neither `CUSTOMER_AGENTS_DIR` nor `CUSTOMER_OVERLAY_DIR` set, that stager prepares the empty shell and the image contains only `_shell.py`.

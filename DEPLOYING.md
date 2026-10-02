@@ -215,7 +215,7 @@ Always destroy in reverse order:
 
 ## Deploying for a new customer
 
-Each customer gets their own AWS account. The deployment process is identical — clone all four repos into the customer's account and follow this guide from Step 0.
+Each customer gets their own AWS account. The deployment process is identical — clone the four infrastructure repos (bootstrap, base, orchestrator, agent) plus this docs repo, and follow this guide from Step 0. Customer business logic is the private overlay in [ARCHITECTURE.md](ARCHITECTURE.md#customer-overlay).
 
 Use a unique project_name per customer (e.g. customer-a, acme-corp) to keep all resources namespaced correctly.
 
@@ -428,9 +428,28 @@ routing rules before they affect real traffic.
 > drafting agent logic — the mechanism described below is the contract, and
 > anything that Project produces still has to match it.
 
-Write the agent's real logic directly into
-`app/agents/<agent_name>.py` in the `3-rg-ai-agent-platform-agent` repo,
-exposing:
+Customer business logic is not committed to `3-rg-ai-agent-platform-agent`.
+That repo stays scaffolding. Write the module in the private overlay:
+
+    rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py
+
+A scheduled-scan agent also has:
+
+    rg-ai-agent-platform-customers/<slug>/agents/<agent_name>_scan_task.py
+
+Clone that repo next to the platform repos. Before the image build the
+docs scripts run `stage-agent-sources.sh` from the shared agent repo.
+Set one of these (in the environment or in `defaults.env`):
+
+- `CUSTOMER_AGENTS_DIR` — path to `<slug>/agents`
+- `CUSTOMER_OVERLAY_DIR` — the other input that script accepts
+
+`CUSTOMER_SLUG` is an optional shorthand, not an install default. When
+neither variable above is set, the scripts point `CUSTOMER_AGENTS_DIR`
+at `rg-ai-agent-platform-customers/$CUSTOMER_SLUG/agents`. With none of
+them set, the image build contains only `_shell.py`.
+
+The module exposes:
 
     async def run(request, logger) -> dict:
         ...
@@ -442,22 +461,29 @@ failure; the platform's generic error handling reports it back as
 (imported from `agent_secrets`) to resolve any credentials this agent has
 configured.
 
-Do not edit `app/agent.py` — that file is generic scaffolding shared by
-every agent and should never change per-agent.
+Do not edit `app/agent.py` in the shared agent repo — that file is generic
+scaffolding shared by every agent and should never change per-agent.
 
 ### Step 4 — Rebuild and redeploy the agent
 
-Once `app/agents/<agent_name>.py` is written or edited (and any new
-dependencies added to `app/requirements.txt`), rebuild and redeploy that
+Once the overlay module is written or edited (and any new dependencies
+added to the shared `app/requirements.txt`), rebuild and redeploy that
 one agent — no Terraform changes, no secrets changes, existing
 credentials are untouched:
 
     cd rg-ai-agent-platform-docs
     bash redeploy-agent.sh --agent <agent_name>
 
-This builds a new image via CodeBuild, pushes it to ECR, forces a new ECS
-deployment, waits for the rollout to finish, and tails recent logs so you
-can visually confirm clean startup.
+`redeploy-agent.sh` (and `master-setup.sh` / `manage-agent.sh add`, which
+also build an agent image) first runs:
+
+    bash "$AGENT_REPO/stage-agent-sources.sh" --agent <agent_name>
+
+with `CUSTOMER_AGENTS_DIR` or `CUSTOMER_OVERLAY_DIR` set, as described
+above. It then builds a new image via CodeBuild, pushes it to ECR, forces
+a new ECS deployment, waits for the rollout to finish, and tails recent
+logs so you can visually confirm clean startup. `manage-agent.sh redeploy`
+calls `redeploy-agent.sh`, so it uses the same stager.
 
 ### Updating configuration after go-live
 
@@ -472,13 +498,13 @@ overwriting the live routing config, so you can review exactly what's
 changing before it takes effect.
 
 To update an agent's business logic at any time: edit
-`app/agents/<agent_name>.py` in the agent repo, then run:
+`rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py`, then run:
 
     bash redeploy-agent.sh --agent <agent_name>
 
-Rollback is via git — `git log` / `git revert` on
-`app/agents/<agent_name>.py` in the agent repo, then re-run
-`redeploy-agent.sh` to deploy the reverted version.
+Rollback is via git in the overlay repo — `git log` / `git revert` on
+that module — then re-run `redeploy-agent.sh` to deploy the reverted
+version. Do not commit the staged copy in the shared agent repo.
 
 ---
 
