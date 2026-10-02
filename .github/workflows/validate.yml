@@ -34,6 +34,7 @@ jobs:
             tests/test-manage-agent-secret-remove-nontty.sh
             tests/test-manage-agent-describe-nontty.sh
             tests/test-configure-orchestrator-routing-removal.sh
+            tests/test-customer-overlay-stage.sh
           )
 
           failed=0

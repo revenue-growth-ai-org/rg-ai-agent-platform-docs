@@ -1480,9 +1480,13 @@ EOF
     exit 0
   fi
 
-  # Build and push image (via CodeBuild — no local Docker required)
+  # Build and push image (via CodeBuild — no local Docker required).
+  # Stage customer sources first. The agent repo's stage-agent-sources.sh
+  # is what puts <agent>.py into the image; without it the build ships
+  # only _shell.py.
   echo ""
   echo "Building and pushing agent image via CodeBuild..."
+  stage_agent_sources "$AGENT_DIR" "$AGENT_NAME"
   build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" "$ECR_IMAGE"
   echo "  ✓ Image pushed to ECR"
 

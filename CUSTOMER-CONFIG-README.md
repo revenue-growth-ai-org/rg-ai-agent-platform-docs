@@ -1,8 +1,21 @@
 # Customer Configuration Repo — Setup Guide
 
-This repository contains the customer-specific configuration for the AWS Agent Platform.
-It works alongside the platform infrastructure repos to configure the orchestrator
-and deploy agent implementations.
+This file describes customer-specific orchestrator configuration (system prompt
+and routing) that sits beside the platform repos.
+
+Agent business logic is the private overlay, not a copy committed into
+`3-rg-ai-agent-platform-agent`:
+
+    rg-ai-agent-platform-customers/<slug>/agents/<agent_name>.py
+    rg-ai-agent-platform-customers/<slug>/agents/<agent_name>_scan_task.py
+
+Point `CUSTOMER_AGENTS_DIR` at that `<slug>/agents` directory, or set
+`CUSTOMER_OVERLAY_DIR`. `redeploy-agent.sh`, `master-setup.sh`, and
+`manage-agent.sh add` run `stage-agent-sources.sh --agent <name>` with one
+of those set before the image build. See [ARCHITECTURE.md](ARCHITECTURE.md#customer-overlay).
+The layout below is the older per-customer config repo, still used for the
+orchestrator prompt and routing files. Do not treat its `agents/` tree as the
+canonical store when the overlay module exists.
 
 ---
 
@@ -86,28 +99,26 @@ test-webhook.sh sends a synthetic, HMAC-signed webhook directly to the ALB
 
 ### Update an agent implementation
 
-Edit agents/{agent_name}/agent.py (must expose
-`async def run(request, logger) -> dict`), copy it into the platform's
-agent repo, then rebuild and redeploy that one agent:
-
-    cp agents/{agent_name}/agent.py \
-      ~/aws-agent-platform/3-rg-ai-agent-platform-agent/app/agents/{agent_name}.py
+Edit `rg-ai-agent-platform-customers/<slug>/agents/{agent_name}.py` (must
+expose `async def run(request, logger) -> dict`). With `CUSTOMER_SLUG`
+set, rebuild and redeploy that one agent:
 
     bash ~/aws-agent-platform/rg-ai-agent-platform-docs/redeploy-agent.sh \
       --agent {agent_name}
 
-redeploy-agent.sh rebuilds the image via CodeBuild, pushes it, forces a
-new ECS deployment, waits for the rollout, and tails recent logs.
+redeploy-agent.sh stages the overlay module into the image, rebuilds via
+CodeBuild, pushes it, forces a new ECS deployment, waits for the rollout,
+and tails recent logs. The shared agent repo stays scaffolding.
 
 ---
 
 ## Rolling back changes
 
-Rollback is via git, not a built-in backup mechanism. In the agent repo:
+Rollback is via git in the overlay repo, not a built-in backup mechanism:
 
-    cd ~/aws-agent-platform/3-rg-ai-agent-platform-agent
-    git log -- app/agents/{agent_name}.py
-    git checkout <previous_commit> -- app/agents/{agent_name}.py
+    cd rg-ai-agent-platform-customers
+    git log -- <slug>/agents/{agent_name}.py
+    git checkout <previous_commit> -- <slug>/agents/{agent_name}.py
 
 Then redeploy:
 

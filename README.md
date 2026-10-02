@@ -33,14 +33,19 @@ See [CUSTOMER-SETUP.md](CUSTOMER-SETUP.md) for full verification steps.
 
 ## Repository overview
 
-The platform is split across four infrastructure repositories deployed in sequence:
+The platform is five shared repositories. Customer business logic is not one of them.
 
 | Repo | Name | Purpose |
 |---|---|---|
 | 0 | 0-rg-ai-agent-platform-bootstrap | AWS account prerequisites — run once per account |
 | 1 | 1-rg-ai-agent-platform-base | VPC, ALB, ECS cluster (`${PROJECT_NAME}-${ENVIRONMENT}-ecs`), security (RDS optional, off by default) |
 | 2 | 2-rg-ai-agent-platform-orchestrator | Master Orchestrator ECS service |
-| 3 | 3-rg-ai-agent-platform-agent | Single agent node — repeat per agent type |
+| 3 | 3-rg-ai-agent-platform-agent | Agent scaffolding — repeat per agent type. Customer logic is not committed here |
+| — | rg-ai-agent-platform-docs | This repository: install, deploy, and operator docs |
+
+Customer agent modules live in the private overlay `rg-ai-agent-platform-customers/<slug>/agents/` and are staged into the agent image at redeploy. See [ARCHITECTURE.md](ARCHITECTURE.md#customer-overlay).
+
+An MCP host repository is separate from this set (operator instructions refer to it). It is not an install or destroy step.
 
 ---
 

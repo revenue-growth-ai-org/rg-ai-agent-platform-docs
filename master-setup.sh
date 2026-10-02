@@ -1087,30 +1087,9 @@ EOF
     exit 1
   fi
 
-  # Select this agent's real logic if it exists, otherwise fall back to the
-  # empty shell. business_logic.py is a build-time staging file, regenerated
-  # fresh before every build — it should never be hand-edited or committed.
-  if [ -f "$AGENT_DIR/app/agents/${AGENT_NAME}.py" ]; then
-    cp "$AGENT_DIR/app/agents/${AGENT_NAME}.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ Using app/agents/${AGENT_NAME}.py as business_logic.py"
-  else
-    cp "$AGENT_DIR/app/agents/_shell.py" "$AGENT_DIR/app/business_logic.py"
-    echo "  ✓ No app/agents/${AGENT_NAME}.py found — using shell (no business logic yet)"
-  fi
-
-  # Select this agent's scan-task logic if it exists (scheduled-scan agents
-  # only), otherwise remove any stale scan_task.py left over from a
-  # previous agent's build. scan_task.py is a build-time staging file, just
-  # like business_logic.py above — it should never be hand-edited or
-  # committed, and different agents share this same working tree across
-  # builds so a leftover file here would silently apply to the wrong agent.
-  if [ -f "$AGENT_DIR/app/agents/${AGENT_NAME}_scan_task.py" ]; then
-    cp "$AGENT_DIR/app/agents/${AGENT_NAME}_scan_task.py" "$AGENT_DIR/app/scan_task.py"
-    echo "  ✓ Using app/agents/${AGENT_NAME}_scan_task.py as scan_task.py"
-  else
-    rm -f "$AGENT_DIR/app/scan_task.py"
-    echo "  ✓ No app/agents/${AGENT_NAME}_scan_task.py found — removed any stale scan_task.py"
-  fi
+  # stage-agent-sources.sh writes the build context from CUSTOMER_AGENTS_DIR
+  # or CUSTOMER_OVERLAY_DIR. Skipping it ships only _shell.py.
+  stage_agent_sources "$AGENT_DIR" "$AGENT_NAME"
 
   build_tag_push_and_verify "$AGENT_DIR/app" "${PROJECT_NAME}-${AGENT_NAME}" \
     "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${AGENT_NAME}"
